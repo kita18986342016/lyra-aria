@@ -1833,11 +1833,14 @@ function main() {
       const r = await leizGet(p);
       return r.ok ? { ok: true, data: r.data } : { ok: false, reason: r.message || ('HTTP ' + r.status) };
     });
-    // 酷狗分享链接解析：t1.kugou.com 短链（收藏歌单/单曲分享）没有标准歌单 ID，
-    // 但分享页内嵌 dataFromSmarty 歌曲 JSON → 跟随重定向抓页面提取歌曲列表，构造在线歌单
+    // 酷狗分享链接解析：t1.kugou.com 短链（收藏歌单/单曲分享）没有标准歌单 ID。
+    // 方案升级：先跟随重定向拿最终分享页 URL → 优先走 LeiZ 歌单接口（可返回全量，
+    // 实测收藏合集分享页只内嵌 100 首，LeiZ 解析完整 zlist.html URL 返回 trackCount 全量 201 首）；
+    // LeiZ 失败才兜底抓分享页 dataFromSmarty（最多 100 首）。
     async function kugouResolveShare(rawUrl) {
       try {
-        let url = rawUrl, depth = 0;
+        // 1) 跟随重定向拿最终分享页 URL（并保留最后一跳页面 body 供兜底）
+        let url = rawUrl, depth = 0, finalPage = null;
         while (depth < 5) {
           const mod = /^https:/.test(url) ? https : http;
           const page = await new Promise((res2) => {
@@ -1855,22 +1858,45 @@ function main() {
             req.setTimeout(15000, () => { req.destroy(); res2({ error: true }); });
           });
           if (page.redirect) { url = page.redirect; depth++; continue; }
-          if (page.error || !page.body) return { ok: false, reason: '网络异常' };
-          const m = page.body.match(/var dataFromSmarty = (\[.*?\])\s*,?\s*\/\/当前页面歌曲信息/s);
-          if (!m) return { ok: false, reason: '无法识别分享内容（可能是单曲分享或页面结构变化）' };
-          let arr = [];
-          try { arr = JSON.parse(m[1]); } catch { return { ok: false, reason: '分享内容解析失败' }; }
-          const songs = (Array.isArray(arr) ? arr : []).filter((s) => s && s.hash).map((s) => ({
-            id: 'online:kugou:' + s.hash,
-            online: true, source: 'kugou', ref: s.hash,
-            title: s.song_name || s.audio_name || '',
-            artist: s.author_name || '',
-            duration: Math.round((s.timelength || 0) / 1000),
-            album: s.album_id || '', picUrl: ''
-          }));
-          return songs.length ? { ok: true, songs } : { ok: false, reason: '分享页没有歌曲数据' };
+          finalPage = page;
+          break;
         }
-        return { ok: false, reason: '重定向过多' };
+        if (depth >= 5) return { ok: false, reason: '重定向过多' };
+
+        // 2) 优先 LeiZ 全量歌单接口（服务端解析完整分享 URL）
+        // 注意：t1 短链重定向到的是 http://wwwapi…，LeiZ 只认 https 变体（http 会报"无效链接"）→ 先转 https
+        try {
+          const lzUrl = url.replace(/^http:/i, 'https:');
+          const lz = await leizGet('/kugou?type=playlist&url=' + encodeURIComponent(lzUrl));
+          if (lz.ok && lz.data && Array.isArray(lz.data.songs) && lz.data.songs.length) {
+            const songs = lz.data.songs.filter((s) => s && s.hash).map((s) => ({
+              id: 'online:kugou:' + s.hash,
+              online: true, source: 'kugou', ref: s.hash,
+              title: s.name || s.song_name || '',
+              artist: s.artists || s.author_name || '',
+              duration: Math.round((s.duration || s.timelength || 0) / (s.duration ? 1 : 1000)),
+              album: s.album || s.album_id || '', picUrl: s.picUrl || '',
+              level: '128'
+            }));
+            if (songs.length) return { ok: true, name: lz.data.name || '', songs };
+          }
+        } catch (e) { /* 落到兜底 */ }
+
+        // 3) 兜底：分享页 dataFromSmarty 提取（原逻辑）
+        if (finalPage.error || !finalPage.body) return { ok: false, reason: '网络异常' };
+        const m = finalPage.body.match(/var dataFromSmarty = (\[.*?\])\s*,?\s*\/\/当前页面歌曲信息/s);
+        if (!m) return { ok: false, reason: '无法识别分享内容（可能是单曲分享或页面结构变化）' };
+        let arr = [];
+        try { arr = JSON.parse(m[1]); } catch { return { ok: false, reason: '分享内容解析失败' }; }
+        const songs = (Array.isArray(arr) ? arr : []).filter((s) => s && s.hash).map((s) => ({
+          id: 'online:kugou:' + s.hash,
+          online: true, source: 'kugou', ref: s.hash,
+          title: s.song_name || s.audio_name || '',
+          artist: s.author_name || '',
+          duration: Math.round((s.timelength || 0) / 1000),
+          album: s.album_id || '', picUrl: ''
+        }));
+        return songs.length ? { ok: true, songs } : { ok: false, reason: '分享页没有歌曲数据' };
       } catch (e) { return { ok: false, reason: e.message }; }
     }
     ipcMain.handle('leiz:share', async (e, url) => {

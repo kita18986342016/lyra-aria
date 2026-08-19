@@ -874,7 +874,7 @@
         return;
       }
       const songs = r.songs;
-      const pl = { id: 'k:share:' + Date.now(), name: `酷狗分享歌单（${songs.length} 首）`, source: 'kugou', cover: '', desc: '来自酷狗分享链接', songs };
+      const pl = { id: 'k:share:' + Date.now(), name: (r.name ? `${r.name}（${songs.length} 首）` : `酷狗分享歌单（${songs.length} 首）`), source: 'kugou', cover: '', desc: '来自酷狗分享链接', songs };
       state.onlinePlaylists.unshift(pl); // 未收藏 → 仅会话内，重启清除；点星收藏后才落盘
       closeOplImport();
       toast(`歌单导入成功：${pl.name}`);
@@ -2738,22 +2738,27 @@
   function downloadBatch(songs) {
     const list = (songs || []).filter((s) => s && s.online);
     if (!list.length) { toast('没有可下载的在线歌曲'); return; }
-    window.api.dlBatch(list.map((s) => ({ source: s.source, ref: s.ref, title: s.title, artist: s.artist || '', album: s.album || '', picUrl: s.picUrl || '', duration: s.duration || 0 }))).then((res) => {
-      if (res && res.ok) {
+    const CHUNK = 50; // 与主进程 dl:batch 单次上限一致；大歌单分块循环入队（201 首 → 5 批全量）
+    const toPayload = (s) => ({ source: s.source, ref: s.ref, title: s.title, artist: s.artist || '', album: s.album || '', picUrl: s.picUrl || '', duration: s.duration || 0 });
+    (async () => {
+      let total = 0, batchNo = 0;
+      for (let i = 0; i < list.length; i += CHUNK) {
+        const chunk = list.slice(i, i + CHUNK);
+        batchNo++;
+        const res = await window.api.dlBatch(chunk.map(toPayload)).catch(() => null);
+        if (!res || !res.ok) { toast(`批量下载失败（第 ${batchNo} 批，已入队 ${total} 首）`); break; }
         // 按返回的 taskId 顺序精确映射到歌曲（避免同标题行污染）
-        (res.ids || []).forEach((taskId, i) => {
-          const s = list[i];
+        (res.ids || []).forEach((taskId, j) => {
+          const s = chunk[j];
           if (s) {
             batchDlTasks.add(taskId); // 仅「一键下载全部」的任务：完成后触发歌单自动移入本地歌单
             if (!dlTasks.has(s.id)) setDlTask(s, taskId);
           }
         });
-        toast(`已加入下载队列：${res.count} 首`);
-        updateDlFab();
-      } else {
-        toast('批量下载失败');
+        total += res.count || 0;
       }
-    });
+      if (total) { toast(`已加入下载队列：${total} 首`); updateDlFab(); }
+    })();
   }
   function bindDownload() {
     window.api.onDlProgress((p) => {
