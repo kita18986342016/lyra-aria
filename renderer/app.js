@@ -3265,7 +3265,7 @@
         if (updState === 'downloaded') { window.api.updateInstall(); return; }
         updState = 'checking'; updRenderBtn(); updSetStatus('正在检查更新…');
         const r = await window.api.updateCheck();
-        if (!r || !r.ok) { updState = 'idle'; updRenderBtn(); updSetStatus('检查失败：' + ((r && r.reason) || '未知错误')); }
+        if (!r || !r.ok) { updState = 'idle'; updRenderBtn(); updSetStatus('检查失败：' + ((r && r.reason) || '未知错误') + '（可手动下载最新版安装包覆盖安装：https://github.com/kita18986342016/lyra-aria/releases/latest）'); }
       });
       window.api.onUpdateEvent((d) => {
         if (!d || !d.type) return;
@@ -3281,7 +3281,7 @@
         } else if (d.type === 'progress') {
           updSetStatus('下载中… ' + ((d.data && d.data.percent) || 0) + '%');
         } else if (d.type === 'error') {
-          updState = 'idle'; updRenderBtn(); updSetStatus('更新出错：' + ((d.data && d.data.message) || '未知错误'));
+          updState = 'idle'; updRenderBtn(); updSetStatus('更新出错：' + ((d.data && d.data.message) || '未知错误') + '（可手动下载最新版：https://github.com/kita18986342016/lyra-aria/releases/latest）');
         }
       });
     }
