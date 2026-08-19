@@ -3229,6 +3229,51 @@
       const v = await window.api.dlOverwrite(e.target.checked);
       if (v != null) toast(v ? '已开启：下载将替换已有同名文件' : '已关闭：重名文件自动加序号');
     });
+    // ---------- 自动更新：检查 / 下载 / 重启安装 ----------
+    let updState = 'idle'; // idle | checking | available | downloading | downloaded
+    const updBtn = $('#stUpdCheck');
+    const updStatus = $('#stUpdStatus');
+    const updSetStatus = (txt) => { if (updStatus) updStatus.textContent = txt; };
+    const updRenderBtn = () => {
+      if (!updBtn) return;
+      updBtn.classList.remove('primary');
+      updBtn.disabled = false;
+      if (updState === 'available') { updBtn.textContent = '下载更新'; updBtn.classList.add('primary'); }
+      else if (updState === 'downloading') { updBtn.textContent = '下载中…'; updBtn.disabled = true; }
+      else if (updState === 'downloaded') { updBtn.textContent = '重启安装'; updBtn.classList.add('primary'); }
+      else updBtn.textContent = '检查更新';
+    };
+    if (updBtn) {
+      updBtn.addEventListener('click', async () => {
+        if (updState === 'available') {
+          updState = 'downloading'; updRenderBtn(); updSetStatus('正在下载新版本…');
+          const r = await window.api.updateDownload();
+          if (!r || !r.ok) { updState = 'idle'; updRenderBtn(); updSetStatus('下载失败：' + ((r && r.reason) || '未知错误')); }
+          return;
+        }
+        if (updState === 'downloaded') { window.api.updateInstall(); return; }
+        updState = 'checking'; updRenderBtn(); updSetStatus('正在检查更新…');
+        const r = await window.api.updateCheck();
+        if (!r || !r.ok) { updState = 'idle'; updRenderBtn(); updSetStatus('检查失败：' + ((r && r.reason) || '未知错误')); }
+      });
+      window.api.onUpdateEvent((d) => {
+        if (!d || !d.type) return;
+        if (d.type === 'available') {
+          updState = 'available'; updRenderBtn();
+          const ver = (d.data && d.data.version) || '';
+          updSetStatus('发现新版本 v' + ver + ' — 点击「下载更新」');
+          toast('发现新版本 v' + ver + '，可到 设置 → 软件更新 下载');
+        } else if (d.type === 'not-available') {
+          updState = 'idle'; updRenderBtn(); updSetStatus('已是最新版本');
+        } else if (d.type === 'downloaded') {
+          updState = 'downloaded'; updRenderBtn(); updSetStatus('更新已下载完成 — 点击「重启安装」立即生效');
+        } else if (d.type === 'progress') {
+          updSetStatus('下载中… ' + ((d.data && d.data.percent) || 0) + '%');
+        } else if (d.type === 'error') {
+          updState = 'idle'; updRenderBtn(); updSetStatus('更新出错：' + ((d.data && d.data.message) || '未知错误'));
+        }
+      });
+    }
     // 默认音量（与播放条音量条联动）
     $('#stVolRange').addEventListener('input', (e) => {
       const v = +e.target.value;

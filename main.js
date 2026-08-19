@@ -12,6 +12,13 @@ const store = require('./core/store');
 const { importSonglist } = require('./core/songlist');
 const lyrics = require('./core/lyrics');
 const covers = require('./core/covers');
+// 自动更新（electron-updater，GitHub Release 源；开发模式/未配置发布源时静默降级）
+let autoUpdater = null;
+try {
+  ({ autoUpdater } = require('electron-updater'));
+  autoUpdater.autoDownload = false; // 先通知用户，再手动下载
+  autoUpdater.autoInstallOnAppQuit = true;
+} catch { autoUpdater = null; }
 
 // 数据盘探测（ready 前执行）：用户偏好数据放 D 盘（D:\MusicPlayerData，系统盘 C 不占用、
 // 重装系统不丢）；D 盘可用就用它；不可用（无 D 盘/不可写）时回退系统用户数据目录
@@ -2048,6 +2055,53 @@ function main() {
     setupShortcuts();
     if (config.lyricWin.enabled) lyricWinToggle(true);
     prefetchCovers(); // 后台批量获取曲库封面（慢速串行防限流）
+    setupAutoUpdate(); // 自动更新：启动 6 秒后静默检查，有新版本才提示
+  });
+
+  // ---------- 自动更新（electron-updater，GitHub Release 源）----------
+  function sendUpdate(type, data) {
+    if (win && !win.webContents.isLoading()) {
+      win.webContents.send('update:event', { type, data });
+    }
+  }
+  function setupAutoUpdate() {
+    if (!autoUpdater) return;
+    autoUpdater.on('checking-for-update', () => sendUpdate('checking'));
+    autoUpdater.on('update-available', (info) => sendUpdate('available', { version: (info && info.version) || '' }));
+    autoUpdater.on('update-not-available', () => sendUpdate('not-available'));
+    autoUpdater.on('download-progress', (p) => sendUpdate('progress', { percent: Math.round((p && p.percent) || 0) }));
+    autoUpdater.on('update-downloaded', () => sendUpdate('downloaded'));
+    autoUpdater.on('error', (err) => sendUpdate('error', { message: (err && err.message) || String(err) }));
+    // 启动 6 秒后静默检查（打包版才检查；开发模式 electron-updater 会报 dev-app-update.yml 缺失，忽略即可）
+    setTimeout(() => {
+      if (!app.isPackaged) return;
+      try { autoUpdater.checkForUpdates().catch(() => {}); } catch { /* 忽略 */ }
+    }, 6000);
+  }
+  ipcMain.handle('update:check', async (e) => {
+    if (!isTrusted(e)) return { ok: false, reason: '拒绝' };
+    if (!autoUpdater) return { ok: false, reason: '更新模块不可用' };
+    if (!app.isPackaged) return { ok: false, reason: '开发模式不检查更新（安装版可用）' };
+    try {
+      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('检查超时')), 30000));
+      await Promise.race([autoUpdater.checkForUpdates(), timeout]);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: (err && err.message) || String(err) };
+    }
+  });
+  ipcMain.handle('update:download', async (e) => {
+    if (!isTrusted(e) || !autoUpdater || !app.isPackaged) return { ok: false, reason: '不可用' };
+    try {
+      await autoUpdater.downloadUpdate();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: (err && err.message) || String(err) };
+    }
+  });
+  ipcMain.handle('update:install', (e) => {
+    if (!isTrusted(e) || !autoUpdater || !app.isPackaged) return;
+    try { autoUpdater.quitAndInstall(); } catch { /* 忽略 */ }
   });
 
   // 旧命名（<id>.jpg，超长路径会超 255 字符）迁移为 hash 命名

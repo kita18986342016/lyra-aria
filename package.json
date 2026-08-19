@@ -15,6 +15,7 @@
     "electron-builder": "^25.1.8"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "koffi": "^3.1.5",
     "music-metadata": "^11.14.0",
     "node-id3": "^0.2.9",
@@ -40,10 +41,27 @@
         "to": "GetTbBtn.exe"
       }
     ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "kita18986342016",
+        "repo": "lyra-aria"
+      }
+    ],
     "win": {
-      "target": "dir",
+      "target": [
+        "nsis"
+      ],
       "icon": "assets/icon-256.png",
       "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "深空折韵",
+      "artifactName": "深空折韵-Setup-${version}.exe"
     },
     "asar": true,
     "asarUnpack": [

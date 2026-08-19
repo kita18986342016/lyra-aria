@@ -32,6 +32,7 @@
           <button class="st-side-item" data-sec="timer">定时</button>
           <button class="st-side-item" data-sec="library">曲库维护</button>
           <button class="st-side-item" data-sec="download">下载</button>
+          <button class="st-side-item" data-sec="update">软件更新</button>
         </div>
         <div class="st-scroll">
           <div class="st-section" data-sec="general">
@@ -77,6 +78,11 @@
             <div class="st-row st-sub"><span class="st-tip">在线歌曲下载到此目录（含 ID3 标签/封面/同名 .lrc 歌词）；下载完成会自动加入曲库</span></div>
             <div class="st-row"><span class="st-label">同名覆盖</span><label class="st-switch"><input id="stDlOverwrite" type="checkbox"><span class="st-slider"></span></label></div>
             <div class="st-row st-sub"><span class="st-tip">开启后仅当歌名＋歌手＋时长完全一致才覆盖同名文件（用于更正错误版本）；不一致或关闭则自动加序号保留两份</span></div>
+          </div>
+          <div class="st-section" data-sec="update">
+            <div class="st-group">软件更新</div>
+            <div class="st-row"><span class="st-label">当前版本</span><span id="stUpdVer" class="st-val">v1.2.8</span><button id="stUpdCheck" class="st-action">检查更新</button></div>
+            <div class="st-row st-sub"><span id="stUpdStatus" class="st-tip">新版本从 GitHub Release 自动获取，下载完成后重启安装</span></div>
           </div>
           <div class="st-about">v1.2.8 · Lyra Aria © 2026</div>
         </div>

@@ -54,6 +54,12 @@ contextBridge.exposeInMainWorld('api', {
   saveState: (st) => ipcRenderer.invoke('player:saveState', st),
   onFlush: (cb) => ipcRenderer.on('player:flush', () => cb()),
   getConfig: () => ipcRenderer.invoke('config:get'),
+
+  // 自动更新（electron-updater）
+  updateCheck: () => ipcRenderer.invoke('update:check'),
+  updateDownload: () => ipcRenderer.invoke('update:download'),
+  updateInstall: () => ipcRenderer.invoke('update:install'),
+  onUpdateEvent: (cb) => ipcRenderer.on('update:event', (_e, d) => cb(d)),
   setVolume: (v) => ipcRenderer.invoke('config:setVolume', v),
   setBgBlur: (v) => ipcRenderer.invoke('config:setBgBlur', v),
   setAutoLaunch: (flag) => ipcRenderer.invoke('config:setAutoLaunch', flag),

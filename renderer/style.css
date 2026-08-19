@@ -982,6 +982,9 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
   transition: all .15s;
 }
 #settingsPanel .st-action:hover { background: rgba(74, 125, 255, .08); border-color: var(--accent); }
+#settingsPanel .st-action.primary { background: linear-gradient(135deg, #4a7dff, #6a5cff); border-color: transparent; color: #fff; }
+#settingsPanel .st-action.primary:hover { filter: brightness(1.07); }
+#settingsPanel .st-action:disabled { opacity: .55; cursor: default; }
 
 /* 曲库维护：曲库歌单名表（每个目录 = 侧栏曲库目录的一个歌单） */
 #stDirList { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 10px; }
