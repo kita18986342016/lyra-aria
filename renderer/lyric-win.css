@@ -1,0 +1,131 @@
+/* 歌词悬浮窗（桌面 / 任务栏）——酷狗迷你模式 */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
+body { font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; }
+
+.ic { width: 14px; height: 14px; flex-shrink: 0; }
+.hidden { display: none !important; }
+
+#stage {
+  position: absolute; inset: 6px;
+  display: flex; align-items: flex-start; justify-content: flex-start;
+  border-radius: 12px;
+  background: transparent;
+  user-select: none;
+  cursor: move;
+  overflow: hidden;
+  transition: background .2s;
+}
+/* 解锁后整个歌词窗变为浅色半透明迷你小窗（毛玻璃透出桌面）——鼠标进入才显形，移出恢复透明（只留歌词文字） */
+body:not(.locked).hover #stage {
+  inset: 8px; border-radius: 16px;
+  background: linear-gradient(160deg, rgba(255, 255, 255, .55), rgba(240, 244, 252, .6));
+  border: 1px solid rgba(120, 140, 180, .2);
+  box-shadow: 0 12px 36px rgba(30, 50, 90, .16);
+  backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
+}
+/* 当前句与下一句共用渲染基础：文字由 JS 逐字着色（唱过=蓝、未唱=绿，平滑过渡）。
+   不用 background-clip:text——Electron 43 的 Chromium 下它不可靠（text-shadow/filter 会破坏，
+   裸用也会渲染成矩形框）。阴影用 text-shadow 直接加，稳定。 */
+#text, #lineNext {
+  color: var(--lc, #bcfb89); /* 未唱绿（#text 逐字 span 会被 JS 覆盖为插值色） */
+  font-weight: 700;
+  text-shadow: 0 0 6px rgba(0, 0, 0, .45); /* 柔和投影（两行一致；stroke 开启时被下方深描边规则覆盖） */
+}
+#text {
+  max-width: 94%;
+  text-align: left;
+  font-size: 26px;
+  white-space: nowrap;
+  /* 不加 overflow:hidden——粗体字形墨迹(ink)会超出字符框 1px，裁切会吞掉最左/最右字的边缘；
+     max-width:94% 已兜底防超窗，字形溢出最多进入 14px padding 区域，安全 */
+  line-height: 1.5;
+  transition: transform .2s;
+}
+/* 两句显示：当前句（左对齐，大号）+ 下一句（右下角右对齐，小号预告）；超长句 → body.single 只显示当前句并换行完整显示 */
+#lyricWrap {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  width: 100%; /* 铺满窗口，避免 flex 内容撑开导致 #text 的 max-width 百分比相对自身内容计算（永远窄一点 → 莫名断行） */
+  max-width: 100%;
+  padding-left: 14px;
+}
+#linePrev { display: none; }
+#lineNext {
+  position: absolute; right: 20px; bottom: 12px;
+  max-width: 94%;
+  --p2: 0%; /* 永远未唱 → 与当前句未唱部分完全同色（绿底） */
+  white-space: nowrap;
+  /* 同上：不加 overflow:hidden，避免吞掉右对齐时左边溢出的字形墨迹 */
+  text-align: right;
+  transition: bottom .25s ease; /* 锁定(贴底12px)↔解锁(避让控制条46px)切换时平滑滑动，不再跳变 */
+}
+body.single #lineNext { display: none; }
+/* 解锁模式：底部有控制条，下一句上移避免被遮挡（锁定模式贴底） */
+body:not(.locked) #lineNext { bottom: 46px; }
+/* 超长句：单句 + 允许换行（不截断、无省略号）；90% 行宽（28 字内单行放得下，>30 字才提前断行） */
+body.single #text { white-space: normal; max-width: 90%; }
+/* 描边/阴影开关：body.stroke 时给当前行加暗色描边（任何壁纸上都清晰），下一句同规则 */
+body.stroke #text,
+body.stroke #lineNext {
+  text-shadow: 0 0 3px rgba(0, 0, 0, .9), 0 0 8px rgba(0, 0, 0, .55), 0 1px 2px rgba(0, 0, 0, .8);
+}
+/* 逐字卡拉OK：每字一个 span，颜色由 JS 直接设置（唱过=蓝，未唱=绿，插值过渡）——不依赖 background-clip */
+#text .w { color: var(--lc, #bcfb89); }
+
+
+/* 锁定时悬停工具条（顶部小胶囊：解除锁定，纯图标，浅色醒目） */
+#lockbar {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  display: none; z-index: 5;
+  background: rgba(255, 255, 255, .92); color: #3a4256;
+  border-radius: 16px; padding: 3px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .28);
+}
+body.hover #lockbar { display: block; }
+/* 解锁态：悬停工具条同锁定态规则（鼠标移出即隐藏，包括按钮） */
+#unlockBtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px;
+  background: none; border: none; color: #3a4256; cursor: pointer;
+  border-radius: 50%;
+}
+#unlockBtn svg { width: 15px; height: 15px; }
+#unlockBtn:hover { color: #4a7dff; background: rgba(74, 125, 255, .12); }
+
+/* 解锁后的迷你控制条（底部，融入面板）——鼠标进入才显示（opacity 过渡，避免 display 切换闪跳） */
+#ctrlbar {
+  position: absolute; left: 10px; right: 10px; bottom: 8px; z-index: 5;
+  display: flex; align-items: center; gap: 7px;
+  background: transparent; border-radius: 10px; padding: 4px 9px;
+  color: #3a4256;
+  opacity: 0; pointer-events: none;
+  transition: opacity .2s ease;
+}
+body:not(.locked).hover #ctrlbar { opacity: 1; pointer-events: auto; }
+/* 歌词文字两态统一：同字号、同位置、同卡拉OK双色（锁定=透明无框+穿透，解锁=白框+控制条） */
+#cCur, #cDur { font-size: 12px; color: #7a8398; font-variant-numeric: tabular-nums; min-width: 28px; }
+#cCur { text-align: right; }
+#cProgress { flex: 1; accent-color: #4a7dff; height: 4px; cursor: pointer; }
+#ctrlbar button {
+  background: none; border: none; color: #5a6478; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; width: 30px; height: 30px; border-radius: 8px;
+}
+#ctrlbar button:hover { color: #4a7dff; background: rgba(74, 125, 255, .12); }
+#ctrlbar button svg { width: 18px; height: 18px; }
+#ctrlbar button { position: relative; }
+#ctrlbar .mode-one {
+  position: absolute; right: -2px; top: -3px;
+  font-size: 8px; font-weight: 700; color: #4a7dff;
+  background: #fff; border-radius: 50%;
+  width: 12px; height: 12px; line-height: 12px; text-align: center;
+  box-shadow: 0 1px 2px rgba(23, 29, 46, .3);
+}
+
+/* 任务栏模式：细长条、小字号 */
+body.taskbar #stage { inset: 2px; border-radius: 8px; }
+body.taskbar #text { font-size: 15px; font-weight: 600; }
+body.taskbar #lineNext { font-size: 11px; }
+
+/* 锁定（鼠标穿透）时去掉拖动光标 */
+body.locked #stage { cursor: default; }

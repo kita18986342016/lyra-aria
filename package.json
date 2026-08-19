@@ -1,0 +1,53 @@
+{
+  "name": "lyra-aria",
+  "productName": "深空折韵",
+  "version": "1.2.8",
+  "description": "深空折韵 · Lyra Aria —— 本地音乐播放器（DSH 制作）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win dir"
+  },
+  "author": "DSH",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^43.4.0",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "koffi": "^3.1.5",
+    "music-metadata": "^11.14.0",
+    "node-id3": "^0.2.9",
+    "windows-media-sessions": "^1.0.3"
+  },
+  "build": {
+    "appId": "com.lyraaria.musicplayer",
+    "productName": "深空折韵",
+    "directories": {
+      "output": "dist"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "files": [
+      "main.js",
+      "preload.js",
+      "core/**",
+      "renderer/**",
+      "assets/**"
+    ],
+    "extraResources": [
+      {
+        "from": "GetTbBtn.exe",
+        "to": "GetTbBtn.exe"
+      }
+    ],
+    "win": {
+      "target": "dir",
+      "icon": "assets/icon-256.png",
+      "signAndEditExecutable": false
+    },
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/koffi/**/*"
+    ]
+  }
+}

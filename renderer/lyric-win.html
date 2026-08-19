@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'">
+<title>歌词</title>
+<link rel="stylesheet" href="lyric-win.css">
+</head>
+<body>
+  <div id="stage">
+    <div id="lyricWrap">
+      <div id="linePrev" class="line-neighbor"></div>
+      <div id="text">♪ 深空折韵</div>
+      <div id="lineNext" class="line-neighbor"></div>
+    </div>
+    <!-- 锁定时悬停出现的工具条：解除锁定（纯图标） -->
+    <div id="lockbar">
+      <button id="unlockBtn" title="解除锁定"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg></button>
+    </div>
+    <!-- 解锁后的迷你控制条（酷狗迷你模式） -->
+    <div id="ctrlbar">
+      <span id="cCur">0:00</span>
+      <input id="cProgress" type="range" min="0" max="1000" value="0" step="1">
+      <span id="cDur">0:00</span>
+      <button id="cPrev" title="上一首"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 6h2v12H7zM20 6l-11 6 11 6z"/></svg></button>
+      <button id="cPlay" title="播放/暂停">
+        <svg id="cIconPlay" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        <svg id="cIconPause" viewBox="0 0 24 24" fill="currentColor" class="hidden"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+      </button>
+      <button id="cNext" title="下一首"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M15 6h2v12h-2zM4 6l11 6-11 6z"/></svg></button>
+      <button id="cMode" title="播放模式"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
+    </div>
+  </div>
+  <script src="lyric-win.js"></script>
+</body>
+</html>

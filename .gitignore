@@ -1,0 +1,17 @@
+# 依赖与构建产物
+node_modules/
+dist/
+release/
+
+# 本地数据（个人歌单/曲库/缓存——数据落在 D:\MusicPlayerData 或 %APPDATA%，不入库）
+data/
+D:\MusicPlayerData/
+
+# DSH 工作区与历史归档
+.dsh/
+_archive/
+
+# 日志与杂项
+*.log
+.DS_Store
+Thumbs.db
