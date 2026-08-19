@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld('api', {
   saveState: (st) => ipcRenderer.invoke('player:saveState', st),
   onFlush: (cb) => ipcRenderer.on('player:flush', () => cb()),
   getConfig: () => ipcRenderer.invoke('config:get'),
+  appInfo: () => ipcRenderer.invoke('app:info'),
 
   // 自动更新（electron-updater）
   updateCheck: () => ipcRenderer.invoke('update:check'),

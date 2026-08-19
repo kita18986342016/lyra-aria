@@ -992,6 +992,12 @@ function main() {
     return (win && e.sender === win.webContents) || (lyricWin && e.sender === lyricWin.webContents);
   }
 
+  // 应用信息（版本号运行时读取，发版不用改页面）
+  ipcMain.handle('app:info', (e) => {
+    if (!isTrusted(e)) return null;
+    return { version: app.getVersion(), name: app.getName() };
+  });
+
   // ---------- IPC ----------
   function registerIpc() {
     ipcMain.handle('library:get', async (e) => {

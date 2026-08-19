@@ -188,6 +188,17 @@
   // ---------- 数据加载 ----------
   async function init() {
     const cfg = await window.api.getConfig();
+    // 版本号运行时读取（设置 footer + 软件更新区，发版不用改页面）
+    try {
+      const info = await window.api.appInfo();
+      if (info && info.version) {
+        const v = 'v' + info.version;
+        const about = document.querySelector('.st-about');
+        if (about) about.textContent = v + ' · Lyra Aria © 2026';
+        const stUpdVer = $('#stUpdVer');
+        if (stUpdVer) stUpdVer.textContent = v;
+      }
+    } catch { /* 忽略 */ }
     state.volume = cfg.volume ?? 0.8;
     state.mode = cfg.mode || 'order';
     audio.volume = state.volume; // 启动即同步实际音量
