@@ -12,6 +12,10 @@ const store = require('./core/store');
 const { importSonglist } = require('./core/songlist');
 const lyrics = require('./core/lyrics');
 const covers = require('./core/covers');
+
+// Windows 任务栏/通知归属：不设 AppUserModelID 时任务栏右键菜单显示 "Electron"，
+// 设为与 build.appId 一致的应用 ID（配合安装版快捷方式可正确显示「深空折韵」）
+if (process.platform === 'win32') app.setAppUserModelId('com.lyraaria.musicplayer');
 // 自动更新（electron-updater，GitHub Release 源；开发模式/未配置发布源时静默降级）
 let autoUpdater = null;
 try {
