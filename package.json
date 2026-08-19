@@ -1,7 +1,7 @@
 {
   "name": "lyra-aria",
   "productName": "深空折韵",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "深空折韵 · Lyra Aria —— 本地音乐播放器（DSH 制作）",
   "main": "main.js",
   "scripts": {
