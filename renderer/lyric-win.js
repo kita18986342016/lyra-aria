@@ -135,6 +135,9 @@
     $('#lineNext').style.fontSize = cfg.fontSize + 'px'; // 下一句与当前句同字号
     const a = Math.max(0, Math.min(1, cfg.bgOpacity));
     $('#stage').style.setProperty('--stage-a', a);
+    // 整窗透明度（设置-桌面歌词-窗口透明度，30-100%）
+    const op = cfg.opacity == null ? 1 : Math.max(0.3, Math.min(1, cfg.opacity));
+    document.body.style.opacity = String(op);
     $('#text').style.setProperty('--lc', cfg.color);
     $('#text').style.setProperty('--lc2', cfg.color2 || '#4deaff');
     $('#lineNext').style.setProperty('--lc', cfg.color);

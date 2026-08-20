@@ -28,8 +28,8 @@ contextBridge.exposeInMainWorld('api', {
   dlDir: (dir) => ipcRenderer.invoke('dl:dir', dir),
   pickDlDir: () => ipcRenderer.invoke('dl:pickDir'),
   dlOverwrite: (v) => ipcRenderer.invoke('dl:overwrite', v),
-  dlStart: (song) => ipcRenderer.invoke('dl:start', song),
-  dlBatch: (songs) => ipcRenderer.invoke('dl:batch', songs),
+  dlStart: (song, level) => ipcRenderer.invoke('dl:start', song, level),
+  dlBatch: (songs, level) => ipcRenderer.invoke('dl:batch', songs, level),
   dlCancel: (taskId) => ipcRenderer.invoke('dl:cancel', taskId),
   dlList: () => ipcRenderer.invoke('dl:list'),
   onDlProgress: (cb) => ipcRenderer.on('dl:progress', (_e, p) => cb(p)),
@@ -44,6 +44,8 @@ contextBridge.exposeInMainWorld('api', {
   getPlOrder: () => ipcRenderer.invoke('plOrder:get'),
   savePlOrder: (arr) => ipcRenderer.invoke('plOrder:save', arr),
   kugouCover: (song) => ipcRenderer.invoke('kugou:cover', song),
+  fetchCoverDataUrl: (url) => ipcRenderer.invoke('app:fetchCoverDataUrl', url),
+  coverGetOrFetch: (url) => ipcRenderer.invoke('cover:getOrFetch', url),
   getFavorites: () => ipcRenderer.invoke('favorites:get'),
   toggleFavorite: (id, song) => ipcRenderer.invoke('favorites:toggle', id, song),
   getHistory: () => ipcRenderer.invoke('history:get'),
@@ -56,6 +58,8 @@ contextBridge.exposeInMainWorld('api', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   appInfo: () => ipcRenderer.invoke('app:info'),
   appChangelog: () => ipcRenderer.invoke('app:changelog'),
+  clearCache: () => ipcRenderer.invoke('app:clearCache'),
+  pickBgImage: () => ipcRenderer.invoke('app:pickBgImage'),
 
   // 自动更新（electron-updater）
   updateCheck: () => ipcRenderer.invoke('update:check'),
@@ -78,7 +82,7 @@ contextBridge.exposeInMainWorld('api', {
   sendLyricLrc: (data) => ipcRenderer.send('lyricwin:lrc', data),
 
   // LeiZ 在线音乐（网易云/酷狗）
-  leizSearch: (source, q) => ipcRenderer.invoke('leiz:search', source, q),
+  leizSearch: (source, q, limit) => ipcRenderer.invoke('leiz:search', source, q, limit),
   leizResolve: (source, ref, level) => ipcRenderer.invoke('leiz:resolve', source, ref, level),
   leizLyrics: (source, ref, level) => ipcRenderer.invoke('leiz:lyrics', source, ref, level),
   leizPlaylist: (source, ref) => ipcRenderer.invoke('leiz:playlist', source, ref),

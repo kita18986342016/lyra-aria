@@ -7,20 +7,49 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- 方案二：窗口背景 = 当前歌曲封面铺满（模糊氛围可调，窗口内容始终含封面 → 任务栏缩略图自然显示封面） -->
-  <div id="appBg" class="hidden"><img id="appBgImg" alt=""></div>
+  <!-- 设置按钮：固定在窗口右上角（顶栏之外，详情页打开时也可见），body 直接子元素 -->
+  <button id="btnSettings" class="top-btn" title="设置"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置</button>
+
+  <!-- 中部（P7 布局重构）：nav + appMain 平排，占满顶栏与播放条之间的剩余高度 -->
+  <div id="midRow">
+  <aside id="nav">
+    <div id="sidebarLogo"><img src="../assets/icon.png" alt=""><span>深空折韵</span></div>
+    <div class="nav-group">
+      <div class="nav-item active" data-view="library"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><span>曲库</span><span class="count" id="countLib"></span></div>
+      <div class="nav-item" data-view="favorites"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span>收藏</span><span class="count" id="countFav"></span></div>
+      <div class="nav-item" data-view="history"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg><span>最近播放</span></div>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title nav-fold-title hidden" id="recentFold" title="最近听过的歌单"><svg class="ic" id="recentChevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg><span>最近听过</span><span class="count" id="recentCount"></span></div>
+      <div id="navPlRecent" class="hidden"></div>
+      <div class="nav-title nav-fold-title" id="myPlTitle"><svg class="ic" id="myPlChev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg><span>我的歌单</span></div>
+      <div id="navPlMine"></div>
+      <div class="nav-title nav-fold-title hidden" id="tempPlTitle"><svg class="ic" id="tempPlChev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg><span>临时歌单</span></div>
+      <div id="navPlTemp"></div>
+    </div>
+    <div class="nav-group">
+      <div class="nav-title nav-fold-title" id="dirsTitle"><svg class="ic" id="dirsChev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg><span>曲库目录</span></div>
+      <div id="navDirs"></div>
+    </div>
+    <div class="nav-editbar">
+      <button id="btnEditMode" title="开启后可按住歌单直接拖动排序"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="2"/><circle cx="9" cy="17" r="2"/><circle cx="17" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>编辑模式</button>
+    </div>
+  </aside>
+
+  <div id="rightCol">
+  <!-- 顶栏：只在内容区（侧栏右侧）顶部；搜索框最左，刷新按钮在搜索框右侧 -->
   <header id="topbar">
-    <div class="brand"><span class="brand-icon"><img src="../assets/icon.png" alt=""></span>深空折韵</div>
-    <div id="searchWrap">
-      <span id="searchIcon"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg></span>
+    <div id="searchWrap" class="open">
       <input id="search" type="text" placeholder="搜索歌曲 / 艺术家 / 专辑…" autocomplete="off">
       <button id="searchClear" class="hidden" title="清除"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
-      <button id="btnSearchMode" class="search-mode" title="切换本地/在线搜索（在线搜索网易云·酷狗）">在线</button>
     </div>
     <button id="btnRescan" class="top-btn icon-only" title="刷新曲库（扫描所有已添加文件夹）"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
+    <button id="btnSearchMode" class="search-mode" title="切换本地/在线搜索（在线搜索网易云·酷狗）">在线</button>
   </header>
-  <!-- 设置按钮：固定在窗口右上角（顶栏之外，详情页打开时也可见） -->
-  <button id="btnSettings" class="top-btn" title="设置"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置</button>
+
+  <div id="appMain">
+  <!-- 方案二：窗口背景 = 当前歌曲封面铺满（模糊氛围可调，窗口内容始终含封面 → 任务栏缩略图自然显示封面） -->
+  <div id="appBg" class="hidden"><img id="appBgImg" alt=""></div>
   <div id="settingsOverlay" class="hidden">
     <div id="settingsPanel">
       <div class="st-head"><span>设置</span><button id="stClose"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
@@ -28,10 +57,14 @@
         <div class="st-side">
           <button class="st-side-item active" data-sec="general">常规</button>
           <button class="st-side-item" data-sec="appearance">外观</button>
+          <button class="st-side-item" data-sec="search">搜索</button>
+          <button class="st-side-item" data-sec="lyric">歌词</button>
           <button class="st-side-item" data-sec="desklyric">桌面歌词</button>
           <button class="st-side-item" data-sec="timer">定时</button>
           <button class="st-side-item" data-sec="library">曲库维护</button>
           <button class="st-side-item" data-sec="download">下载</button>
+          <button class="st-side-item" data-sec="quality">音质</button>
+          <button class="st-side-item" data-sec="help">帮助</button>
           <button class="st-side-item" data-sec="update">软件更新</button>
         </div>
         <div class="st-scroll">
@@ -42,18 +75,36 @@
             <div class="st-row st-row-sw"><span class="st-label">启动恢复</span><label class="st-switch"><input type="checkbox" id="stResume" checked><span class="st-slider"></span></label></div>
             <div class="st-row st-row-sw"><span class="st-label">开机自启</span><label class="st-switch"><input type="checkbox" id="stAutoLaunch"><span class="st-slider"></span></label></div>
             <div class="st-row"><span class="st-label">关闭窗口时</span><div class="st-modes" id="stCloseModes"><button class="st-mode" data-close="tray">最小化到托盘</button><button class="st-mode" data-close="exit">退出程序</button></div></div>
+            <div class="st-row"><span class="st-label">清除缓存</span><button id="stCacheClear" class="st-action">清除缓存…</button></div>
+            <div class="st-row st-sub"><span class="st-tip">清除封面缩略图等临时缓存数据（不影响曲库与收藏）</span></div>
           </div>
           <div class="st-section" data-sec="appearance">
             <div class="st-group">外观</div>
+            <div class="st-row"><span class="st-label">主题</span><div class="st-modes" id="stTheme"><button class="st-mode" data-theme="light">浅色</button><button class="st-mode" data-theme="dark">深色</button></div></div>
+            <div class="st-row"><span class="st-label">强调色</span><div class="st-accent" id="stAccent"><button data-accent="blue" title="星蓝"></button><button data-accent="purple" title="暮紫"></button><button data-accent="green" title="翡翠"></button><button data-accent="orange" title="暖橙"></button><button data-accent="pink" title="樱粉"></button><button data-accent="coral" title="珊瑚"></button></div></div>
+            <div class="st-row"><span class="st-label">背景</span><div class="st-modes" id="stBgMode"><button class="st-mode" data-bg="solid">纯色</button><button class="st-mode" data-bg="cover">封面氛围</button><button class="st-mode" data-bg="custom">自定义图片</button></div></div>
+            <div class="st-row"><span class="st-label">背景强度</span><input type="range" id="stBgStrength" min="0" max="100" step="1" value="60"><span id="stBgStrengthVal" class="st-val"></span></div>
+            <div class="st-row st-sub"><span class="st-tip">封面氛围模糊/压暗强度</span></div>
+            <div class="st-row"><span class="st-label">进度样式</span><div class="st-modes" id="stProgressStyle"><button class="st-mode" data-progress="A">滑块式</button><button class="st-mode" data-progress="B">上边界细条</button></div></div>
             <div class="st-row"><span class="st-label">背景模糊</span><input type="range" id="bgBlurRange" min="0" max="60" step="0.5" value="0"><span id="bgBlurVal" class="st-val"></span></div>
+          </div>
+          <div class="st-section" data-sec="search">
+            <div class="st-group">搜索</div>
+            <div class="st-row"><span class="st-label">网易云条数</span><input type="number" id="stSearchNetease" min="5" max="100" step="5" value="30"></div>
+            <div class="st-row"><span class="st-label">酷狗条数</span><input type="number" id="stSearchKugou" min="5" max="100" step="5" value="30"></div>
+            <div class="st-row st-sub"><span class="st-tip">每源条数，显示更多可到 100</span></div>
+          </div>
+          <div class="st-section" data-sec="lyric">
+            <div class="st-group">歌词</div>
             <div class="st-row"><span class="st-label">歌词字号</span><input type="range" id="stFs" min="11" max="20" step="1" value="17"><span id="stFsVal" class="st-val"></span></div>
             <div class="st-row st-row-sw"><span class="st-label">歌词翻译</span><label class="st-switch"><input type="checkbox" id="stLyrTrans" checked><span class="st-slider"></span></label></div>
+            <div class="st-row"><span class="st-label">详情页未唱歌词颜色</span><label class="st-color-swatch"><span class="st-swatch" id="stDetailUnsungSwatch" title="选择颜色"></span><input type="color" id="stDetailUnsungColor" value="#bcfb89" title="选择颜色"></label></div>
           </div>
           <div class="st-section" data-sec="desklyric">
             <div class="st-group">桌面歌词</div>
             <div class="st-row st-row-sw"><span class="st-label">显示</span><label class="st-switch"><input type="checkbox" id="stLyric"><span class="st-slider"></span></label></div>
             <div class="st-row"><span class="st-label">字号</span><input type="range" id="stLyrFs" min="14" max="36" step="1" value="26"><span id="stLyrFsVal" class="st-val"></span></div>
-            <div class="st-row"><span class="st-label">透明度</span><input type="range" id="stLyrOp" min="30" max="100" step="1" value="55"><span id="stLyrOpVal" class="st-val"></span></div>
+            <div class="st-row"><span class="st-label">窗口透明度</span><input type="range" id="stLyrOp" min="30" max="100" step="1" value="55"><span id="stLyrOpVal" class="st-val"></span></div>
             <div class="st-row"><span class="st-label">已唱颜色</span><input type="color" id="stLyrColor2" value="#4deaff" title="已播放歌词颜色"></div>
             <div class="st-row"><span class="st-label">未唱颜色</span><input type="color" id="stLyrColor" value="#bcfb89" title="未播放歌词颜色"></div>
           </div>
@@ -64,7 +115,8 @@
             <div class="st-tip st-tip-sleep" id="stSleepTip">到点自动暂停播放</div>
           </div>
           <div class="st-section" data-sec="library">
-            <div class="st-group">曲库维护</div>
+            <div class="st-group">曲库维护 <button id="libHelpBtn" class="st-help-btn" title="曲库教学">?</button></div>
+            <div class="st-row"><span class="st-label">添加文件夹</span><button id="btnAddDir" class="st-action">添加文件夹…</button></div>
             <div class="st-row"><span class="st-label">曲库目录</span></div>
             <div id="stDirList"></div>
             <div class="st-row st-sub"><span class="st-tip">每个目录对应主窗口侧栏「曲库目录」中的一个歌单；可在此浏览、移除或打开文件夹</span></div>
@@ -78,6 +130,34 @@
             <div class="st-row st-sub"><span class="st-tip">在线歌曲下载到此目录（含 ID3 标签/封面/同名 .lrc 歌词）；下载完成会自动加入曲库</span></div>
             <div class="st-row"><span class="st-label">同名覆盖</span><label class="st-switch"><input id="stDlOverwrite" type="checkbox"><span class="st-slider"></span></label></div>
             <div class="st-row st-sub"><span class="st-tip">开启后仅当歌名＋歌手＋时长完全一致才覆盖同名文件（用于更正错误版本）；不一致或关闭则自动加序号保留两份</span></div>
+          </div>
+          <div class="st-section" data-sec="quality">
+            <div class="st-group">音质</div>
+            <div class="st-row"><span class="st-label">在线播放音质</span><div class="st-modes" id="stOnlineQuality"><button class="st-mode" data-q="standard">标准 128kbps</button><button class="st-mode active" data-q="high">高品 320kbps</button><button class="st-mode" data-q="lossless">无损 FLAC</button></div></div>
+            <div class="st-row st-sub"><span class="st-tip">在线试听与播放时请求的音质档位（视歌曲本身是否提供而定）</span></div>
+            <div class="st-row"><span class="st-label">下载音质</span><div class="st-modes" id="stDlQuality3"><button class="st-mode" data-q="standard">标准 128kbps</button><button class="st-mode" data-q="high">高品 320kbps</button><button class="st-mode active" data-q="lossless">无损 FLAC</button></div></div>
+            <div class="st-row st-sub"><span class="st-tip">批量/单曲下载时下载到本地的音质，默认无损</span></div>
+          </div>
+          <div class="st-section" data-sec="help">
+            <div class="st-group">帮助</div>
+            <div class="st-help-sec"><b>基本操作</b>
+              <p>点击播放条左下角封面可打开歌曲详情，底部控制条支持上一首/播放暂停/下一首与倍速/音量调整。</p>
+              <p>右侧「歌词」旁可切换桌面歌词与任务栏歌词；点击歌曲行的心形收藏。</p>
+            </div>
+            <div class="st-help-sec"><b>搜索与在线</b>
+              <p>顶栏搜索框支持本地搜索与在线(网易云/酷狗)搜索；点击筛选漏斗可精细过滤下载状态、来源与音质。</p>
+              <p>在线搜索回车触发，结果可一键下载或加入歌单。</p>
+            </div>
+            <div class="st-help-sec"><b>歌单与批量</b>
+              <p>左侧「我的歌单」支持新建/导入/重命名/右键管理；拖拽可排序。</p>
+              <p>列表顶部「批量」进入批量模式，可一次播放/收藏/下载/删除/加入歌单。</p>
+            </div>
+            <div class="st-help-sec"><b>外观</b>
+              <p>设置内的主题、强调色、背景氛围与背景强度可实时预览。</p>
+            </div>
+            <div class="st-help-sec"><b>更新</b>
+              <p>新版本启动时自动提示，更新公告小窗可关闭；也可在「软件更新」页手动检查。</p>
+            </div>
           </div>
           <div class="st-section" data-sec="update">
             <div class="st-group">软件更新</div>
@@ -131,15 +211,10 @@
 
   <div id="oplImportOverlay" class="hidden">
     <div id="oplImportPanel">
-      <div class="st-head"><span>导入歌单</span><button id="oplImportClose"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+      <div class="st-head"><span>导入歌单</span><span class="opl-head-right"><button id="oplHelpBtn" class="st-help-btn" title="导入帮助">?</button><button id="oplImportClose"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></span></div>
       <div class="opl-body">
-        <div class="opl-tip">粘贴歌单链接或 ID，回车或点「导入」：</div>
-        <div class="opl-eg">
-          <div><b>网易云</b>：<code>music.163.com/#/playlist?id=…</code> 或纯数字 ID</div>
-          <div><b>酷狗</b>：<code>m.kugou.com/plist/list/数字</code>、纯数字 ID，或 <code>t1.kugou.com/…</code> 分享短链（自动解析歌单歌曲）</div>
-        </div>
+        <div class="opl-tip">支持 网易云 和 酷狗 歌单一键导入：</div>
         <input id="oplImportInput" type="text" placeholder="粘贴歌单链接、分享短链或 ID…" spellcheck="false">
-        <div class="opl-warn">酷狗 gcid_ 链接因服务商上游故障暂无法解析；网页版歌单可复制地址栏 <code>m.kugou.com/plist/list/数字</code> 链接</div>
       </div>
       <div class="opl-foot">
         <button id="oplImportCancel" class="tag-btn">取消</button>
@@ -181,38 +256,32 @@
   </div>
 
   <div id="main">
-    <aside id="nav">
-      <div class="nav-group">
-        <div class="nav-item active" data-view="library"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><span>曲库</span><span class="count" id="countLib"></span></div>
-        <div class="nav-item" data-view="favorites"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span>收藏</span><span class="count" id="countFav"></span></div>
-        <div class="nav-item" data-view="history"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg><span>最近播放</span></div>
-      </div>
-      <div class="nav-group">
-        <div class="nav-title nav-fold-title hidden" id="recentFold" title="最近听过的歌单"><svg class="ic" id="recentChevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg><span>最近听过</span><span class="count" id="recentCount"></span></div>
-        <div id="navPlRecent" class="hidden"></div>
-        <div class="nav-title nav-fold-title" id="myPlTitle"><svg class="ic" id="myPlChev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg><span>我的歌单</span></div>
-        <div id="navPlMine"></div>
-        <div class="nav-title nav-fold-title hidden" id="tempPlTitle"><svg class="ic" id="tempPlChev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg><span>临时歌单</span></div>
-        <div id="navPlTemp"></div>
-      </div>
-      <div class="nav-group">
-        <div class="nav-title nav-fold-title" id="dirsTitle"><svg class="ic" id="dirsChev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg><span>曲库目录</span></div>
-        <div id="navDirs"></div>
-      </div>
-      <div class="nav-editbar">
-        <button id="btnEditMode" title="开启后可按住歌单直接拖动排序"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="2"/><circle cx="9" cy="17" r="2"/><circle cx="17" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>编辑模式</button>
-      </div>
-    </aside>
-
     <section id="content">
       <div id="viewHead">
         <div id="viewTitle"><span id="viewTitleText">曲库</span><span id="viewCount" class="hidden"></span></div>
+        <div id="plSearchWrap" class="hidden"><input id="plSearchInput" type="text" placeholder="歌单内搜索…" autocomplete="off"></div>
+        <div id="filterWrap">
+          <button id="filterBtn" class="filter-btn" title="筛选（下载状态 / 来源 / 音质）"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54z"/></svg></button>
+          <div id="filterPopup">
+            <div class="fp-group"><span class="fp-label">下载</span><div class="fp-row" id="fpDl"><button data-dl="all" class="active">全部</button><button data-dl="down">已下载</button><button data-dl="undown">未下载</button></div></div>
+            <div class="fp-group"><span class="fp-label">来源</span><div class="fp-row" id="fpSrc"><button data-src="all" class="active">全部</button><button data-src="netease">网易云</button><button data-src="kugou">酷狗</button><button data-src="local">曲库</button></div></div>
+            <div class="fp-group" id="fpQGroup"><span class="fp-label">音质</span><div class="fp-row" id="fpQ"><button data-q="all" class="active">全部</button><button data-q="standard">标准</button><button data-q="high">高品</button><button data-q="lossless">无损</button></div></div>
+            <div class="fp-foot"><button id="fpOk">确定</button></div>
+          </div>
+        </div>
+        <button id="btnBatch" class="hidden" title="进入批量操作模式">批量</button>
         <button id="viewPlayAll" class="hidden" title="播放当前列表全部歌曲"><span class="play-circle"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86a1 1 0 0 0-1.5.86z"/></svg></span>全部播放</button>
         <button id="viewSwitch" title="切换列表/封面墙"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
       </div>
       <div id="scanBar" class="hidden"><div id="scanText">正在扫描曲库…</div><div id="scanProgress"><div id="scanFill"></div></div></div>
+      <div id="loadingView" class="hidden"><div id="loadingSpinner"></div><div id="loadingText">正在加载…</div><div id="srcStatus"></div></div>
       <div id="tableWrap">
-        <div id="onlineBar" class="hidden"><span id="onlineBarText">在线搜索结果</span><button id="oplDlAll" class="hidden" title="下载歌单全部歌曲到本地"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>一键下载全部</button><button id="btnOnlineClose" title="返回本地曲库"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+        <div id="onlineBar" class="hidden">
+          <span id="onlineBarText">在线搜索结果</span>
+          <div id="srcSplit"><button data-src="all" class="active">全部</button><button data-src="netease">网易云</button><button data-src="kugou">酷狗</button></div>
+          <button id="oplDlAll" class="hidden" title="下载歌单全部歌曲到本地"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>一键下载全部</button>
+          <button id="btnOnlineClose" title="返回本地曲库"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>返回</button>
+        </div>
         <table id="songTable">
           <thead>
             <tr><th class="c-cover"></th><th class="c-title">标题</th><th class="c-artist">艺术家</th><th class="c-album">专辑</th><th class="c-dur">时长</th><th class="c-dl"></th><th class="c-fav"></th></tr>
@@ -220,6 +289,7 @@
           <tbody id="songBody"></tbody>
         </table>
       </div>
+      <div id="showMoreWrap" class="hidden"><button id="showMoreBtn">显示更多歌曲</button></div>
       <div id="gridBody" class="hidden"></div>
       <div id="empty" class="hidden"></div>
     </section>
@@ -257,35 +327,6 @@
       <div id="queueList"></div>
     </aside>
   </div>
-
-  <footer id="player">
-    <div id="pCover" title="查看歌曲详情"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg><img id="pCoverImg" class="hidden" alt=""></div>
-    <div id="pInfo"><div id="pTitle">未播放</div><div id="pArtist"></div></div>
-    <div id="pControls">
-      <button id="btnPrev" title="上一首">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 6h2v12H7zM20 6l-11 6 11 6z"/></svg>
-      </button>
-      <button id="btnPlay" title="播放/暂停">
-        <svg id="iconPlay" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-        <svg id="iconPause" viewBox="0 0 24 24" fill="currentColor" class="hidden"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
-      </button>
-      <button id="btnNext" title="下一首">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15 6h2v12h-2zM4 6l11 6-11 6z"/></svg>
-      </button>
-    </div>
-    <div id="pProgress">
-      <span id="pCur">0:00</span>
-      <input id="pRange" type="range" min="0" max="1000" value="0" step="1">
-      <span id="pDur">0:00</span>
-    </div>
-    <div id="pRight">
-      <button id="btnRate" title="播放速度">1.0x</button>
-      <button id="btnMode" title="播放模式"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
-      <button id="btnQueue" title="播放队列"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg><span id="queueBadge" class="hidden"></span></button>
-      <button id="btnLyric" title="歌词"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/></svg></button>
-      <input id="pVol" type="range" min="0" max="100" value="80" title="音量">
-    </div>
-  </footer>
 
   <div id="contextMenu" class="hidden"></div>
   <div id="toast"></div>
@@ -332,6 +373,69 @@
       </div>
     </div>
   </section>
+
+  <!-- 软件更新卡片（右下角持久卡片，默认隐藏） -->
+  <div id="updateCard" class="hidden">
+    <div class="update-head"><span id="updateCardTitle">软件更新</span><button id="updateCardClose" title="关闭">✕</button></div>
+    <div id="updateCardNotes"></div>
+    <div id="updateCardStatus"></div>
+    <div id="updateProgressWrap" class="hidden"><div id="updateProgress"></div></div>
+    <button id="updateBtn">检查更新</button>
+  </div>
+
+  <!-- 批量操作条（列表批量模式，默认隐藏） -->
+  <div id="batchBar" class="hidden">
+    <span id="batchCount"></span>
+    <button id="batchPlay">播放</button>
+    <button id="batchFav">收藏</button>
+    <button id="batchDl">下载</button>
+    <button id="batchDel">删除</button>
+    <button id="batchAddPl">加入歌单</button>
+    <button id="batchClose" title="退出批量模式">✕</button>
+  </div>
+
+  <!-- 下载弹窗（选择目录与音质，默认隐藏） -->
+  <div id="dlDialog" class="hidden">
+    <div id="dlDialogPanel">
+      <div class="dl-dialog-title">下载歌曲</div>
+      <div class="dl-dialog-row"><span class="dl-dialog-label">目录</span><span id="dlDialogDir"></span><button id="dlDialogPick">浏览…</button></div>
+      <div class="dl-dialog-row"><span class="dl-dialog-label">音质</span><div id="dlDialogQuality"><button data-q="standard">标准 128kbps</button><button data-q="high">高品 320kbps</button><button data-q="lossless">无损 FLAC</button></div></div>
+      <div class="dl-dialog-foot"><button id="dlDialogCancel">取消</button><button id="dlDialogOk" class="primary">确定</button></div>
+    </div>
+  </div>
+
+  </div><!-- /#appMain -->
+  </div><!-- /#rightCol -->
+  </div><!-- /#midRow -->
+
+  <footer id="player">
+    <div id="pCover" title="查看歌曲详情"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg><img id="pCoverImg" class="hidden" alt=""><button id="pFav" title="收藏"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button></div>
+    <div id="pInfo"><div id="pTitle">未播放</div><div id="pArtist"></div><div class="p-meta"><span id="pSource" class="hidden"></span><span id="pQuality" class="hidden"></span></div></div>
+    <div id="pControls">
+      <button id="btnPrev" title="上一首">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 5v14"/><path d="M18 6.5l-7 5.5 7 5.5z"/></svg>
+      </button>
+      <button id="btnPlay" title="播放/暂停">
+        <svg id="iconPlay" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5.5v13a.6.6 0 0 0 .9.5l10.2-6.5a.6.6 0 0 0 0-1L8.9 5A.6.6 0 0 0 8 5.5z"/></svg>
+        <svg id="iconPause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" class="hidden"><path d="M9 5v14"/><path d="M15 5v14"/></svg>
+      </button>
+      <button id="btnNext" title="下一首">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 5v14"/><path d="M6 6.5l7 5.5-7 5.5z"/></svg>
+      </button>
+    </div>
+    <div id="pProgress">
+      <span id="pCur">0:00</span>
+      <input id="pRange" type="range" min="0" max="1000" value="0" step="1">
+      <span id="pDur">0:00</span>
+    </div>
+    <div id="pRight">
+      <button id="btnRate" title="播放速度">1.0x</button>
+      <button id="btnMode" title="播放模式"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
+      <button id="btnQueue" title="播放队列"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg><span id="queueBadge" class="hidden"></span></button>
+      <button id="btnLyric" title="歌词"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/></svg></button>
+      <input id="pVol" type="range" min="0" max="100" value="80" title="音量">
+    </div>
+  </footer>
 
   <script src="app.js"></script>
 </body>

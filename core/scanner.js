@@ -38,11 +38,14 @@ async function readMeta(file) {
   try {
     const mm = await parseFile(file, { duration: true });
     const c = mm.common;
+    const f = mm.format || {};
     return {
       title: c.title || fb.title,
       artist: c.artist || fb.artist,
       album: c.album || '',
-      duration: Math.round(mm.format.duration || 0),
+      duration: Math.round(f.duration || 0),
+      bitrate: Math.round(f.bitrate || 0),       // 音质标签来源（bps）
+      container: String(f.container || '').toUpperCase(), // FLAC/MPEG/...（无损判定）
       hasCover: !!(c.picture && c.picture.length),
       hasLyrics: !!(c.lyrics && c.lyrics.length)
     };
@@ -52,6 +55,8 @@ async function readMeta(file) {
       artist: fb.artist,
       album: '',
       duration: 0,
+      bitrate: 0,
+      container: '',
       hasCover: false,
       hasLyrics: false
     };
@@ -75,6 +80,8 @@ async function scanLibrary(dirs, onProgress) {
         artist: meta.artist,
         album: meta.album,
         duration: meta.duration,
+        bitrate: meta.bitrate,
+        container: meta.container,
         hasCover: meta.hasCover,
         hasLyrics: meta.hasLyrics
       });

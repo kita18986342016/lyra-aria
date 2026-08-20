@@ -1,5 +1,5 @@
 // 深空折韵 主进程（v2：单实例/IPC 校验/调和/缓存/媒体会话支持）
-const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, dialog, nativeImage, shell, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, dialog, nativeImage, shell, session, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -53,6 +53,14 @@ app.setAppUserModelId('com.lyraaria.musicplayer');
 // 启用 Chromium 系统媒体会话集成：Win11 任务栏全局媒体浮出（Edge 同款机制）依赖
 // GlobalMediaControls/MediaSessionService 特性——Electron 默认可能禁用（此前 hover 无浮出的关键疑点）
 try { app.commandLine.appendSwitch('enable-features', 'GlobalMediaControls,MediaSessionService'); } catch {}
+
+// 缩略图调试日志开关：生产默认关闭（环境变量 DSH_THUMB_LOG=1 可开）；_thumb.log 不再无限增长
+const THUMB_DEBUG = !!process.env.DSH_THUMB_LOG;
+const _origAppendFileSync = fs.appendFileSync.bind(fs);
+fs.appendFileSync = (f, ...rest) => {
+  if (!THUMB_DEBUG && String(f).includes('_thumb.log')) return;
+  return _origAppendFileSync(f, ...rest);
+};
 
 // ---- 任务栏缩略图：封面原生注入（Hermes 方案：HAS_ICONIC_BITMAP + WM_DWMSENDICONICTHUMBNAIL 0x0323 响应式）----
 // DwmSetIconicThumbnail 是响应式 API：只能在收到 0x0323 消息的处理器里调用（主动调恒 E_INVALIDARG——已实测）
@@ -550,12 +558,12 @@ function main() {
   const DEFAULT_DIRS = [];
   // 酷狗歌单映射文件：位于数据根（别人放一份同名文件也能用；不存在则跳过）
   const SONGLIST_FILE = path.join(dataRoot(), 'songlist.json');
-  const LYRIC_DEFAULTS = { enabled: false, mode: 'desktop', fontSize: 26, color: '#bcfb89', color2: '#4deaff', bgOpacity: 0.55, locked: false, pos: null, lockedSize: { width: 840, height: 160 } };
+  const LYRIC_DEFAULTS = { enabled: false, mode: 'desktop', fontSize: 26, color: '#bcfb89', color2: '#4deaff', bgOpacity: 0.55, opacity: 1, locked: false, pos: null, lockedSize: { width: 840, height: 160 } };
 
   let win = null;
   let tray = null;
   let library = store.load('library.json', { songs: [], scannedAt: 0 });
-  let config = store.load('config.json', { dirs: DEFAULT_DIRS, volume: 0.8, mode: 'order', lyricWin: LYRIC_DEFAULTS, bgBlur: 0, autoLaunch: false, closeBehavior: 'tray', downloadOverwrite: false });
+  let config = store.load('config.json', { dirs: DEFAULT_DIRS, volume: 0.8, mode: 'order', lyricWin: LYRIC_DEFAULTS, bgBlur: 0, autoLaunch: false, closeBehavior: 'tray', downloadOverwrite: false, defaultPlSeeded: false });
   config.autoLaunch = app.getLoginItemSettings().openAtLogin; // 开机自启实际状态
   config.lyricWin = { ...LYRIC_DEFAULTS, ...(config.lyricWin || {}) };
   const songIndex = new Map(); // id -> song（O(1) 查找）
@@ -978,13 +986,16 @@ function main() {
     return songIndex.get(id) || null;
   }
 
-  // 首次启动：若无歌单则导入 songlist.json（过滤本地缺失）
+  // 首次启动：若无歌单则导入 songlist.json（过滤本地缺失）。
+  // defaultPlSeeded 守卫：用户删除该歌单后不再重新播种（v1.3.6b 起系统歌单可删）
   function ensureDefaultPlaylist() {
     const pls = store.load('playlists.json', []);
-    if (pls.length === 0 && library.songs.length > 0) {
+    if (!config.defaultPlSeeded && pls.length === 0 && library.songs.length > 0) {
       const imp = importSonglist(SONGLIST_FILE, library.songs);
       if (imp.ok) {
         store.save('playlists.json', [{ id: 'default', name: '酷狗歌单', songIds: imp.matched, system: true }]);
+        config.defaultPlSeeded = true;
+        store.save('config.json', config);
         return { imported: imp.matched.length, missing: imp.missing };
       }
     }
@@ -1335,10 +1346,12 @@ function main() {
       });
     }
     async function dlResolveUrl(song) {
-      // 返回 { url, ext }；网易云 higher / 酷狗 128，保证 mp3
+      // 返回 { url, ext }；质量按 song.level（netease: higher/lossless；kugou: 320/lossless），
+      // 未指定时默认 网易云 higher / 酷狗 128（保证 mp3）
+      const lv = (song && song.level) || '';
       const qs = song.source === 'kugou'
-        ? '/kugou?hash=' + encodeURIComponent(song.ref)
-        : '/netease?id=' + encodeURIComponent(song.ref) + '&level=higher';
+        ? '/kugou?hash=' + encodeURIComponent(song.ref) + (lv ? '&level=' + encodeURIComponent(lv) : '')
+        : '/netease?id=' + encodeURIComponent(song.ref) + '&level=' + encodeURIComponent(lv || 'higher');
       const r = await leizGet(qs);
       const d = r && r.data ? r.data : null;
       const url = d && (d.url || d.src) ? (d.url || d.src) : null;
@@ -1517,17 +1530,21 @@ function main() {
       store.save('config.json', config);
       return config.downloadOverwrite;
     });
-    ipcMain.handle('dl:start', (e, song) => {
+    ipcMain.handle('dl:start', (e, song, level) => {
       if (!isTrusted(e) || !song || typeof song !== 'object') return { ok: false, reason: '参数错误' };
       if (!['netease', 'kugou'].includes(song.source) || !song.ref || !song.title) return { ok: false, reason: '歌曲信息不完整' };
-      const taskId = dlEnqueue(song);
+      const s2 = typeof level === 'string' && level ? Object.assign({}, song, { level }) : song;
+      const taskId = dlEnqueue(s2);
       return { ok: true, taskId, dir: dlDir() };
     });
-    ipcMain.handle('dl:batch', (e, songs) => {
+    ipcMain.handle('dl:batch', (e, songs, level) => {
       if (!isTrusted(e) || !Array.isArray(songs)) return { ok: false, reason: '参数错误' };
       const ids = [];
       for (const s of songs.slice(0, 50)) {
-        if (s && ['netease', 'kugou'].includes(s.source) && s.ref && s.title) ids.push(dlEnqueue(s));
+        if (s && ['netease', 'kugou'].includes(s.source) && s.ref && s.title) {
+          const s2 = typeof level === 'string' && level ? Object.assign({}, s, { level }) : s;
+          ids.push(dlEnqueue(s2));
+        }
       }
       return { ok: true, count: ids.length, ids, dir: dlDir() };
     });
@@ -1568,7 +1585,6 @@ function main() {
         const set = new Set(pl.songIds.map(keyOf).filter(Boolean));
         for (const id of songIds) {
           if (!id) continue;
-          if (pl.songIds.length >= 500) break; // 歌单上限 500 首
           const k = keyOf(id);
           if (k === null || set.has(k)) continue;
           pl.songIds.push(id);
@@ -1643,7 +1659,7 @@ function main() {
       let hist = store.load('history.json', []);
       hist = hist.filter((x) => x.id !== id);
       hist.unshift({ id, at: Date.now() });
-      store.save('history.json', hist.slice(0, 100)); // 最近播放上限 100
+      store.save('history.json', hist.slice(0, 200)); // 最近播放上限 200
       return hist;
     });
 
@@ -1726,6 +1742,7 @@ function main() {
       if (typeof patch.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(patch.color)) lc.color = patch.color;
       if (typeof patch.color2 === 'string' && /^#[0-9a-fA-F]{6}$/.test(patch.color2)) lc.color2 = patch.color2;
       if (typeof patch.bgOpacity === 'number') lc.bgOpacity = Math.min(1, Math.max(0, patch.bgOpacity));
+      if (typeof patch.opacity === 'number') lc.opacity = Math.min(1, Math.max(0.3, patch.opacity)); // 整窗透明度（设置-桌面歌词-窗口透明度）
       if (typeof patch.locked === 'boolean') lc.locked = patch.locked;
       if (typeof patch.stroke === 'boolean') lc.stroke = patch.stroke;
       if (patch.enabled !== undefined) lc.enabled = !!patch.enabled;
@@ -1786,9 +1803,11 @@ function main() {
         req.setTimeout(20000, () => { req.destroy(); resolve({ ok: false, status: 0, message: '请求超时' }); });
       });
     }
-    ipcMain.handle('leiz:search', async (e, source, query) => {
+    ipcMain.handle('leiz:search', async (e, source, query, limit) => {
       if (!isTrusted(e) || !['netease', 'kugou'].includes(source) || typeof query !== 'string' || !query.trim()) return { ok: false, reason: '参数错误' };
-      const r = await leizGet('/' + source + '/search?q=' + encodeURIComponent(query.trim()));
+      // limit：每源条数（5~100，默认 30）——LeiZ 支持 limit 参数（page/offset 无效）
+      const lmt = Number.isFinite(Number(limit)) ? Math.min(100, Math.max(5, Math.round(Number(limit)))) : 30;
+      const r = await leizGet('/' + source + '/search?q=' + encodeURIComponent(query.trim()) + '&limit=' + lmt);
       return r.ok ? { ok: true, data: r.data } : { ok: false, reason: r.message || ('HTTP ' + r.status) };
     });
     // ref: 网易云=song id；酷狗=分享链接或 hash（url/hash/id 三选一，推荐 url）
@@ -2024,6 +2043,55 @@ function main() {
       kugouCoverCache.set(key, p);
       return p;
     });
+    // v1.3.6b：在线封面抓取（带 Referer → dataURL），供直链失败兜底 + 磁盘缓存共用
+    async function fetchCoverDataUrlImpl(url) {
+      if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return null;
+      let host = '';
+      try { host = new URL(url).host; } catch { return null; }
+      const referer = /(music\.163\.com|music\.126\.net)/i.test(host) ? 'http://music.163.com/'
+        : /(kugou|kgimg)/i.test(host) ? 'https://www.kugou.com/' : '';
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 8000);
+      try {
+        const r = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+            ...(referer ? { Referer: referer } : {})
+          },
+          signal: ctl.signal
+        });
+        if (!r.ok) return null;
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (!buf.length || buf.length > 5 * 1024 * 1024) return null;
+        const ct = (r.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        const mime = /^image\/(png|jpe?g|webp|gif|bmp)$/i.test(ct) ? ct
+          : (/\.png$/i.test(url) ? 'image/png' : (/\.webp$/i.test(url) ? 'image/webp' : 'image/jpeg'));
+        return 'data:' + mime + ';base64,' + buf.toString('base64');
+      } catch { return null; } finally { clearTimeout(timer); }
+    }
+    // 在线封面磁盘缓存：cover-remote/<url哈希>.txt 存 dataURL；命中直接读，未命中联网抓取并落盘
+    function remoteCoverFile(url) {
+      return path.join(dataRoot(), 'cover-remote', crypto.createHash('sha256').update(url).digest('hex').slice(0, 32) + '.txt');
+    }
+    ipcMain.handle('cover:getOrFetch', async (e, url) => {
+      if (!isTrusted(e) || typeof url !== 'string' || !/^https?:\/\//i.test(url)) return { ok: false };
+      const file = remoteCoverFile(url);
+      try {
+        const cached = fs.readFileSync(file, 'utf8');
+        if (cached && cached.startsWith('data:image/')) return { ok: true, dataUrl: cached, cached: true };
+      } catch { /* 未命中 */ }
+      const dataUrl = await fetchCoverDataUrlImpl(url);
+      if (!dataUrl) return { ok: false };
+      try {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, dataUrl, 'utf8');
+      } catch { /* 落盘失败不致命 */ }
+      return { ok: true, dataUrl, cached: false };
+    });
+    ipcMain.handle('app:fetchCoverDataUrl', async (e, url) => {
+      if (!isTrusted(e)) return null;
+      return await fetchCoverDataUrlImpl(url);
+    });
     ipcMain.on('lyricwin:play', (e, st) => {
       if (!isTrusted(e)) return;
       if (lyricWin && !lyricWin.isDestroyed()) lyricWin.webContents.send('lyricwin:play', st);
@@ -2160,6 +2228,7 @@ function main() {
 
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null); // 移除默认菜单栏（File/Edit/View/Window）
+    try { session.defaultSession.setCacheSize(200 * 1024 * 1024); } catch {} // 磁盘缓存上限 200MB（防 D 盘堆到 300MB+）
     await ensureLibrary();
     // 下载目录直接纳入曲库（不等待首次下载）；首次纳入时全量刷新以索引其歌曲
     if (ensureDlDirInConfig()) await rescanLibrary();
@@ -2178,6 +2247,15 @@ function main() {
   // ---------- 自动更新（electron-updater，GitHub Release 源）----------
   // 更新公告表：版本号 → 更新内容列表（新版本首次启动展示，须随发版同步维护）
   const CHANGELOG = {
+    '1.3.6': [
+      '全新界面：浅色/深色主题 + 6 款强调色 + 自定义背景图；侧栏全面翻新（全高布局/歌单封面/数量常显/在线胶囊）；底栏信息增强（收藏/来源/音质）；进度条两版可切',
+      '搜索体验：每源条数可配（默认 30，最多 100）；「显示更多歌曲」一键追加；即时加载动画先到先显；来源筛选（全部/网易云/酷狗）',
+      '歌单批量操作：勾选批量加入播放/收藏/下载/删除/添加到歌单；歌单内独立搜索；导入歌单显示原始名称与来源',
+      '在线歌单：专辑墙纳入在线歌曲、列表视图修复；一键下载弹窗可选音质（默认无损）；右键菜单直接下载',
+      '更新系统：右下角常驻更新卡片（下载进度/一键重启）；静默更新装回原目录；更新公告每次必弹',
+      '播放体验：点单曲插入队首立即播放（不再重置队列）；最近听过 3 首；音质默认在线 320 / 下载无损',
+      '性能与包体：安装包瘦身约 25%（133MB → 约 100MB）；缓存上限 200MB + 一键清理；磁盘占用优化'
+    ],
     '1.3.5': [
       '酷狗收藏合集全量导入：突破上游 300 首上限（官方接口签名分页，实测 775 首歌单完整导入）',
       '专辑列显示真实专辑名（此前酷狗在线歌单显示数字专辑 ID）',
@@ -2198,13 +2276,20 @@ function main() {
   function setupAutoUpdate() {
     if (!autoUpdater) return;
     autoUpdater.on('checking-for-update', () => sendUpdate('checking'));
+    let pendingVer = '';
     autoUpdater.on('update-available', (info) => {
-      const ver = (info && info.version) || '';
-      sendUpdate('available', { version: ver, notes: CHANGELOG[ver] || [] });
+      pendingVer = (info && info.version) || '';
+      sendUpdate('available', { version: pendingVer, notes: CHANGELOG[pendingVer] || [] });
     });
     autoUpdater.on('update-not-available', () => sendUpdate('not-available'));
     autoUpdater.on('download-progress', (p) => sendUpdate('progress', { percent: Math.round((p && p.percent) || 0) }));
-    autoUpdater.on('update-downloaded', () => sendUpdate('downloaded'));
+    autoUpdater.on('update-downloaded', () => {
+      // 写「刚更新」标记：更新完成重启后公告必弹（不依赖 localStorage，绿色版/安装版数据共享也不串状态）
+      try {
+        if (pendingVer) fs.writeFileSync(path.join(dataRoot(), '.just-updated'), pendingVer, 'utf8');
+      } catch { /* 忽略 */ }
+      sendUpdate('downloaded');
+    });
     autoUpdater.on('error', (err) => sendUpdate('error', { message: (err && err.message) || String(err) }));
     // 启动 6 秒后静默检查（打包版才检查；开发模式 electron-updater 会报 dev-app-update.yml 缺失，忽略即可）
     setTimeout(() => {
@@ -2214,7 +2299,47 @@ function main() {
   }
   ipcMain.handle('app:changelog', (e) => {
     if (!isTrusted(e)) return null;
-    return { current: app.getVersion(), entries: CHANGELOG };
+    // 更新完成标记：存在则返回版本号并清除（公告必弹）
+    let justUpdated = '';
+    try {
+      const marker = path.join(dataRoot(), '.just-updated');
+      if (fs.existsSync(marker)) {
+        justUpdated = fs.readFileSync(marker, 'utf8').trim();
+        fs.unlinkSync(marker);
+      }
+    } catch { /* 忽略 */ }
+    return { current: app.getVersion(), entries: CHANGELOG, justUpdated };
+  });
+  // 清理运行缓存（设置-常规「清除缓存」按钮）
+  ipcMain.handle('app:clearCache', async (e) => {
+    if (!isTrusted(e)) return { ok: false };
+    try {
+      await session.defaultSession.clearCache();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: (err && err.message) || String(err) };
+    }
+  });
+  // 自定义背景选图：弹窗选图 → 复制到数据目录 bg.jpg → 返回 dataURL（CSP img-src 支持 data:，禁 file:）
+  ipcMain.handle('app:pickBgImage', async (e) => {
+    if (!isTrusted(e)) return { ok: false };
+    try {
+      const res = await dialog.showOpenDialog({
+        title: '选择背景图片',
+        properties: ['openFile'],
+        filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }]
+      });
+      if (!res || res.canceled || !res.filePaths || !res.filePaths[0]) return { ok: false, canceled: true };
+      const src = res.filePaths[0];
+      const buf = fs.readFileSync(src);
+      const ext = (path.extname(src) || '.jpg').toLowerCase().replace('.', '');
+      const mime = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp' }[ext] || 'image/jpeg';
+      const dataUrl = 'data:' + mime + ';base64,' + buf.toString('base64');
+      try { fs.writeFileSync(path.join(dataRoot(), 'bg.jpg'), buf); } catch { /* 忽略 */ }
+      return { ok: true, dataUrl };
+    } catch (err) {
+      return { ok: false, reason: (err && err.message) || String(err) };
+    }
   });
   ipcMain.handle('update:check', async (e) => {
     if (!isTrusted(e)) return { ok: false, reason: '拒绝' };
@@ -2239,7 +2364,8 @@ function main() {
   });
   ipcMain.handle('update:install', (e) => {
     if (!isTrusted(e) || !autoUpdater || !app.isPackaged) return;
-    try { autoUpdater.quitAndInstall(); } catch { /* 忽略 */ }
+    // 静默安装（true,true）：/S --updated --force-run → 无向导、装回原目录、装完自动重启（方案C，源码已验证）
+    try { autoUpdater.quitAndInstall(true, true); } catch { /* 忽略 */ }
   });
 
   // 旧命名（<id>.jpg，超长路径会超 255 字符）迁移为 hash 命名
