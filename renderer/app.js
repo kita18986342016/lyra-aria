@@ -5061,6 +5061,8 @@
         renderCard();
         if (!updateCardDismissed) card.classList.remove('hidden');
       } else if (t === 'error') {
+        // 自动检查（启动静默检查）失败不打扰：仅用户主动操作（available 后下载/重试）出错才显示卡片
+        if (updateCardState === 'idle') { updateCardState = 'idle'; return; }
         updateCardState = 'error';
         if (pw) pw.classList.add('hidden');
         if (status) status.textContent = (data.message || '更新出错') + ' — 可重试或手动下载';
