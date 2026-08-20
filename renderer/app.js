@@ -187,6 +187,11 @@
 
   // ---------- 数据加载 ----------
   async function init() {
+    // 常驻标题元素：启动即绑定悬停滚动（动态文本更新也兼容，WeakSet 幂等）
+    ['#pTitle', '#pArtist', '#viewTitleText', '#pdTitle'].forEach((sel) => {
+      const el = document.querySelector(sel);
+      if (el) bindScrollTitle(el);
+    });
     const cfg = await window.api.getConfig();
     // 版本号运行时读取（设置 footer + 软件更新区，发版不用改页面）
     try {
@@ -346,6 +351,7 @@
       ic.innerHTML = ICONS.globe;
       const name = el('span', 'name', pl.name);
       name.title = pl.name;
+      bindTitleMarquee(name);
       inner.append(ic, name);
       if (showDl) {
         const db = el('span', 'dl-badge ' + (pl.downloaded ? 'ok' : 'no'), pl.downloaded ? '✓' : '未');
@@ -389,6 +395,7 @@
       ic.innerHTML = ICONS.list;
       const name = el('span', 'name', pl.name);
       name.title = pl.name;
+      bindTitleMarquee(name);
       inner.append(ic, name);
       if (!pl.system) {
         const del = el('button', 'del');
@@ -494,6 +501,7 @@
       const ic = el('span');
       ic.innerHTML = ICONS.folder;
       const name = el('span', 'name', d.replace(/\\$/, '').split('\\').pop() || d);
+      bindTitleMarquee(name);
       name.title = d;
       inner.append(ic, name);
       row.appendChild(inner);
@@ -743,6 +751,7 @@
     const dlAll2 = $('#oplDlAll');
     if (dlAll2) dlAll2.classList.toggle('hidden', !view.startsWith('opl:'));
     $('#viewTitleText').textContent = title;
+    bindScrollTitle($('#viewTitleText'));
     // 曲库/歌单/专辑/收藏/最近播放视图：主窗口上方标题右侧显示歌曲数量
     const vc = $('#viewCount');
     const countable = view === 'library' || view.startsWith('playlist:') || view.startsWith('opl:') || view.startsWith('album:') || view.startsWith('dir:') || view === 'favorites' || view === 'history';
@@ -948,6 +957,49 @@
     return state.view.startsWith('playlist:') ? state.view.slice('playlist:'.length) : null;
   }
 
+  // 歌曲标题悬停滚动：超长标题省略号显示，鼠标悬停时横向滚动展示全名（到头回滚循环）
+  const marqueeBound = new WeakSet();
+  function bindTitleMarquee(el) {
+    if (marqueeBound.has(el)) return;
+    marqueeBound.add(el);
+    const inner = document.createElement('span');
+    inner.className = 's-title-inner';
+    inner.textContent = el.textContent;
+    el.textContent = '';
+    el.appendChild(inner);
+    el.addEventListener('mouseenter', () => {
+      const dist = inner.scrollWidth - el.clientWidth;
+      if (dist <= 4) return;
+      el.classList.add('marquee');
+      inner.style.setProperty('--dist', '-' + dist + 'px');
+      inner.style.setProperty('--dur', Math.max(3, Math.round(dist / 40)) + 's'); // 40px/s，最短 3s
+    });
+    el.addEventListener('mouseleave', () => el.classList.remove('marquee'));
+  }
+  // 动态更新标题的悬停滚动（不包 span，直接滚 scrollLeft；文本反复更新的常驻元素用这个）
+  const scrollBound = new WeakSet();
+  function bindScrollTitle(el) {
+    if (scrollBound.has(el)) return;
+    scrollBound.add(el);
+    el.style.overflow = 'hidden';
+    el.style.textOverflow = 'ellipsis';
+    el.style.whiteSpace = 'nowrap';
+    let raf = 0;
+    el.addEventListener('mouseenter', () => {
+      const total = el.scrollWidth - el.clientWidth;
+      if (total <= 4) return;
+      let pos = 0;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(function step() {
+        pos += 0.5; // ~30px/s @ 60fps：慢速滚动
+        if (pos >= total + 30) pos = 0; // 展示全貌后回到开头再滚
+        el.scrollLeft = pos < total ? pos : total;
+        raf = requestAnimationFrame(step);
+      });
+    });
+    el.addEventListener('mouseleave', () => { cancelAnimationFrame(raf); el.scrollLeft = 0; });
+  }
+
   async function renderList() {
     // 视图模式：0=列表 1=歌曲墙 2=专辑墙（专辑钻取视图 'album:...' 时始终显示歌曲列表）
     if (state.gridMode === 1 && visibleList().length) return renderGrid();
@@ -1031,13 +1083,16 @@
       const tdTitle = el('td', 'c-title');
       const tTxt = el('span', 's-title');
       tTxt.textContent = song.missing ? song.title + '（文件丢失）' : song.title;
+      bindTitleMarquee(tTxt);
       tdTitle.appendChild(tTxt);
       // 在线/本地标签：标题右侧固定列宽（所有行同一竖线）
       tdTitle.appendChild(el('span', 'song-tag ' + (song.online ? 'online' : 'local'), song.online ? '在线' : '本地'));
 
       const tdArtist = el('td', 'c-artist', song.artist || '—');
+      bindTitleMarquee(tdArtist);
       const tdAlbum = el('td', 'c-album');
-      const albumTxt = el('span', null, song.album || '—');
+      const albumTxt = el('span', 's-title', song.album || '—');
+      bindTitleMarquee(albumTxt);
       tdAlbum.appendChild(albumTxt);
       if (song.online) {
         const badge = el('span', 'src-badge', SRC_NAMES[song.source] || '在线');
@@ -1158,7 +1213,9 @@
         cover.appendChild(bars);
       }
       const title = el('div', 'gc-title', song.missing ? song.title + '（文件丢失）' : song.title);
+      bindTitleMarquee(title);
       const sub = el('div', 'gc-sub', song.artist || '');
+      bindTitleMarquee(sub);
       card.append(cover, title, sub);
       card.addEventListener('click', () => playList(vis, idx, 0, true, true));
       frag.appendChild(card);
@@ -1221,7 +1278,9 @@
       const count = el('span', 'gc-count', g.songs.length + '首');
       cover.appendChild(count);
       const title = el('div', 'gc-title', g.album);
+      bindTitleMarquee(title);
       const sub = el('div', 'gc-sub', g.artist || (g.album === ALBUM_UNKNOWN ? '' : '未知歌手'));
+      bindTitleMarquee(sub);
       card.append(cover, title, sub);
       card.addEventListener('click', () => setView('album:' + encodeURIComponent(g.album + '\u0000' + g.artist)));
       card.addEventListener('contextmenu', (e) => {
@@ -1382,7 +1441,9 @@
 
   function updatePlayingUI(song) {
     $('#pTitle').textContent = song.missing ? song.title + '（文件丢失）' : song.title;
+    bindScrollTitle($('#pTitle'));
     $('#pArtist').textContent = song.artist || '';
+    bindScrollTitle($('#pArtist'));
     const pimg = $('#pCoverImg');
     const pnote = $('#pCover > svg');
     if (!song.missing) {
@@ -1627,6 +1688,7 @@
       }
       const meta = el('div', 'q-meta');
       const t = el('div', 'q-title', song.title || '未知歌曲');
+      bindTitleMarquee(t);
       const sub = el('div', 'q-sub');
       sub.textContent = (song.artist || '未知艺术家') + (song.online ? ` · ${SRC_NAMES[song.source] || song.source}` : '');
       meta.append(t, sub);
@@ -2206,6 +2268,7 @@
     const s = currentSong();
     if (!s) return;
     $('#pdTitle').textContent = s.missing ? s.title + '（文件丢失）' : s.title;
+    bindScrollTitle($('#pdTitle'));
     $('#pdArtist').textContent = s.artist || '';
     const img = $('#pdCoverImg');
     const note = $('#pdCover .pd-note');
@@ -2672,6 +2735,7 @@
     tasks.forEach(([key, t]) => {
       const row = el('div', 'dl-task');
       const name = el('div', 'dl-task-name', t.title ? (t.artist ? `${t.title} - ${t.artist}` : t.title) : '未知歌曲');
+      bindTitleMarquee(name);
       name.title = t.title || '';
       const barWrap = el('div', 'dl-task-bar');
       const bar = el('div', 'dl-task-fill');

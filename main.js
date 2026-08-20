@@ -1837,6 +1837,68 @@ function main() {
     // 方案升级：先跟随重定向拿最终分享页 URL → 优先走 LeiZ 歌单接口（可返回全量，
     // 实测收藏合集分享页只内嵌 100 首，LeiZ 解析完整 zlist.html URL 返回 trackCount 全量 201 首）；
     // LeiZ 失败才兜底抓分享页 dataFromSmarty（最多 100 首）。
+    // ===== 酷狗收藏合集全量拉取（官方 gateway 接口，内嵌签名，零外部依赖）=====
+    // 背景：LeiZ 酷狗渠道（id/url 形式）固定返回前 300 首，大歌单（>300）会被截断；
+    // 酷狗官方接口 /pubsongs/v2/get_other_list_file_nofilt 支持 begin_idx 分页（单页 300），可全量。
+    // 签名逻辑移植自 MakcRe/KuGouMusicApi（MIT，util/helper.js + util/request.js），仅保留本接口所需部分。
+    const KG_APPID = 1005, KG_CLIENTVER = 20489;
+    const KG_SALT = 'OIlwieks28dk2k092lksi2UIkp'; // android 签名盐（标准版）
+    const KG_UA = 'Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi';
+    const KG_EXTRA_HEADERS = { 'kg-rc': '1', 'kg-thash': '5d816a0', 'kg-rec': 1, 'kg-rf': 'B9EDA08A64250DEFFBCADDEE00F8F25F' };
+    function kgGuidV4() {
+      const e = () => ((65536 * (1 + Math.random())) | 0).toString(16).substring(1);
+      return `${e()}${e()}-${e()}-${e()}-${e()}-${e()}${e()}${e()}`;
+    }
+    // GUID → mid：MD5(guid) 十六进制逐位转十进制大整数（BigInt）
+    function kgMid(guid) {
+      const digest = crypto.createHash('md5').update(guid, 'utf8').digest('hex');
+      let acc = 0n, base = 1n;
+      for (let i = digest.length - 1; i >= 0; i--) { acc += BigInt(parseInt(digest.charAt(i), 16)) * base; base *= 16n; }
+      return acc.toString();
+    }
+    // 分页拉取收藏合集全量（begin_idx 0/300/600…，去重；失败返回 ok:false）
+    async function fetchKugouCollectAll(globalCollectionId) {
+      const mid = kgMid(kgGuidV4());
+      const all = [], seen = new Set();
+      const pageSize = 300;
+      let beginIdx = 0, total = 0;
+      for (let page = 0; page < 10; page++) {
+        const clienttime = Math.floor(Date.now() / 1000);
+        const params = {
+          dfid: '-', mid, uuid: '-', appid: KG_APPID, clientver: KG_CLIENTVER, clienttime,
+          area_code: 1, begin_idx: beginIdx, plat: 1, type: 1, mode: 1, personal_switch: 1,
+          extend_fields: 'abtags,hot_cmt,popularization', pagesize: pageSize,
+          global_collection_id: globalCollectionId
+        };
+        const paramsString = Object.keys(params).sort().map((k) => `${k}=${params[k]}`).join('');
+        params.signature = crypto.createHash('md5').update(KG_SALT + paramsString + '' + KG_SALT, 'utf8').digest('hex');
+        const qs = Object.keys(params).map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`).join('&');
+        const r = await kugouFetchJson('https://gateway.kugou.com/pubsongs/v2/get_other_list_file_nofilt?' + qs, { dfid: '-', clienttime, mid, ...KG_EXTRA_HEADERS });
+        if (!r || !r.data || r.status === 0) break;
+        const d = r.data;
+        total = d.count || total;
+        const songs = Array.isArray(d.songs) ? d.songs : [];
+        if (!songs.length) break;
+        for (const s of songs) {
+          if (!s || !s.hash || seen.has(s.hash)) continue;
+          seen.add(s.hash);
+          const singerNames = (Array.isArray(s.singerinfo) ? s.singerinfo : []).map((x) => x && x.name).filter(Boolean).join('、');
+          let title = s.name || s.song_name || '';
+          if (singerNames && title.startsWith(singerNames + ' - ')) title = title.slice(singerNames.length + 3);
+          const albumInfo = s.albuminfo || {};
+          all.push({
+            id: 'online:kugou:' + s.hash, online: true, source: 'kugou', ref: s.hash,
+            title, artist: singerNames || s.artists || s.author_name || '',
+            duration: Math.round((s.timelen || s.duration || s.timelength || 0) / 1000),
+            album: albumInfo.name || s.album || '', picUrl: (s.cover || '').replace('{size}', '200'), level: '128'
+          });
+        }
+        if (all.length >= total || songs.length < pageSize) break;
+        beginIdx += pageSize;
+      }
+      return all.length ? { ok: true, songs: all } : { ok: false };
+    }
+
     async function kugouResolveShare(rawUrl) {
       try {
         // 1) 跟随重定向拿最终分享页 URL（并保留最后一跳页面 body 供兜底）
@@ -1863,7 +1925,26 @@ function main() {
         }
         if (depth >= 5) return { ok: false, reason: '重定向过多' };
 
-        // 2) 优先 LeiZ 全量歌单接口（服务端解析完整分享 URL）
+        // 2) 酷狗官方接口全量（收藏合集）：分享 URL 带 global_collection_id → 签名分页拉全量（突破 LeiZ 300 上限）
+        const gcMatch = url.match(/global_collection_id=([^&]+)/);
+        if (gcMatch) {
+          try {
+            const cid = decodeURIComponent(gcMatch[1]);
+            const full = await fetchKugouCollectAll(cid);
+            if (full.ok && full.songs.length) {
+              // 歌单名：尝试 LeiZ（它返回真实歌单名），失败不影响（UI 显示「酷狗分享歌单（N 首）」）
+              let name = '';
+              try {
+                const lzUrl = url.replace(/^http:/i, 'https:');
+                const lz = await leizGet('/kugou?type=playlist&url=' + encodeURIComponent(lzUrl));
+                if (lz.ok && lz.data && lz.data.name) name = lz.data.name;
+              } catch (e) { /* 忽略 */ }
+              return { ok: true, name, songs: full.songs };
+            }
+          } catch (e) { /* 回落 LeiZ */ }
+        }
+
+        // 3) LeiZ 全量歌单接口（服务端解析完整分享 URL；酷狗渠道上游封顶 300 首）
         // 注意：t1 短链重定向到的是 http://wwwapi…，LeiZ 只认 https 变体（http 会报"无效链接"）→ 先转 https
         try {
           const lzUrl = url.replace(/^http:/i, 'https:');
@@ -1906,10 +1987,10 @@ function main() {
     // 酷狗歌曲封面：分享页 dataFromSmarty 只有 album_id，没有图片 → 按 album_id 查专辑信息拿封面
     // （mobilecdn 专辑接口实测可用；getdata 按 hash 接口被 WAF 拦，不可用——已实测）
     const kugouCoverCache = new Map(); // albumId|hash -> Promise<coverUrl|null>（并发去重 + 失败也缓存）
-    function kugouFetchJson(url) {
+    function kugouFetchJson(url, extraHeaders) {
       return new Promise((resolve) => {
         const mod = /^https:/.test(url) ? https : http;
-        const req = mod.get(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36', 'Referer': 'https://www.kugou.com/' } }, (r) => {
+        const req = mod.get(url, { headers: Object.assign({ 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36', 'Referer': 'https://www.kugou.com/' }, extraHeaders || {}) }, (r) => {
           const chunks = [];
           let total = 0;
           r.on('data', (c) => { total += c.length; if (total <= 2 * 1048576) chunks.push(c); });

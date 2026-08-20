@@ -319,7 +319,19 @@ button, input, select, textarea { font-family: inherit; }
 #songTable tbody tr.missing .s-title { color: var(--danger); text-decoration: line-through; }
 .c-cover { width: 58px; }
 .c-title { width: 34%; position: relative; padding-right: 40px; }
-.c-title .s-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 通用悬停滚动：任意超长文本元素包 .s-title-inner 即可获得「省略号 + 悬停横向滚动全名」（40px/s，最短 3s，到头回滚循环） */
+.s-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; position: relative; }
+.s-title .s-title-inner, .c-artist .s-title-inner, .c-album .s-title-inner,
+.name .s-title-inner, .q-title .s-title-inner, .dl-task-name .s-title-inner, .gc-title .s-title-inner, .gc-sub .s-title-inner {
+  display: inline-block; white-space: nowrap; vertical-align: bottom;
+}
+.marquee { text-overflow: clip; }
+.marquee .s-title-inner { animation: s-title-marquee var(--dur, 5s) linear infinite; }
+@keyframes s-title-marquee {
+  0%, 8% { transform: translateX(0); }
+  85% { transform: translateX(var(--dist, -120px)); }
+  100% { transform: translateX(0); }
+}
 .c-artist { width: 22%; }
 .c-album { width: 18%; color: var(--muted); }
 .c-dur { width: 60px; color: var(--muted); font-variant-numeric: tabular-nums; }
