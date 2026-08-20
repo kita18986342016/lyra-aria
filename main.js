@@ -2176,6 +2176,20 @@ function main() {
   });
 
   // ---------- 自动更新（electron-updater，GitHub Release 源）----------
+  // 更新公告表：版本号 → 更新内容列表（新版本首次启动展示，须随发版同步维护）
+  const CHANGELOG = {
+    '1.3.5': [
+      '酷狗收藏合集全量导入：突破上游 300 首上限（官方接口签名分页，实测 775 首歌单完整导入）',
+      '专辑列显示真实专辑名（此前酷狗在线歌单显示数字专辑 ID）',
+      '长标题悬停滚动：所有超长文本省略号显示，鼠标悬停横向滚动展示全名（列表/导航/队列/下载/卡片/播放器）',
+      '任务栏应用名修复为「深空折韵 1.3.5」（此前显示 Electron）',
+      '新增更新公告：更新后首次启动展示本次更新内容'
+    ],
+    '1.3.4': [
+      '酷狗分享短链全量拉取（LeiZ 服务端解析）',
+      '一键下载全量分批入队'
+    ]
+  };
   function sendUpdate(type, data) {
     if (win && !win.webContents.isLoading()) {
       win.webContents.send('update:event', { type, data });
@@ -2184,7 +2198,10 @@ function main() {
   function setupAutoUpdate() {
     if (!autoUpdater) return;
     autoUpdater.on('checking-for-update', () => sendUpdate('checking'));
-    autoUpdater.on('update-available', (info) => sendUpdate('available', { version: (info && info.version) || '' }));
+    autoUpdater.on('update-available', (info) => {
+      const ver = (info && info.version) || '';
+      sendUpdate('available', { version: ver, notes: CHANGELOG[ver] || [] });
+    });
     autoUpdater.on('update-not-available', () => sendUpdate('not-available'));
     autoUpdater.on('download-progress', (p) => sendUpdate('progress', { percent: Math.round((p && p.percent) || 0) }));
     autoUpdater.on('update-downloaded', () => sendUpdate('downloaded'));
@@ -2195,6 +2212,10 @@ function main() {
       try { autoUpdater.checkForUpdates().catch(() => {}); } catch { /* 忽略 */ }
     }, 6000);
   }
+  ipcMain.handle('app:changelog', (e) => {
+    if (!isTrusted(e)) return null;
+    return { current: app.getVersion(), entries: CHANGELOG };
+  });
   ipcMain.handle('update:check', async (e) => {
     if (!isTrusted(e)) return { ok: false, reason: '拒绝' };
     if (!autoUpdater) return { ok: false, reason: '更新模块不可用' };

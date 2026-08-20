@@ -148,6 +148,12 @@
     </div>
   </div>
 
+  <!-- 更新公告（小浮窗，新版本首次启动展示 changelog） -->
+  <div id="changelogToast" class="hidden">
+    <div class="st-head"><span>更新公告</span><button id="changelogClose"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+    <div id="changelogBody"></div>
+  </div>
+
   <!-- 加入歌单选择面板（Electron 禁 window.prompt，用应用内面板） -->
   <div id="plPickOverlay" class="hidden">
     <div id="plPickPanel">

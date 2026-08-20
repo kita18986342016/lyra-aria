@@ -186,6 +186,35 @@
   }
 
   // ---------- 数据加载 ----------
+  // 更新公告小浮窗：entries = {版本: [内容...]}；seen=上次看到的版本号；current=当前版本
+  function showChangelog(entries, seen, current) {
+    const toast = $('#changelogToast');
+    const body = $('#changelogBody');
+    if (!toast || !body) return;
+    const versions = Object.keys(entries || {}).sort((a, b) => {
+      const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+      for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? -1 : 1; }
+      return 0;
+    });
+    const showFrom = seen ? versions.filter((v) => v > seen) : [current]; // 无记录只看当前版本；有记录看后续所有版本
+    const list = (showFrom.length ? showFrom : versions).slice(0, 3);
+    body.innerHTML = '';
+    for (const v of list) {
+      const items = entries[v] || [];
+      const sec = document.createElement('div');
+      sec.className = 'cl-sec';
+      const h = document.createElement('div');
+      h.className = 'cl-ver';
+      h.textContent = 'v' + v + (v === current ? '（当前版本）' : '');
+      sec.appendChild(h);
+      if (!items.length) { const d = document.createElement('div'); d.className = 'cl-item'; d.textContent = '细节优化与问题修复'; sec.appendChild(d); }
+      for (const it of items) { const d = document.createElement('div'); d.className = 'cl-item'; d.textContent = it; sec.appendChild(d); }
+      body.appendChild(sec);
+    }
+    toast.classList.remove('hidden');
+    try { localStorage.setItem('mp_seen_changelog', current); } catch { /* 忽略 */ }
+  }
+
   async function init() {
     // 常驻标题元素：启动即绑定悬停滚动（动态文本更新也兼容，WeakSet 幂等）
     ['#pTitle', '#pArtist', '#viewTitleText', '#pdTitle'].forEach((sel) => {
@@ -202,6 +231,16 @@
         if (about) about.textContent = v + ' · Lyra Aria © 2026';
         const stUpdVer = $('#stUpdVer');
         if (stUpdVer) stUpdVer.textContent = v;
+      }
+    } catch { /* 忽略 */ }
+    // 更新公告：新版本（自上次看到的版本之后）首次启动弹窗展示
+    try {
+      const cl = await window.api.appChangelog();
+      if (cl && cl.current) {
+        const seen = localStorage.getItem('mp_seen_changelog') || '';
+        if (seen !== cl.current) {
+          setTimeout(() => showChangelog(cl.entries, seen, cl.current), 600);
+        }
       }
     } catch { /* 忽略 */ }
     state.volume = cfg.volume ?? 0.8;
@@ -3125,6 +3164,10 @@
     $('#oplImportOverlay').addEventListener('click', (e) => { if (e.target === $('#oplImportOverlay')) closeOplImport(); });
     $('#oplImportInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doImportOnlinePlaylist(e.target.value); });
 
+    // 更新公告小浮窗
+    const closeChangelog = () => $('#changelogToast').classList.add('hidden');
+    $('#changelogClose').addEventListener('click', closeChangelog);
+
     // 加入歌单面板
     $('#plPickClose').addEventListener('click', closePlPick);
     $('#plPickCancel').addEventListener('click', closePlPick);
@@ -3341,7 +3384,8 @@
         if (d.type === 'available') {
           updState = 'available'; updRenderBtn();
           const ver = (d.data && d.data.version) || '';
-          updSetStatus('发现新版本 v' + ver + ' — 点击「下载更新」');
+          const notes = (d.data && d.data.notes) || [];
+          updSetStatus('发现新版本 v' + ver + ' — 点击「下载更新」' + (notes.length ? '；更新内容：' + notes.join('；') : ''));
           toast('发现新版本 v' + ver + '，可到 设置 → 软件更新 下载');
         } else if (d.type === 'not-available') {
           updState = 'idle'; updRenderBtn(); updSetStatus('已是最新版本');

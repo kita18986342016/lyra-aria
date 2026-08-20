@@ -1059,6 +1059,24 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
   padding: 20px 24px 16px;
   animation: stPop .22s ease;
 }
+/* 更新公告：右下角小浮窗（不遮全屏） */
+#changelogToast {
+  position: fixed; right: 24px; bottom: 90px; width: 342px;
+  background: #fff; border-radius: 16px;
+  box-shadow: 0 16px 48px rgba(23, 29, 46, .28), 0 0 0 1px rgba(23, 29, 46, .06);
+  padding: 14px 18px 12px; z-index: 210;
+  animation: clIn .28s ease;
+}
+@keyframes clIn { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: translateX(0); } }
+#changelogToast .st-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+#changelogToast .st-head span { font-size: 14px; font-weight: 800; letter-spacing: .5px; }
+#changelogClose { border: none; background: #f2f4f9; color: var(--muted); cursor: pointer; width: 26px; height: 26px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; transition: all .15s; }
+#changelogClose:hover { background: #e8ecf4; color: var(--text); }
+#changelogBody { margin-top: 10px; max-height: 42vh; overflow-y: auto; padding-right: 4px; }
+.cl-sec { margin-bottom: 12px; }
+.cl-ver { font-size: 13.5px; font-weight: 800; margin-bottom: 5px; color: var(--text); }
+.cl-item { font-size: 12.5px; line-height: 1.7; color: var(--text2, #3a4256); padding-left: 15px; position: relative; }
+.cl-item::before { content: ''; position: absolute; left: 3px; top: 8px; width: 4px; height: 4px; border-radius: 50%; background: var(--accent, #2f6bff); }
 #oplImportPanel .st-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 #oplImportPanel .st-head span { font-size: 17px; font-weight: 800; letter-spacing: .5px; }
 #oplImportClose { border: none; background: #f2f4f9; color: var(--muted); cursor: pointer; width: 30px; height: 30px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; transition: all .15s; }
