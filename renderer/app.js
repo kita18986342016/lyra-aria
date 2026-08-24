@@ -4917,6 +4917,12 @@
           winSize: innerWidth + 'x' + innerHeight,
           dpr: devicePixelRatio
         };
+        // rAF 帧率探针（1s）：区分主窗播放期是 60fps 空转还是低频自检（>30 = 高频循环嫌疑）
+        rep.rafFps = await new Promise((res) => {
+          let n = 0; const t0 = performance.now();
+          const tick = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(tick); else res(n); };
+          requestAnimationFrame(tick);
+        });
         const json = JSON.stringify(rep, null, 1);
         try { await navigator.clipboard.writeText(json); toast('诊断数据已复制到剪贴板'); }
         catch { console.log('[diag]', json); toast('复制失败，数据见控制台'); }

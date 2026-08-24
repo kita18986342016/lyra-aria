@@ -281,6 +281,7 @@
   function rafLoop(ts) {
     rafId = requestAnimationFrame(rafLoop);
     if (document.hidden) { cancelAnimationFrame(rafId); rafId = null; return; } // 不可见不空转（体验版 CPU 减负）
+    if (lastTs && ts - lastTs < 33) return; // 30fps 上限（体验版 CPU 减负：逐字渐变视觉无感，dt 按真实帧间隔推进）
     if (!lastTs) lastTs = ts;
     const dt = (ts - lastTs) / 1000;
     lastTs = ts;

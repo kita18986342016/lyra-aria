@@ -2386,7 +2386,13 @@ function main() {
         memTotalMB: mem.total ? Math.round(mem.total / 1048576) : null,
         displays,
         gpu: gpu, // 原样返回（key 形如 'gpu_compositing'/'2d_canvas'，避免字段名随版本漂移）
-        mainCpu500ms: cpu1
+        mainCpu500ms: cpu1,
+        lyricWin: (() => { // 歌词窗存在性与可见性（播放时可见=60fps 逐字循环在跑）
+          try {
+            if (typeof lyricWin === 'undefined' || !lyricWin || lyricWin.isDestroyed()) return { exists: false };
+            return { exists: true, visible: lyricWin.isVisible() };
+          } catch { return { exists: false }; }
+        })()
       };
     } catch (err) {
       return { error: (err && err.message) || String(err) };
