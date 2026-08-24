@@ -85,6 +85,8 @@ contextBridge.exposeInMainWorld('api', {
   leizSearch: (source, q, limit) => ipcRenderer.invoke('leiz:search', source, q, limit),
   leizResolve: (source, ref, level) => ipcRenderer.invoke('leiz:resolve', source, ref, level),
   leizLyrics: (source, ref, level) => ipcRenderer.invoke('leiz:lyrics', source, ref, level),
+  // 性能诊断（体验版）
+  diagCollect: () => ipcRenderer.invoke('diag:collect'),
   leizPlaylist: (source, ref) => ipcRenderer.invoke('leiz:playlist', source, ref),
   sendThumbState: (playing) => ipcRenderer.send('thumb:state', playing),
   sendTitle: (title) => ipcRenderer.send('media:title', title),

@@ -261,7 +261,7 @@
     $('#cIconPause').classList.toggle('hidden', !playing);
     if (lrcLines.length) locateLine(); // 时间校正后重新定位当前行
     updateBar();
-    if (playing) {
+    if (playing && !document.hidden) {
       if (!rafId) rafLoop();
     } else {
       if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
@@ -280,6 +280,7 @@
   Object.defineProperty(window.__lyrDbg, 'calc', { get() { return JSON.stringify({ curTime: +curTime.toFixed(3), lineT: +lineT.toFixed(3), dur: +dur.toFixed(3), p: +calcP().toFixed(3), playing, rafOn: !!rafId, lrcLen: lrcLines.length, lineIdx }); } });
   function rafLoop(ts) {
     rafId = requestAnimationFrame(rafLoop);
+    if (document.hidden) { cancelAnimationFrame(rafId); rafId = null; return; } // 不可见不空转（体验版 CPU 减负）
     if (!lastTs) lastTs = ts;
     const dt = (ts - lastTs) / 1000;
     lastTs = ts;
@@ -294,6 +295,10 @@
   }
 
   window.api.onLyricWinConfig((c) => applyConfig(c));
+  // 可见性恢复时重启逐字动画（体验版 CPU 减负：隐藏时不空转）
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && playing && !rafId) rafLoop();
+  });
   window.api.onLyricWinLine((p) => setLine(p));
   window.api.onLyricWinLrc((d) => {
     const lines = (d && Array.isArray(d.lines)) ? d.lines : [];

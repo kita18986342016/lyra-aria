@@ -2367,6 +2367,31 @@ function main() {
     // 静默安装（true,true）：/S --updated --force-run → 无向导、装回原目录、装完自动重启（方案C，源码已验证）
     try { autoUpdater.quitAndInstall(true, true); } catch { /* 忽略 */ }
   });
+  // 性能诊断（体验版）：GPU 加速状态 + 系统/窗口信息 + 主进程 CPU 采样——远程排查用户机器高 CPU
+  ipcMain.handle('diag:collect', async (e) => {
+    if (!isTrusted(e)) return null;
+    try {
+      const gpu = (app.getGPUFeatureStatus && app.getGPUFeatureStatus()) || {};
+      const mem = (process.getSystemMemoryInfo && process.getSystemMemoryInfo()) || {};
+      const displays = screen.getAllDisplays().map((d) => ({ size: d.size.width + 'x' + d.size.height, scale: d.scaleFactor }));
+      const cpu0 = process.cpuUsage();
+      await new Promise((r) => setTimeout(r, 500));
+      const cpu1 = process.cpuUsage(cpu0); // 相对差值（微秒）
+      return {
+        app: app.getVersion(),
+        platform: process.platform + ' ' + process.arch,
+        node: process.versions.node,
+        electron: process.versions.electron,
+        chrome: process.versions.chrome,
+        memTotalMB: mem.total ? Math.round(mem.total / 1048576) : null,
+        displays,
+        gpu: gpu, // 原样返回（key 形如 'gpu_compositing'/'2d_canvas'，避免字段名随版本漂移）
+        mainCpu500ms: cpu1
+      };
+    } catch (err) {
+      return { error: (err && err.message) || String(err) };
+    }
+  });
 
   // 旧命名（<id>.jpg，超长路径会超 255 字符）迁移为 hash 命名
   function migrateCovers() {

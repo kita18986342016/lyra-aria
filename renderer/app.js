@@ -978,6 +978,9 @@
     // 「全部播放」按钮：曲库/收藏/最近播放/歌单/专辑等所有主窗视图都显示（在线搜索结果的 visibleList 同样可播）
     const pab = $('#viewPlayAll');
     if (pab) pab.classList.remove('hidden');
+    // 批量按钮：所有列表视图显示（入口修复——index.html 初始 class="hidden" 从未被移除，导致批量功能被锁死不可见）
+    const bBtn = $('#btnBatch');
+    if (bBtn) bBtn.classList.remove('hidden');
     updateSearchPlaceholder(); // 搜索框占位符随视图变化（歌单内搜索提示）
     state.list = list;
     renderNav();
@@ -4887,6 +4890,46 @@
       $('#pdCoverImg').classList.toggle('spinning', on);
     };
     bindGroup('stCoverSpin', 'mp_cover_spin', applyCoverSpin);
+    // 性能诊断（体验版）：采集渲染端状态 + 主进程 GPU/系统信息 → 复制 JSON 供远程排查
+    const diagBtn = $('#diagBtn');
+    if (diagBtn) diagBtn.addEventListener('click', async () => {
+      try {
+        const anims = document.getAnimations().filter((a) => a.playState === 'running').map((a) => {
+          const el = a.effect && a.effect.target;
+          const t = a.effect && a.effect.getTiming();
+          return { name: a.animationName || '', dur: t ? Math.round(t.duration || 0) : 0, cls: el && el.className ? String(el.className).slice(0, 40) : '' };
+        }).slice(0, 20);
+        const sys = (await window.api.diagCollect().catch(() => null)) || {};
+        const rep = {
+          ts: new Date().toISOString(),
+          app: sys.app, platform: sys.platform, electron: sys.electron,
+          memTotalMB: sys.memTotalMB, displays: sys.displays,
+          gpu: sys.gpu, mainCpu500ms: sys.mainCpu500ms,          theme: document.documentElement.getAttribute('data-theme'),
+          bgMode: state.bgMode,
+          bgBlurPx: parseFloat(document.documentElement.style.getPropertyValue('--bg-blur')) || 0,
+          bgStrength: store.get('mp_bg_strength', '60'),
+          coverSpin: store.get('mp_cover_spin', '1'),
+          view: state.view,
+          playing: !audio.paused,
+          karaokeRunning: rafId !== null,
+          lrcLines: state.lrc ? state.lrc.length : 0,
+          runningAnimations: anims,
+          winSize: innerWidth + 'x' + innerHeight,
+          dpr: devicePixelRatio
+        };
+        const json = JSON.stringify(rep, null, 1);
+        try { await navigator.clipboard.writeText(json); toast('诊断数据已复制到剪贴板'); }
+        catch { console.log('[diag]', json); toast('复制失败，数据见控制台'); }
+        const old = document.getElementById('diagOutput');
+        if (old) old.remove();
+        const pre = document.createElement('pre');
+        pre.id = 'diagOutput';
+        pre.style.cssText = 'position:fixed;right:12px;bottom:64px;z-index:9999;max-width:480px;max-height:60vh;overflow:auto;background:#10121a;color:#9fe8a0;font:11px/1.5 Consolas,monospace;padding:10px 12px;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.4);white-space:pre-wrap;word-break:break-all;';
+        pre.textContent = json;
+        pre.addEventListener('click', () => pre.remove());
+        document.body.appendChild(pre);
+      } catch (err) { toast('诊断失败：' + ((err && err.message) || err)); }
+    });
     // 背景强度滑块
     const bs = $('#stBgStrength');
     const bv = $('#stBgStrengthVal');
