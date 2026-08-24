@@ -7,7 +7,7 @@ const https = require('https');
 const { parseFile } = require('music-metadata');
 const NodeID3 = require('node-id3');
 const crypto = require('crypto');
-const { scanLibrary } = require('./core/scanner');
+const { scanLibrary, SCAN_VERSION } = require('./core/scanner');
 const store = require('./core/store');
 const { importSonglist } = require('./core/songlist');
 const lyrics = require('./core/lyrics');
@@ -923,7 +923,7 @@ function main() {
         win.webContents.send('scan:progress', { done, total, dir });
       }
     };
-    library = { songs: await scanLibrary(config.dirs, progress), scannedAt: Date.now() };
+    library = { songs: await scanLibrary(config.dirs, progress), scannedAt: Date.now(), scanVersion: SCAN_VERSION };
     reconcileLibrary();
     store.save('library.json', library);
     rebuildIndex();
@@ -959,7 +959,7 @@ function main() {
   }
 
   async function ensureLibrary() {
-    if (!library.songs || library.songs.length === 0) await rescanLibrary();
+    if (!library.songs || library.songs.length === 0 || library.scanVersion !== SCAN_VERSION) await rescanLibrary();
   }
 
   // 下载目录纳入曲库配置：确保 downloadsDir 已在 config.dirs 中（目录不存在则先创建，

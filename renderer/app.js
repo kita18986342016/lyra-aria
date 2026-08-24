@@ -56,6 +56,7 @@
     batchMode: false,             // 批量勾选模式开启
     batchSelected: new Set(),     // 批量模式下选中的歌曲 id 集合
     // —— 通用筛选（本地/歌单/收藏视图）——
+    plFilter: '',                 // 歌单内搜索词（#plSearchInput 专用；顶栏 #search 不再作用到歌单视图，见 item ⑤）
     filterDl: 'all',              // 'all' | 'down' | 'undown'
     filterSrc: 'all',             // 'all' | 'netease' | 'kugou' | 'local'（筛选弹窗）
     filterQ: 'all',               // 'all' | 'standard' | 'high' | 'lossless'（筛选弹窗，仅音质数据存在时用）
@@ -245,6 +246,12 @@
     };
     setQ3('stOnlineQuality', 'mp_online_quality', 'high');
     setQ3('stDlQuality3', 'mp_dl_quality', 'lossless');
+    // item ⑥：默认打开模式（本地/在线）高亮
+    const dm = store.get('mp_def_search_mode', 'local');
+    setQ('stDefMode', 'mode', dm === 'online' ? 'online' : 'local');
+    // item ⑩：播放模式行高亮与 state.mode 对齐（打开设置时同步，避免与实际生效值不同步）
+    const pm = document.getElementById('stPlayMode');
+    if (pm) pm.querySelectorAll('button[data-mode]').forEach((b) => b.classList.toggle('active', b.dataset.mode === state.mode));
   }
 
   // ---------- 倍速播放 ----------
@@ -917,6 +924,9 @@
     state.filterSrc = 'all';
     state.filterQ = 'all';
     state.filter = '';
+    state.plFilter = ''; // 歌单内搜索词随视图切换一并清空（#plSearchInput 也会被隐藏）
+    const plInpSync = $('#plSearchInput');
+    if (plInpSync) plInpSync.value = '';
     let title = '曲库', list = state.songs;
     if (view.startsWith('playlist:')) {
       const pl = state.playlists.find((x) => 'playlist:' + x.id === view);
@@ -1016,11 +1026,14 @@
       return list;
     }
     let l = state.list;
-    const q = state.filter.trim().toLowerCase();
-    if (q) l = l.filter((s) =>
-      (s.title || '').toLowerCase().includes(q) ||
-      (s.artist || '').toLowerCase().includes(q) ||
-      (s.album || '').toLowerCase().includes(q)
+    // item ⑤：歌单/在线歌单视图的文本过滤只走歌单内搜索框 #plSearchInput（state.plFilter），
+    // 顶栏 #search 的 state.filter 不再作用到歌单视图（避免顶栏搜索误过滤歌单列表）
+    const q = (state.view.startsWith('playlist:') || state.view.startsWith('opl:')) ? state.plFilter : state.filter;
+    const fq = q.trim().toLowerCase();
+    if (fq) l = l.filter((s) =>
+      (s.title || '').toLowerCase().includes(fq) ||
+      (s.artist || '').toLowerCase().includes(fq) ||
+      (s.album || '').toLowerCase().includes(fq)
     );
     // item 6：下载状态筛选（本地歌曲缺传下载标记 → 视为已下载；在线=未下载）
     if (state.filterDl === 'down') l = l.filter((s) => !s.online);
@@ -2717,7 +2730,17 @@
     const wordSegs = ly.wordByWord ? parseKrcWord(String(ly.wordByWord)) : parseNeteaseWordLines(String(ly.original));
     state.lrc = lines;
     state.wordSegs = wordSegs && wordSegs.length ? wordSegs : null;
-    state.translatedLrc = ly.translated ? parseLrc(String(ly.translated)) : null;
+    // 翻译：优先标准 LRC（带 [mm:ss]）；若翻译文本无时间戳，则按行序静态存（transForLine 行序兜底用）
+    let translatedLrc = null;
+    if (ly.translated) {
+      const tLines = parseLrc(String(ly.translated));
+      if (tLines.length) translatedLrc = tLines;
+      else {
+        const bare = String(ly.translated).split(/\r?\n/).map((s) => s.trim()).filter(Boolean).filter((s) => !META_RE.test(s));
+        if (bare.length) translatedLrc = bare.map((text) => ({ t: -1, text }));
+      }
+    }
+    state.translatedLrc = translatedLrc;
     if (lines.length) {
       renderLyrics();
     } else if (ly.original) {
@@ -2823,13 +2846,16 @@
   function lyrTransOn() {
     return (localStorage.getItem('mp_lyrtrans') || '1') === '1';
   }
-  // 找原文第 i 行对应的翻译行（时间 ±0.35s 匹配）
+  // 找原文第 i 行对应的翻译行：优先时间 ±0.35s 匹配；无时间戳或匹配不中时按行序兜底（翻译行数与原文一致）
   function transForLine(i) {
     if (!state.translatedLrc || !state.lrc || !state.lrc[i]) return null;
     const t = state.lrc[i].t;
-    for (const tr of state.translatedLrc) {
-      if (Math.abs(tr.t - t) < 0.35) return tr.text || null;
+    const lrc = state.translatedLrc;
+    for (const tr of lrc) {
+      if (tr.t >= 0 && Math.abs(tr.t - t) < 0.35) return tr.text || null;
     }
+    // 无时间戳（t=-1）或时间匹配失败 → 行序兜底
+    if (i < lrc.length) return lrc[i].text || null;
     return null;
   }
   function renderLyrics() {
@@ -2917,9 +2943,13 @@
       });
       el.dataset.segTotal = '1'; // 归一化时间域
       el.dataset.segMode = 'word';
+      // 逐字模式：每个字一个 .line-seg。须内联横排（style.css 的 .line-seg 是 block=一个折行片段；
+      // 逐字卡拉OK应单字横向排开、必要时整句折行，否则每个字独占一行——「歌词一字一行」bug）
+      // CSP style-src 'self' 禁内联 style 属性 → 生成后用 CSSOM 把 display 覆盖为 inline，保持渐变 .line-seg 遍历逻辑不变
       el.innerHTML = items.map((it) =>
         `<span class="line-seg" data-s0="${it.s0.toFixed(4)}" data-s1="${it.s1.toFixed(4)}">${escHtmlSeg(it.t)}</span>`
       ).join('');
+      el.querySelectorAll(':scope > .line-seg').forEach((seg) => { seg.style.display = 'inline'; });
       applyKaraokeP(el, p, words);
       return;
     }
@@ -3099,6 +3129,9 @@
     const playing = !audio.paused;
     $('#tvIconPlay').classList.toggle('hidden', playing);
     $('#tvIconPause').classList.toggle('hidden', !playing);
+    // 兜底：确保缩略图页底部三个控制按钮显式可见（防样式/状态串扰导致按钮不显示）
+    const tb = $('#tvButtons');
+    if (tb) { tb.style.display = 'flex'; tb.style.pointerEvents = 'auto'; }
   }
 
   // ---------- 歌曲详情页（整页切换，酷狗式：点封面进入，返回回主界面） ----------
@@ -4047,6 +4080,9 @@
       $('#btnSearchMode').classList.toggle('active', on);
       updateSearchPlaceholder(); // 占位符随模式+当前视图变化（歌单内搜索提示）
     };
+    // item ⑥：按设置「默认打开 本地/在线」初始化搜索模式（mp_def_search_mode，默认 local）
+    const defMode = store.get('mp_def_search_mode', 'local');
+    if (defMode === 'online') state.searchMode = 'online'; else state.searchMode = 'local';
     updateSearchUI(); // 启动即同步按钮文字（当前模式），避免停留在 HTML 默认"在线"
     $('#btnSearchMode').addEventListener('click', () => {
       const wasOnline = state.searchMode === 'online';
@@ -4171,6 +4207,8 @@
       $('#settingsOverlay').classList.toggle('hidden', !show);
       if (show) {
         $('#settingsPanel').classList.remove('hidden');
+        // 每次打开设置面板都同步外观/音质控件高亮与 localStorage（① 音质组初次失选 / ⑩ 选项不同步）
+        syncAppearanceControls();
         let sec = 'general';
         try { sec = localStorage.getItem('mp_set_sec') || 'general'; } catch { /* 忽略 */ }
         if (!document.querySelector('.st-side-item[data-sec="' + sec + '"]')) sec = 'general';
@@ -4194,14 +4232,27 @@
       clearTimeout(window.__bgBlurTimer);
       window.__bgBlurTimer = setTimeout(() => window.api.setBgBlur(v), 300);
     });
-    document.querySelectorAll('#settingsPanel .st-mode').forEach((b) => b.addEventListener('click', () => {
-      document.querySelectorAll('#settingsPanel .st-mode').forEach((x) => x.classList.remove('active'));
-      b.classList.add('active');
-      window.api.setMode(b.dataset.mode);
-      state.mode = b.dataset.mode;
-      if (state.mode === 'shuffle' && state.queue.length) rebuildShuffle();
-      updateModeBtn();
-    }));
+    // 播放模式（设置-常规「播放模式」行）。原来用全局 #settingsPanel .st-mode 选择器会把其它
+    // 设置组（主题/强调色/背景/进度/音质/默认打开等 .st-mode）的 active 高亮全清掉 → 选项与实际值不同步。
+    // 改为限定到本行专用 id（未带 id 则由 JS 落 id），并初始化高亮与 state.mode 对齐。
+    let pmWrap = document.getElementById('stPlayMode');
+    if (!pmWrap) {
+      const genSec = document.querySelector('.st-section[data-sec="general"]');
+      const g = genSec && [...genSec.querySelectorAll('.st-modes')].find((m) => m.querySelector('[data-mode]'));
+      if (g) { g.id = 'stPlayMode'; pmWrap = g; }
+    }
+    if (pmWrap) {
+      const syncPm = () => pmWrap.querySelectorAll('button[data-mode]').forEach((x) => x.classList.toggle('active', x.dataset.mode === state.mode));
+      syncPm();
+      pmWrap.querySelectorAll('button[data-mode]').forEach((b) => b.addEventListener('click', () => {
+        pmWrap.querySelectorAll('button[data-mode]').forEach((x) => x.classList.remove('active'));
+        b.classList.add('active');
+        window.api.setMode(b.dataset.mode);
+        state.mode = b.dataset.mode;
+        if (state.mode === 'shuffle' && state.queue.length) rebuildShuffle();
+        updateModeBtn();
+      }));
+    }
     $('#stAutoLaunch').addEventListener('change', (e) => window.api.setAutoLaunch(e.target.checked));
     $('#stLyric').addEventListener('change', (e) => window.api.setLyricWin({ enabled: e.target.checked }));
     // 睡眠定时（设置面板：关/30/60/自定义，上限 360 分钟）
@@ -4754,11 +4805,11 @@
       if (window.__refreshFilterPopup) window.__refreshFilterPopup();
     };
 
-    // —— 歌单内搜索框事件 ——
+    // —— 歌单内搜索框事件（item ⑤：只走独立 #plSearchInput，不再改全局 state.filter）——
     const plInp = $('#plSearchInput');
     if (plInp) {
-      plInp.addEventListener('input', () => { state.filter = plInp.value; renderList(); });
-      plInp.addEventListener('keydown', (e) => { if (e.key === 'Escape') { plInp.value = ''; state.filter = ''; renderList(); } });
+      plInp.addEventListener('input', () => { state.plFilter = plInp.value; renderList(); });
+      plInp.addEventListener('keydown', (e) => { if (e.key === 'Escape') { plInp.value = ''; state.plFilter = ''; renderList(); } });
     }
 
     // —— 显示更多 ——
@@ -4935,6 +4986,31 @@
       dqOld.querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
       toast('下载音质已更新');
     }));
+
+    // item ⑥：设置-常规「默认打开 本地/在线」控件（index.html 缺失则由 JS 兜底创建并绑定）
+    if (!$('#stDefMode')) {
+      const sec = document.querySelector('.st-section[data-sec="general"]');
+      if (sec) {
+        const row = el('div', 'st-row');
+        row.appendChild(el('span', 'st-label', '默认打开'));
+        const modes = el('div', 'st-modes');
+        modes.id = 'stDefMode';
+        const bLocal = el('button', 'st-mode'); bLocal.dataset.mode = 'local'; bLocal.textContent = '本地';
+        const bOnline = el('button', 'st-mode'); bOnline.dataset.mode = 'online'; bOnline.textContent = '在线';
+        modes.append(bLocal, bOnline);
+        row.appendChild(modes);
+        // 插到「常规」分组标题之后（播放模式行之前）
+        const grp = sec.querySelector('.st-group');
+        if (grp && grp.nextSibling) sec.insertBefore(row, grp.nextSibling);
+        else sec.appendChild(row);
+        modes.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+          const v = b.dataset.mode === 'online' ? 'online' : 'local';
+          store.set('mp_def_search_mode', v);
+          modes.querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+          toast('默认打开模式已设为' + (v === 'online' ? '在线' : '本地'));
+        }));
+      }
+    }
 
     // 初始可见性
     syncFilterVis();
