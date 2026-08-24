@@ -1539,7 +1539,13 @@ tr.batch-checked .s-title { color: var(--accent); }
   z-index: 60; display: flex; align-items: center; gap: 4px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: var(--shadow); padding: 8px 10px; font-size: 12.5px;
-  animation: stPop .18s ease; max-width: 92vw; flex-wrap: wrap;
+  animation: batchBarIn .18s ease; max-width: 92vw; flex-wrap: wrap;
+}
+/* 批量条专用弹入：全程保留 translateX(-50%) 修正（stPop 的 to{transform:none} 会丢 -50%
+   → 动画期间偏右下方、结束瞬间跳回居中 =「先右下角停一下再快速移到主窗口」闪烁） */
+@keyframes batchBarIn {
+  from { opacity: 0; transform: translateX(-50%) scale(.96) translateY(10px); }
+  to { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }
 }
 #batchCount { color: var(--accent); font-weight: 700; margin: 0 6px 0 4px; white-space: nowrap; }
 .bb-sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; flex: none; }
