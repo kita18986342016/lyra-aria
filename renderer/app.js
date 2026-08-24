@@ -252,6 +252,11 @@
     // item ⑩：播放模式行高亮与 state.mode 对齐（打开设置时同步，避免与实际生效值不同步）
     const pm = document.getElementById('stPlayMode');
     if (pm) pm.querySelectorAll('button[data-mode]').forEach((b) => b.classList.toggle('active', b.dataset.mode === state.mode));
+    // 默认音量与运行时同步（播放条调节音量后重开设置不残留旧值）
+    const vr = $('#stVolRange');
+    if (vr) vr.value = Math.round(state.volume * 100);
+    const vv = $('#stVolVal');
+    if (vv) vv.textContent = Math.round(state.volume * 100) + '%';
   }
 
   // ---------- 倍速播放 ----------
@@ -454,7 +459,8 @@
       if (lc) {
         $('#stLyrFs').value = Math.min(36, Math.max(14, lc.fontSize || 26));
         $('#stLyrFsVal').textContent = $('#stLyrFs').value;
-        const op = Math.round((lc.bgOpacity ?? 0.55) * 100);
+        // 窗口透明度：恢复读 lc.opacity（与写入/生效键一致；旧实现误读 bgOpacity 导致滑块≠实际窗口透明度）
+        const op = Math.round((lc.opacity ?? 1) * 100);
         $('#stLyrOp').value = Math.min(100, Math.max(30, op));
         $('#stLyrOpVal').textContent = $('#stLyrOp').value + '%';
         if (/^#[0-9a-fA-F]{6}$/.test(lc.color2 || '')) $('#stLyrColor2').value = lc.color2;

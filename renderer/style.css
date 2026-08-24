@@ -1012,8 +1012,9 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
 #appBg { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
 /* 封面铺满整个窗口（800 高清源不糊）；模糊氛围强度 --bg-blur 用户可调（0=清晰铺满） */
 #appBg img { width: 100%; height: 100%; object-fit: cover; display: block; filter: blur(var(--bg-blur, 0px)) brightness(1.02); }
-/* 封面遮罩：跟随主题压暗/提亮（--bg-dim 在 :root/dark/light 分别定义，深色 cover 自动压暗便于阅读） */
-#appBg::after { content: ''; position: absolute; inset: 0; background: var(--bg-dim); }
+/* 封面遮罩：跟随主题压暗/提亮（--bg-dim 在 :root/dark/light 分别定义，深色 cover 自动压暗便于阅读）
+   --bg-strength（设置-背景强度 0-100，JS 写 0-1）：遮罩强度——0=封面原图，60 默认，100=满遮罩 */
+#appBg::after { content: ''; position: absolute; inset: 0; background: var(--bg-dim); opacity: var(--bg-strength, 0.6); }
 /* 设置面板（居中模态小窗） */
 #settingsOverlay {
   position: fixed; inset: 0; z-index: 400; background: rgba(23, 29, 46, .35);
