@@ -2392,6 +2392,25 @@ function main() {
             if (typeof lyricWin === 'undefined' || !lyricWin || lyricWin.isDestroyed()) return { exists: false };
             return { exists: true, visible: lyricWin.isVisible() };
           } catch { return { exists: false }; }
+        })(),
+        procs: (() => { // 各进程原始信息（type/cpu/memory 原样返回，BigInt 转 Number；播放时采集直接定位烧 CPU 的进程）
+          try {
+            return app.getAppMetrics().map((m) => {
+              const o = { type: m.type, service: m.serviceName || '', pid: m.pid };
+              for (const k of Object.keys(m)) {
+                if (k === 'type' || k === 'serviceName' || k === 'pid') continue;
+                const v = m[k];
+                if (typeof v === 'bigint') { o[k] = Number(v); continue; }
+                if (v && typeof v === 'object' && k === 'memory') {
+                  o[k] = {};
+                  for (const mk of Object.keys(v)) o[k][mk] = typeof v[mk] === 'bigint' ? Number(v[mk]) : v[mk];
+                  continue;
+                }
+                o[k] = v;
+              }
+              return o;
+            });
+          } catch (err) { return [{ error: (err && err.message) || String(err) }]; }
         })()
       };
     } catch (err) {

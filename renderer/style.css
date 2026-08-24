@@ -912,8 +912,15 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
   display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
   gap: 18px; padding: 6px 26px 26px; align-content: start;
 }
-.grid-card { cursor: pointer; transition: transform .15s, box-shadow .15s; }
+.grid-card { position: relative; cursor: pointer; transition: transform .15s, box-shadow .15s; }
 .grid-card:hover { transform: translateY(-3px); }
+/* 批量模式：卡片右上角勾选框 + 选中描边 */
+.grid-card .gc-check {
+  position: absolute; top: 8px; right: 8px; width: 18px; height: 18px;
+  accent-color: var(--accent); cursor: pointer; z-index: 2; margin: 0;
+  background: rgba(255, 255, 255, .88); border-radius: 5px; padding: 2px;
+}
+.grid-card.batch-checked .gc-cover { box-shadow: 0 0 0 2px var(--accent), var(--shadow); }
 .grid-card .gc-cover {
   position: relative; aspect-ratio: 1; border-radius: 16px; overflow: hidden;
   background: linear-gradient(135deg, #e8ebf2, #dfe3ee);
@@ -1464,7 +1471,12 @@ html[data-theme="light"] #lyricPanel, html[data-theme="light"] #queuePanel { bac
   width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer;
   flex: none; margin: 0;
 }
-tr.batch-sel td { background: var(--accent-soft) !important; }
+/* 批量选中行高亮（修复：原 CSS 写 .batch-sel 与 JS 的 .batch-checked 不一致 → 高亮从未生效） */
+tr.batch-checked td { background: var(--accent-soft) !important; }
+tr.batch-checked .s-title { color: var(--accent); }
+/* 表头全选复选框（批量模式显示，与行内勾选框右对齐） */
+#songTable th.c-cover.batch-active { display: flex; align-items: center; justify-content: flex-end; padding-right: 4px; }
+#checkAll { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; margin: 0; flex: none; }
 
 /* ---------- 视图头布局（标题 / 歌单搜索 / 批量 / 播放 / 切换） ---------- */
 #viewHead { display: flex; align-items: center; gap: 10px; padding: 20px 26px 12px; flex-shrink: 0; }
@@ -1479,7 +1491,7 @@ tr.batch-sel td { background: var(--accent-soft) !important; }
   transition: all .12s;
 }
 #btnBatch:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-#btnBatch.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+#btnBatch.on, #btnBatch.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 /* 歌单内搜索框 */
 #plSearchWrap { flex: none; }
 #plSearchInput {
@@ -1524,20 +1536,30 @@ tr.batch-sel td { background: var(--accent-soft) !important; }
 /* ---------- 批量条（fixed 底部居中，footer 之上） ---------- */
 #batchBar {
   position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
-  z-index: 60; display: flex; align-items: center; gap: 8px;
+  z-index: 60; display: flex; align-items: center; gap: 4px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-  box-shadow: var(--shadow); padding: 10px 14px; font-size: 12.5px;
+  box-shadow: var(--shadow); padding: 8px 10px; font-size: 12.5px;
   animation: stPop .18s ease; max-width: 92vw; flex-wrap: wrap;
 }
-#batchCount { color: var(--accent); font-weight: 700; margin-right: 6px; white-space: nowrap; }
+#batchCount { color: var(--accent); font-weight: 700; margin: 0 6px 0 4px; white-space: nowrap; }
+.bb-sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; flex: none; }
 #batchBar button {
-  height: 30px; padding: 0 14px; border: 1px solid var(--line); border-radius: 8px;
+  height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--panel); color: var(--text); font-size: 12.5px; cursor: pointer;
-  transition: all .12s;
+  transition: all .12s; display: inline-flex; align-items: center; gap: 5px; flex: none;
 }
-#batchBar button:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-#batchBar #batchClose { color: var(--muted); border-color: transparent; background: transparent; }
-#batchBar #batchClose:hover { color: var(--danger); background: rgba(240,106,92,.1); }
+#batchBar button .ic { width: 13px; height: 13px; }
+#batchBar button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+#batchBar button:disabled { opacity: .45; cursor: default; }
+#batchBar button.danger { color: var(--danger); }
+#batchBar button.danger:hover:not(:disabled) { border-color: var(--danger); background: rgba(240, 106, 92, .1); }
+/* 选择快捷项（全选/反选/取消）：文本链接样式 */
+#batchBar #batchSelAll, #batchBar #batchSelInv, #batchBar #batchSelClear {
+  border-color: transparent; background: transparent; color: var(--muted); padding: 0 6px;
+}
+#batchBar #batchSelAll:hover, #batchBar #batchSelInv:hover, #batchBar #batchSelClear:hover { color: var(--accent); background: var(--accent-soft); }
+#batchBar #batchClose { color: var(--muted); border-color: transparent; background: transparent; padding: 0 4px; }
+#batchBar #batchClose:hover { color: var(--danger); background: rgba(240, 106, 92, .1); }
 
 /* ---------- 更新卡片（右下角持久卡片） ---------- */
 #updateCard {

@@ -978,9 +978,8 @@
     // 「全部播放」按钮：曲库/收藏/最近播放/歌单/专辑等所有主窗视图都显示（在线搜索结果的 visibleList 同样可播）
     const pab = $('#viewPlayAll');
     if (pab) pab.classList.remove('hidden');
-    // 批量按钮：所有列表视图显示（入口修复——index.html 初始 class="hidden" 从未被移除，导致批量功能被锁死不可见）
-    const bBtn = $('#btnBatch');
-    if (bBtn) bBtn.classList.remove('hidden');
+    // 批量按钮：列表/歌曲墙/专辑钻取列表显示；专辑墙（按专辑聚合，单选无意义）隐藏并退出批量
+    batchBtnVisibility();
     updateSearchPlaceholder(); // 搜索框占位符随视图变化（歌单内搜索提示）
     state.list = list;
     renderNav();
@@ -1290,7 +1289,7 @@
     if (!state.batchMode) return;
     const on = force !== undefined ? !!force : !state.batchSelected.has(song.id);
     if (on) state.batchSelected.add(song.id); else state.batchSelected.delete(song.id);
-    const rows = document.querySelectorAll(`#songBody tr[data-id="${CSS.escape(song.id)}"], #gridBody .grid-card[data-id="${CSS.escape(song.id)}"]`);
+    const rows = document.querySelectorAll(`#songBody tr[data-id="${CSS.escape(song.id)}"], #gridBody .grid-card[data-id="${CSS.escape(song.id)}"]:not(.album-card)`);
     rows.forEach((row) => {
       const cb = row.querySelector('.row-check');
       if (cb) cb.checked = on;
@@ -1301,35 +1300,95 @@
   function updateBatchBar() {
     const bar = $('#batchBar');
     if (!bar) return;
+    const vis = visibleList();
+    const sel = state.batchSelected;
+    let visSel = 0;
+    for (const s of vis) if (sel.has(s.id)) visSel++;
     const c = $('#batchCount');
-    if (c) c.textContent = `已选 ${state.batchSelected.size} 首`;
+    if (c) c.textContent = vis.length ? `已选 ${visSel}/${vis.length} 首` : `已选 ${sel.size} 首`;
+    const ca = $('#checkAll'); // 表头全选三态：全选 / 半选(indeterminate) / 空
+    if (ca) {
+      ca.checked = vis.length > 0 && visSel === vis.length;
+      ca.indeterminate = visSel > 0 && visSel < vis.length;
+    }
     ['batchPlay', 'batchFav', 'batchDl', 'batchDel', 'batchAddPl'].forEach((id) => {
       const b = document.getElementById(id);
-      if (b) b.disabled = state.batchSelected.size === 0;
+      if (b) b.disabled = sel.size === 0;
     });
   }
+  // 同步所有可见行/卡片的勾选视觉（避免整表重渲染丢滚动）
+  function syncBatchChecks() {
+    const sel = state.batchSelected;
+    document.querySelectorAll('#songBody tr[data-id]').forEach((row) => {
+      const on = sel.has(row.dataset.id);
+      const cb = row.querySelector('.row-check');
+      if (cb) cb.checked = on;
+      row.classList.toggle('batch-checked', on);
+    });
+    document.querySelectorAll('#gridBody .grid-card[data-id]:not(.album-card)').forEach((card) => {
+      const on = sel.has(card.dataset.id);
+      const cb = card.querySelector('.row-check');
+      if (cb) cb.checked = on;
+      card.classList.toggle('batch-checked', on);
+    });
+    updateBatchBar();
+  }
+  // 全选/取消全选（当前可见列表；已全选则清空，与主流播放器一致）
+  function batchSelectAll() {
+    const vis = visibleList();
+    const allSel = vis.length > 0 && vis.every((s) => state.batchSelected.has(s.id));
+    for (const s of vis) {
+      if (allSel) state.batchSelected.delete(s.id); else state.batchSelected.add(s.id);
+    }
+    syncBatchChecks();
+  }
+  function batchSelectInvert() {
+    for (const s of visibleList()) {
+      if (state.batchSelected.has(s.id)) state.batchSelected.delete(s.id); else state.batchSelected.add(s.id);
+    }
+    syncBatchChecks();
+  }
+  function batchSelectClear() { state.batchSelected.clear(); syncBatchChecks(); }
   function batchSelectedSongs() {
     return state.list.filter((s) => s && state.batchSelected.has(s.id));
+  }
+  // 进入/退出批量模式时保留列表滚动位置（renderList 重建 tbody 会丢滚动）
+  function batchRenderKeepScroll() {
+    const st = { tw: $('#tableWrap') ? $('#tableWrap').scrollTop : 0, gb: $('#gridBody') ? $('#gridBody').scrollTop : 0 };
+    const restore = () => {
+      if ($('#tableWrap')) $('#tableWrap').scrollTop = st.tw;
+      if ($('#gridBody')) $('#gridBody').scrollTop = st.gb;
+    };
+    renderList().then(() => requestAnimationFrame(restore));
+    setTimeout(restore, 150);
   }
   function enterBatchMode() {
     state.batchMode = true;
     state.batchSelected.clear();
     const btn = document.getElementById('btnBatch');
-    if (btn) btn.classList.add('active');
+    if (btn) btn.classList.add('on');
     const bar = $('#batchBar');
     if (bar) bar.classList.remove('hidden');
+    const th = document.querySelector('#songTable th.c-cover');
+    if (th) th.classList.add('batch-active');
+    const ca = $('#checkAll');
+    if (ca) ca.classList.remove('hidden');
     updateBatchBar();
-    renderList();
+    batchRenderKeepScroll();
   }
   function exitBatchMode() {
     if (!state.batchMode && !state.batchSelected.size) { if ($('#batchBar')) $('#batchBar').classList.add('hidden'); return; }
     state.batchMode = false;
     state.batchSelected.clear();
     const btn = document.getElementById('btnBatch');
-    if (btn) btn.classList.remove('active');
+    if (btn) btn.classList.remove('on');
     const bar = $('#batchBar');
     if (bar) bar.classList.add('hidden');
-    renderList();
+    const th = document.querySelector('#songTable th.c-cover');
+    if (th) th.classList.remove('batch-active');
+    const ca = $('#checkAll');
+    if (ca) { ca.classList.add('hidden'); ca.checked = false; ca.indeterminate = false; }
+    batchRenderKeepScroll();
   }
   function toggleBatchMode() {
     if (state.batchMode) exitBatchMode(); else enterBatchMode();
@@ -1852,6 +1911,16 @@
       const sub = el('div', 'gc-sub', song.artist || '');
       bindTitleMarquee(sub);
       card.append(cover, title, sub);
+      // 批量模式：卡片右上角勾选框（修复：原网格无勾选视觉，选中无反馈）
+      if (state.batchMode) {
+        const chk = el('input', 'row-check gc-check');
+        chk.type = 'checkbox';
+        chk.checked = state.batchSelected.has(song.id);
+        chk.addEventListener('click', (e) => e.stopPropagation());
+        chk.addEventListener('change', () => toggleBatchSelect(song, chk.checked));
+        card.appendChild(chk);
+        card.classList.toggle('batch-checked', state.batchSelected.has(song.id));
+      }
       card.addEventListener('click', () => {
         if (state.batchMode) { toggleBatchSelect(song); return; }
         playSongOnClick(vis, song);
@@ -1965,8 +2034,17 @@
   function toggleGrid() {
     state.gridMode = (state.gridMode + 1) % 3;
     try { localStorage.setItem('mp_grid', String(state.gridMode)); } catch { /* 忽略 */ }
+    batchBtnVisibility(); // 专辑墙隐藏批量按钮并退出批量（专辑钻取列表仍可用）
     updateViewSwitch();
     renderList();
+  }
+  // 批量按钮可见性：专辑墙（按专辑聚合，单选无意义）隐藏；列表/歌曲墙/专辑钻取列表显示
+  function batchBtnVisibility() {
+    const bBtn = $('#btnBatch');
+    if (!bBtn) return;
+    const hidden = state.gridMode === 2 && !String(state.view || '').startsWith('album:');
+    bBtn.classList.toggle('hidden', hidden);
+    if (hidden && state.batchMode) exitBatchMode();
   }
 
   // 封面懒加载（进入视口才请求）
@@ -2781,6 +2859,7 @@
   let lastLyricIdx = -1;
   let rafId = null;
   let lastLyricPushTs = 0; // 酷狗式高频时间推送节流（~60/s）
+  let lastKaraokeTs = 0; // karaokeLoop 60fps 上限节流（高刷屏 120/144/240Hz 防 240fps 空转）
 
   // 行切换：高亮 + 悬浮窗推送（仅在行变化时执行）
   function switchLyricLine(idx) {
@@ -2947,17 +3026,22 @@
   }
 
   function karaokeLoop() {
-    // CPU 减负（1.3.6.1 体验版）：仅当主窗需要 60fps 逐字/滚动/同步时才跑 rAF；
+    // CPU 减负（1.3.6 体验版）：仅当主窗需要 60fps 逐字/滚动/同步时才跑 rAF；
     // 否则降频为 250ms 自检（歌词行切换由 timeupdate 兜底，歌词窗时间由 200ms 心跳兜底）
+    // 修复：thumbView 显隐由 show class 控制（HTML 无 hidden），原判断恒真 → 240Hz 屏 240fps 全速空转
     const needFrame =
       !$('#lyricPanel').classList.contains('hidden') ||
       !$('#pageDetail').classList.contains('hidden') ||
-      !$('#thumbView').classList.contains('hidden');
+      $('#thumbView').classList.contains('show');
     if (!needFrame) {
       rafId = setTimeout(karaokeLoop, 250);
       return;
     }
     rafId = requestAnimationFrame(karaokeLoop);
+    // 高刷屏上限 60fps：120/144/240Hz 屏 rAF 会跑到 120~240fps，卡拉OK/缩略图 60fps 足够顺滑，240Hz 下省 75% CPU
+    const _now = performance.now();
+    if (_now - lastKaraokeTs < 16) return;
+    lastKaraokeTs = _now;
     updateLyricHighlight();
     // 歌曲结尾淡出：剩余 ≤ 0.4s 时一次性平滑收尾（自动连播不突兀，酷狗式）
     if (!audio.paused && audio.duration > 1 && !state._tailFaded && (audio.duration - (audio.currentTime || lastAudioTime)) <= 0.4 && audio.volume > 0.01) {
@@ -2970,7 +3054,7 @@
         else audio.volume = Math.max(0, start * (1 - p));
       }, 16);
     }
-    if (!$('#thumbView').classList.contains('hidden')) updateThumbView(); // 缩略图封面同步
+    if ($('#thumbView').classList.contains('show')) updateThumbView(); // 缩略图封面同步（show class 为准）
     if (!$('#pageDetail').classList.contains('hidden')) updateDetailLyric(); // 详情页歌词实时滚动
     // 酷狗式高频时间推送：每帧把真实音频时间推给歌词窗（节流 ~60/s，防最小化时 rAF 加速导致的 IPC 洪泛）。
     // 主窗已 setBackgroundThrottling(false)，最小化/遮挡时 rAF 照常运行 → 歌词窗始终拿到最新时间，
@@ -4323,7 +4407,7 @@
           document.getElementById('player').style.setProperty('--pct', ((audio.currentTime / audio.duration) * 100) + '%');
         } catch { /* 忽略 */ }
       }
-      if (!$('#thumbView').classList.contains('hidden')) updateThumbControls(); // 缩略图页进度同步
+      if ($('#thumbView').classList.contains('show')) updateThumbControls(); // 缩略图页进度同步（show class 为准）
       // SMTC 进度（Win11 媒体浮出进度条）——节流约 1 秒
       try {
         if (audio.currentTime - lastSmtcPos >= 1 || audio.currentTime < lastSmtcPos) {
@@ -4552,6 +4636,9 @@
     // 100ms 定时器保证当前句"已唱/未唱"渐变持续更新（面板 + 详情页）
     setInterval(() => {
       if (audio.paused) return;
+      // CPU 减负（1.3.6 体验版）：面板与详情页都隐藏时（纯列表播放）渐变/滚动无需推进，
+      // 行切换由 timeupdate（~250ms）兜底 → 直接跳过，消除播放期 10Hz 空转
+      if ($('#lyricPanel').classList.contains('hidden') && $('#pageDetail').classList.contains('hidden')) return;
       updateLyricHighlight();
       if (!$('#pageDetail').classList.contains('hidden')) updateDetailLyric();
     }, 100);
@@ -4682,11 +4769,22 @@
     const btnBatch = $('#btnBatch');
     if (btnBatch) btnBatch.addEventListener('click', toggleBatchMode);
     const bPlay = $('#batchPlay'); if (bPlay) bPlay.addEventListener('click', batchPlaySelected);
-    const bFav = $('#batchFav'); if (bFav) bFav.addEventListener('click', async () => { await batchFavoriteSelected(); if (!$('#batchBar') || $('#batchBar').classList.contains('hidden')) return; });
+    const bFav = $('#batchFav'); if (bFav) bFav.addEventListener('click', () => { batchFavoriteSelected(); });
     const bDl = $('#batchDl'); if (bDl) bDl.addEventListener('click', batchDownloadSelected);
     const bDel = $('#batchDel'); if (bDel) bDel.addEventListener('click', batchDeleteSelected);
     const bAdd = $('#batchAddPl'); if (bAdd) bAdd.addEventListener('click', batchAddToPlaylist);
     const bClose = $('#batchClose'); if (bClose) bClose.addEventListener('click', exitBatchMode);
+    const bSelAll = $('#batchSelAll'); if (bSelAll) bSelAll.addEventListener('click', batchSelectAll);
+    const bSelInv = $('#batchSelInv'); if (bSelInv) bSelInv.addEventListener('click', batchSelectInvert);
+    const bSelClear = $('#batchSelClear'); if (bSelClear) bSelClear.addEventListener('click', batchSelectClear);
+    const cAll = $('#checkAll');
+    if (cAll) cAll.addEventListener('change', () => { if (cAll.checked) batchSelectAll(); else batchSelectClear(); });
+    // 批量模式快捷键：Esc 退出、Ctrl+A 全选
+    window.addEventListener('keydown', (e) => {
+      if (!state.batchMode) return;
+      if (e.key === 'Escape') { e.preventDefault(); exitBatchMode(); return; }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); batchSelectAll(); }
+    });
 
     // —— 顶栏：搜索开合 + 筛选弹窗 + 来源分段 + 帮助浮层 ——
     // 顶栏搜索簇 fallback（#searchBtn/#searchWrap/#filterBtn）——index.html 由另一代理提供，缺失则补
@@ -4904,12 +5002,17 @@
           ts: new Date().toISOString(),
           app: sys.app, platform: sys.platform, electron: sys.electron,
           memTotalMB: sys.memTotalMB, displays: sys.displays,
-          gpu: sys.gpu, mainCpu500ms: sys.mainCpu500ms,          theme: document.documentElement.getAttribute('data-theme'),
+          gpu: sys.gpu, mainCpu500ms: sys.mainCpu500ms, procs: sys.procs, theme: document.documentElement.getAttribute('data-theme'),
           bgMode: state.bgMode,
           bgBlurPx: parseFloat(document.documentElement.style.getPropertyValue('--bg-blur')) || 0,
           bgStrength: store.get('mp_bg_strength', '60'),
           coverSpin: store.get('mp_cover_spin', '1'),
           view: state.view,
+          panels: { // 三个 60fps 消耗点当前是否显示（karaokeLoop needFrame 的直接依据）
+            lyric: $('#lyricPanel').classList.contains('hidden') ? 'hidden' : 'shown',
+            detail: $('#pageDetail').classList.contains('hidden') ? 'hidden' : 'shown',
+            thumb: $('#thumbView').classList.contains('show') ? 'shown' : 'hidden'
+          },
           playing: !audio.paused,
           karaokeRunning: rafId !== null,
           lrcLines: state.lrc ? state.lrc.length : 0,

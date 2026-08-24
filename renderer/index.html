@@ -289,7 +289,7 @@
         </div>
         <table id="songTable">
           <thead>
-            <tr><th class="c-cover"></th><th class="c-title">标题</th><th class="c-artist">艺术家</th><th class="c-album">专辑</th><th class="c-dur">时长</th><th class="c-dl"></th><th class="c-fav"></th></tr>
+            <tr><th class="c-cover"><input type="checkbox" id="checkAll" class="row-check hidden" title="全选/取消全选 (Ctrl+A)"></th><th class="c-title">标题</th><th class="c-artist">艺术家</th><th class="c-album">专辑</th><th class="c-dur">时长</th><th class="c-dl"></th><th class="c-fav"></th></tr>
           </thead>
           <tbody id="songBody"></tbody>
         </table>
@@ -391,12 +391,17 @@
   <!-- 批量操作条（列表批量模式，默认隐藏） -->
   <div id="batchBar" class="hidden">
     <span id="batchCount"></span>
-    <button id="batchPlay">播放</button>
-    <button id="batchFav">收藏</button>
-    <button id="batchDl">下载</button>
-    <button id="batchDel">删除</button>
-    <button id="batchAddPl">加入歌单</button>
-    <button id="batchClose" title="退出批量模式">✕</button>
+    <span class="bb-sep"></span>
+    <button id="batchSelAll" title="全选当前列表 (Ctrl+A)">全选</button>
+    <button id="batchSelInv" title="反选（当前列表）">反选</button>
+    <button id="batchSelClear" title="取消全部选择">取消</button>
+    <span class="bb-sep"></span>
+    <button id="batchPlay" title="播放所选歌曲"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>播放</button>
+    <button id="batchFav" title="收藏所选歌曲"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>收藏</button>
+    <button id="batchDl" title="下载所选（仅在线歌曲）"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>下载</button>
+    <button id="batchDel" class="danger" title="删除所选"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>删除</button>
+    <button id="batchAddPl" title="加入歌单"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M18 9v6"/><path d="M15 12h6"/></svg>歌单</button>
+    <button id="batchClose" title="退出批量模式 (Esc)">✕</button>
   </div>
 
   <!-- 下载弹窗（选择目录与音质，默认隐藏） -->
