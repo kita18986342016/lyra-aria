@@ -223,6 +223,7 @@
     setQ('stAccent', 'accent', store.get('mp_accent', 'blue'));
     setQ('stBgMode', 'bg', store.get('mp_bg_mode', 'cover'));
     setQ('stProgressStyle', 'progress', store.get('mp_progress_style', 'A'));
+    setQ('stCoverSpin', 'spin', store.get('mp_cover_spin', '1'));
     const dq = $('#stDlQuality');
     if (dq) dq.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.q === store.get('mp_dl_quality', 'lossless')));
     const sl = $('#stBgStrength');
@@ -2943,6 +2944,16 @@
   }
 
   function karaokeLoop() {
+    // CPU 减负（1.3.6.1 体验版）：仅当主窗需要 60fps 逐字/滚动/同步时才跑 rAF；
+    // 否则降频为 250ms 自检（歌词行切换由 timeupdate 兜底，歌词窗时间由 200ms 心跳兜底）
+    const needFrame =
+      !$('#lyricPanel').classList.contains('hidden') ||
+      !$('#pageDetail').classList.contains('hidden') ||
+      !$('#thumbView').classList.contains('hidden');
+    if (!needFrame) {
+      rafId = setTimeout(karaokeLoop, 250);
+      return;
+    }
     rafId = requestAnimationFrame(karaokeLoop);
     updateLyricHighlight();
     // 歌曲结尾淡出：剩余 ≤ 0.4s 时一次性平滑收尾（自动连播不突兀，酷狗式）
@@ -4333,15 +4344,17 @@
       window.api.smtcUpdate({ playing: true });
       const pi0 = $('#pCoverImg');
       if (pi0.src && !pi0.classList.contains('hidden')) sendThumbDIB(pi0.src, true); // 缩略图同步播放状态
-      // 封面旋转（酷狗式唱片）
-      $('#pCoverImg').classList.add('spinning');
-      $('#pdCoverImg').classList.add('spinning');
+      // 封面旋转（酷狗式唱片；设置-外观「封面旋转」可关，CPU 减负）
+      if (store.get('mp_cover_spin', '1') !== '0') {
+        $('#pCoverImg').classList.add('spinning');
+        $('#pdCoverImg').classList.add('spinning');
+      }
       updateThumbControls();
     });
     audio.addEventListener('pause', () => {
       $('#iconPlay').classList.remove('hidden');
       $('#iconPause').classList.add('hidden');
-      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+      if (rafId) { cancelAnimationFrame(rafId); clearTimeout(rafId); rafId = null; }
       window.api.sendLyricPlayState({ playing: false, audioTime: audio.currentTime || lastAudioTime, duration: audio.duration || 0 });
       window.api.sendThumbState(false);
       try { navigator.mediaSession.playbackState = 'paused'; } catch { /* 忽略 */ }
@@ -4867,6 +4880,13 @@
       }));
     }
     bindGroup('stProgressStyle', 'mp_progress_style', applyAppearance);
+    // 封面旋转开关（1.3.6.1 体验版 CPU 减负）：即时生效——播放中切换立即加/摘旋转
+    const applyCoverSpin = () => {
+      const on = store.get('mp_cover_spin', '1') !== '0' && !audio.paused;
+      $('#pCoverImg').classList.toggle('spinning', on);
+      $('#pdCoverImg').classList.toggle('spinning', on);
+    };
+    bindGroup('stCoverSpin', 'mp_cover_spin', applyCoverSpin);
     // 背景强度滑块
     const bs = $('#stBgStrength');
     const bv = $('#stBgStrengthVal');
