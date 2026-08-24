@@ -1714,10 +1714,12 @@ html[data-theme="dark"] #batchBar #batchClose:hover { background: rgba(241, 106,
 #dlDialogPanel .dl-dialog-foot button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 #dlDialogPanel .dl-dialog-foot button.primary:hover { filter: brightness(1.08); color: #fff; }
 
-/* ---------- 进度条 B 版（#player.progress-b：细条贴 footer 上边界，可拖动） v1.3.7 统一为圆角细条 ---------- */
+/* ---------- 进度条 B 版（#player.progress-b：细条贴 footer 上边界，可拖动） ----------
+   v1.3.7 布局统一：底栏元素排列与 A 版（滑块式）完全一致（cover/info/controls/时间区/right 位置相同），
+   唯一区别是进度条位置——A 版在时间区中部滑块，B 版贴底栏上边界横贯细条（时间标签仍两端显示）。 */
+#player.progress-b { position: relative; }
 #player.progress-b #pProgress {
-  position: absolute; top: 0; left: 0; right: 0; height: 11px;
-  pointer-events: auto; margin: 0;
+  position: static; flex: 1; justify-content: space-between; /* 保持 A 版弹性占位，时间标签两端分布 */
 }
 #player.progress-b #pRange {
   -webkit-appearance: none; appearance: none; position: absolute; top: 0; left: 0; right: 0;
@@ -1735,7 +1737,6 @@ html[data-theme="dark"] #batchBar #batchClose:hover { background: rgba(241, 106,
   transition: opacity .12s, transform .12s;
 }
 #player.progress-b:hover #pRange::-webkit-slider-thumb { opacity: 1; transform: scale(1.05); }
-#player.progress-b #pCur, #player.progress-b #pDur { display: none; }
 #player.progress-b:hover #pRange { height: 8px; border-radius: 4px; }
 
 /* ---------- 底栏增强：心形 + 来源/音质徽标 ---------- */
@@ -1777,27 +1778,6 @@ html[data-theme="dark"] #batchBar #batchClose:hover { background: rgba(241, 106,
   transition: border-color .15s, box-shadow .15s;
 }
 #settingsPanel .st-row input[type="number"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-/* 详情页未唱歌词颜色：圆角色块 + 隐藏 color input（点击色块触发原生取色器） */
-#settingsPanel .st-color-swatch { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
-#settingsPanel .st-swatch {
-  width: 26px; height: 26px; border-radius: 50%;
-  border: 2px solid var(--line); background: var(--lyric-unsung, #bcfb89);
-  display: inline-block; transition: transform .1s, box-shadow .1s;
-}
-#settingsPanel .st-swatch:hover { transform: scale(1.12); box-shadow: 0 0 0 2px var(--accent); }
-#settingsPanel .st-color-swatch input[type="color"] {
-  position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer;
-  padding: 0; border: none; background: none;
-}
-#settingsPanel .st-color-swatch input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
-#settingsPanel .st-color-swatch input[type="color"]::-webkit-color-swatch { border: none; }
-
-/* ---------- 详情页歌词未唱行颜色（CSS 变量 --lyric-unsung 默认 #bcfb89；当前行保持强调色逻辑） ---------- */
-#pageDetail { --lyric-unsung: #bcfb89; }
-html[data-theme="light"] #pageDetail { --lyric-unsung: #8aa84d; }
-#pdLyrics .d-lyric:not(.active) .d-main { color: var(--lyric-unsung, #bcfb89); transition: color .2s; }
-#pdLyrics .d-lyric:not(.active) .d-trans { color: var(--lyric-unsung, #bcfb89); opacity: .78; }
-
 /* ---------- 轻量统一微交互 ---------- */
 button, select, input[type="text"], input[type="search"] { border-radius: 8px; }
 .top-btn, #btnBatch, #batchBar button,

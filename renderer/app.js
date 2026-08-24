@@ -184,13 +184,6 @@
     document.documentElement.setAttribute('data-accent', accent);
     const bgStrength = Math.max(0, Math.min(100, parseInt(store.get('mp_bg_strength', '60'), 10) || 60));
     document.documentElement.style.setProperty('--bg-strength', (bgStrength / 100) + '');
-    // item 补给：详情页未唱歌词颜色（CSS 变量 --lyric-unsung，另一代理已备好；#pageDetail 自带默认值，需一并覆盖）
-    const unsung = store.get('mp_detail_unsung_color', '#bcfb89');
-    if (/^#([0-9a-fA-F]{6})$/.test(unsung)) {
-      document.documentElement.style.setProperty('--lyric-unsung', unsung);
-      const pd = $('#pageDetail');
-      if (pd) pd.style.setProperty('--lyric-unsung', unsung);
-    }
     // 背景模式：solid | cover | custom（缺省 cover，保持现有封面氛围行为）
     let bgMode = store.get('mp_bg_mode', 'cover');
     if (!['solid', 'cover', 'custom'].includes(bgMode)) bgMode = 'cover';
@@ -5130,27 +5123,6 @@
       if (bv) bv.textContent = bs.value;
     });
     // 自定义背景选图/清除（item 14）：stBgPick/stBgClear 已从 HTML 删除，改由 stBgMode custom 直接接管
-    // 补给：详情页未唱歌词颜色选择器
-    const unsungC = $('#stDetailUnsungColor');
-    if (unsungC) {
-      unsungC.value = store.get('mp_detail_unsung_color', '#bcfb89');
-      const applyUnsung = (v) => {
-        const pd = $('#pageDetail');
-        document.documentElement.style.setProperty('--lyric-unsung', v);
-        if (pd) pd.style.setProperty('--lyric-unsung', v);
-        const sw = $('#stDetailUnsungSwatch');
-        if (sw) sw.style.background = v;
-      };
-      unsungC.addEventListener('input', () => {
-        const v = unsungC.value;
-        store.set('mp_detail_unsung_color', v);
-        applyUnsung(v);
-      });
-      unsungC.addEventListener('change', () => {
-        store.set('mp_detail_unsung_color', unsungC.value);
-        applyUnsung(unsungC.value);
-      });
-    }
   }
 
   // 底栏增强：当前曲收藏 / 来源 / 音质（item 17c）
