@@ -71,7 +71,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "深空折韵",
-      "artifactName": "lyra-aria-setup-${version}-体验版.exe"
+      "artifactName": "lyra-aria-setup-${version}.exe"
     },
     "asar": true,
     "asarUnpack": [

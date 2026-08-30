@@ -9,7 +9,7 @@
   const ICON_MODE_SHUFFLE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>';
   const MODE_ICONS = { order: ICON_MODE_ORDER, 'repeat-one': ICON_MODE_REPEAT_ONE, shuffle: ICON_MODE_SHUFFLE };
   const MODE_TITLES = { order: '列表循环', 'repeat-one': '单曲循环', shuffle: '随机播放' };
-  let cfg = { fontSize: 26, color: '#bcfb89', color2: '#4deaff', bgOpacity: 0.55, mode: 'desktop', locked: false, playMode: 'order', stroke: true };
+  let cfg = { fontSize: 26, color: '#bcfb89', color2: '#4deaff', bgOpacity: 0.55, mode: 'desktop', locked: false, playMode: 'order', stroke: true, sweepStyle: 'classic', lyricFont: 'default' };
   let playing = false;   // 播放中？
   let curTime = 0;       // 当前音频时间（由播放状态同步 + rAF 推算）
   let lineT = 0;         // 当前行开始时间
@@ -18,6 +18,7 @@
   let rafId = null;
   // 全量歌词（自主滚动）：行定位/切换在本地，不依赖主窗 rAF/事件（主窗被遮挡/最小化时仍滚动）
   let lrcLines = [];     // [{t, text}]
+  let transLines = [];   // [{t, text}] 译文（桌面歌词翻译，随全量歌词下发）
   let lineIdx = -1;      // 当前行索引
   let wordSegs = [];     // 逐字时间轴 [{t(秒), chars:[{ch,t(秒)}]}]（在线歌词逐字卡拉OK）
   let curWord = null;    // 当前行命中的逐字段 {t, chars, dur}
@@ -25,14 +26,30 @@
   function escW(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
+  function hexToRgb(h) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(h || '');
+    if (!m) return [188, 251, 137];
+    const n = parseInt(m[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
   // 渲染当前行：有逐字时间 → 逐字 span（--p 归一化）；无 → 纯文本单渐变
   // 两句显示：当前句（左对齐）+ 下一句（右下角右对齐预告）；超长句 → 只显示当前句（body.single 换行完整显示）
+  // 译文：当前句下方显示对应译文（时间匹配 ±0.35s 优先，行序兜底）
+  function transFor(idx) {
+    if (!transLines.length || !lrcLines[idx]) return '';
+    const t = lrcLines[idx].t;
+    for (const tr of transLines) {
+      if (tr.t >= 0 && Math.abs(tr.t - t) < 0.35) return tr.text || '';
+    }
+    return idx < transLines.length ? (transLines[idx].text || '') : '';
+  }
   function renderLineText(idx) {
     curWord = null;
     const line = lrcLines[idx];
     if (!line) {
       $('#text').textContent = '';
       $('#linePrev').textContent = '';
+      $('#lineTrans').textContent = '';
       $('#lineNext').textContent = '';
       document.body.classList.remove('single');
       syncWinHeight();
@@ -46,40 +63,40 @@
     const longLine = text.length > perLine || nextText.length > perLine;
     $('#linePrev').textContent = '';
     $('#lineNext').textContent = longLine ? '' : nextText;
+    $('#lineTrans').textContent = transFor(idx);
     document.body.classList.toggle('single', longLine);
+    // #24：与主窗面板/详情统一——每字单元一个 .sweep 段，段内 background-clip:text 渐变滑动（像素级平滑推进），
+    //     废弃「逐字 span 整体变色」（用户反馈桌面歌词是"逐字跳变"、面板"更细"；实测本机 Electron 43
+    //     background-clip:text 含阴影均正常，旧注释"渲染成矩形框"为误判）。
+    //     KRC 逐字时间轴 → 按字时间分界；无时间轴 → 中文逐字/英文按词均分（与主窗 word 模式同构）。
+    const lineDur = Math.max(0.15, (lrcLines[idx + 1] ? lrcLines[idx + 1].t - line.t : 3));
+    let units = null;
     let best = null, bestD = 0.25;
     for (const w of wordSegs) {
       const d = Math.abs(w.t - line.t);
       if (d < bestD) { bestD = d; best = w; }
     }
     if (best && best.chars && best.chars.length) {
-      const dur = Math.max(0.15, (lrcLines[idx + 1] ? lrcLines[idx + 1].t - line.t : 3));
-      curWord = { t: line.t, chars: best.chars, dur };
-      $('#text').innerHTML = best.chars.map((c, i) => {
-        const s0 = Math.min(1, Math.max(0, (c.t - line.t) / dur));
-        const s1 = i < best.chars.length - 1 ? Math.min(1, Math.max(0, (best.chars[i + 1].t - line.t) / dur)) : 1;
-        return `<span class="w" data-s0="${s0.toFixed(4)}" data-s1="${Math.max(s0 + 0.001, s1).toFixed(4)}">${escW(c.ch || ' ')}</span>`;
-      }).join('');
+      units = best.chars.map((c) => ({ t: Math.min(1, Math.max(0, (c.t - line.t) / lineDur)), ch: c.ch || ' ' }));
     } else {
-      // 无逐字时间轴：统一拆词/拆字均匀卡拉OK（中文逐字、英文按词）——短句也拆，
-      // 每字颜色由 applyWordProgress 插值（唱过=蓝，未唱=绿），不依赖 background-clip（Electron 43 下不可靠）
-      const dur = Math.max(0.15, (lrcLines[idx + 1] ? lrcLines[idx + 1].t - line.t : 3));
       const segs = text.match(/[\u4e00-\u9fff]|[a-zA-Z0-9']+|\s+|./g) || [text];
-      const units = [];
+      const us = [];
       for (const s of segs) {
-        if (/^[\u4e00-\u9fff]$/.test(s)) units.push(s);
-        else if (s.trim() === '') units.push(' ');
-        else if (units.length && /^[\u4e00-\u9fff]$/.test(units[units.length - 1])) units.push(s);
-        else if (units.length) units[units.length - 1] += s;
-        else units.push(s); // 首个非中文单元
+        if (/^[\u4e00-\u9fff]$/.test(s)) us.push(s);
+        else if (s.trim() === '') us.push(' ');
+        else if (us.length && /^[\u4e00-\u9fff]$/.test(us[us.length - 1])) us.push(s);
+        else if (us.length) us[us.length - 1] += s;
+        else us.push(s); // 首个非中文单元
       }
-      const n = Math.max(1, units.length);
-      curWord = { t: line.t, chars: units.map((ch, i) => ({ ch, t: line.t + (i / n) * dur })), dur };
-      $('#text').innerHTML = units.map((ch, i) => {
-        const s0 = i / n, s1 = (i + 1) / n;
-        return `<span class="w" data-s0="${s0.toFixed(4)}" data-s1="${Math.max(s0 + 0.001, s1).toFixed(4)}">${escW(ch || ' ')}</span>`;
-      }).join('');
+      const n = Math.max(1, us.length);
+      units = us.map((ch, i) => ({ t: i / n, ch }));
     }
+    curWord = null;
+    $('#text').innerHTML = units.map((u, i) => {
+      const s0 = u.t;
+      const s1 = i < units.length - 1 ? Math.min(1, Math.max(0, units[i + 1].t)) : 1;
+      return `<span class="sweep" data-s0="${s0.toFixed(4)}" data-s1="${Math.max(s0 + 0.001, s1).toFixed(4)}">${escW(u.ch)}</span>`;
+    }).join('');
     // 半字防线：动态阈值是按字号估算的，字体渲染宽度若有差异导致溢出，
     // 立刻切换行模式（single）完整显示，绝不裁出半个字
     requestAnimationFrame(() => {
@@ -100,31 +117,22 @@
     winHTimer = setTimeout(() => {
       const textH = ($('#lyricWrap') ? $('#lyricWrap').scrollHeight : 0);
       const nextH = $('#lineNext') && $('#lineNext').textContent ? Math.ceil(cfg.fontSize * 1.5) : 0;
-      // 顶部 inset 6 + 内容 + 下一句(底部 12) + 底部边距 6 + 解锁工具条预留 34
-      const h = Math.max(108, Math.ceil(textH) + 12 + nextH + 40);
+      const transH = $('#lineTrans') && $('#lineTrans').textContent ? Math.ceil(cfg.fontSize * 1.35) : 0;
+      // 顶部 inset 6 + 内容 + 下一句(底部 12) + 译文行 + 底部边距 6 + 解锁工具条预留 34
+      const h = Math.max(108, Math.ceil(textH) + 12 + nextH + transH + 40);
       if (window.api && window.api.setLyricWinHeight) window.api.setLyricWinHeight(Math.min(h, 900));
     }, 40);
   }
-  // 逐字卡拉OK：每字颜色插值（未唱=绿 → 唱过=蓝，平滑过渡）——直接设 color，不依赖 background-clip
-  function hexToRgb(h) {
-    const m = /^#?([0-9a-f]{6})$/i.exec(h || '');
-    if (!m) return [188, 251, 137];
-    const n = parseInt(m[1], 16);
-    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-  }
+  // #24 卡拉OK推进：每段 .sweep 按段内进度 --p 更新（段=一个汉字/英文词，段内渐变像素级滑动，
+  //     与主窗面板/详情同款 background-clip:text；不再整字变色跳变）
   function applyWordProgress(p) {
-    const spans = $('#text').querySelectorAll(':scope > .w');
-    const lc = hexToRgb(cfg.color || '#bcfb89');
-    const lc2 = hexToRgb(cfg.color2 || '#4deaff');
-    spans.forEach((sp) => {
+    const spans = $('#text').querySelectorAll(':scope > .sweep');
+    for (const sp of spans) {
       const s0 = parseFloat(sp.dataset.s0) || 0;
       const s1 = parseFloat(sp.dataset.s1) || 1;
-      const t = s1 > s0 ? Math.min(1, Math.max(0, (p - s0) / (s1 - s0))) : 0;
-      const r = Math.round(lc[0] + (lc2[0] - lc[0]) * t);
-      const g = Math.round(lc[1] + (lc2[1] - lc[1]) * t);
-      const b = Math.round(lc[2] + (lc2[2] - lc[2]) * t);
-      sp.style.color = `rgb(${r},${g},${b})`;
-    });
+      const t = s1 > s0 ? Math.min(1, Math.max(0, (p - s0) / (s1 - s0))) : 1;
+      sp.style.setProperty('--p', t.toFixed(3));
+    }
   }
 
   function applyConfig(c) {
@@ -133,6 +141,8 @@
     // 区别仅在交互：锁定=穿透+透明无框（白框/按钮隐藏，悬停出解锁按钮）；解锁=白框+控制条
     $('#text').style.fontSize = cfg.fontSize + 'px';
     $('#lineNext').style.fontSize = cfg.fontSize + 'px'; // 下一句与当前句同字号
+    // 译文小字：约当前句 58%（26px 字号 → ~15px），随字号缩放
+    $('#lineTrans').style.fontSize = Math.max(11, Math.round(cfg.fontSize * 0.58)) + 'px';
     const a = Math.max(0, Math.min(1, cfg.bgOpacity));
     $('#stage').style.setProperty('--stage-a', a);
     // 整窗透明度（设置-桌面歌词-窗口透明度，30-100%）
@@ -144,6 +154,12 @@
     document.body.classList.toggle('taskbar', cfg.mode === 'taskbar');
     document.body.classList.toggle('locked', !!cfg.locked);
     document.body.classList.toggle('stroke', cfg.stroke !== false); // 描边/阴影（默认开）
+    // 卡拉OK样式（#24 多款可选）：classic 描边 / soft 柔光 / clean 极简 / bold 立体 / legacy 旧版深阴影；旧配置无该字段 → 默认 classic
+    const SWEEP_STYLES = ['classic', 'soft', 'clean', 'bold', 'legacy'];
+    document.body.dataset.sweep = SWEEP_STYLES.includes(cfg.sweepStyle) ? cfg.sweepStyle : 'classic';
+    // 桌面歌词字体（设置→桌面歌词→字体；default=系统默认栈，字形装饰仍只走 stroke/filter 安全通道）
+    const FONT_STYLES = ['default', 'noto', 'misans', 'yahei', 'songti', 'kai', 'wenkai', 'xingkai', 'xinwei'];
+    document.body.dataset.font = FONT_STYLES.includes(cfg.lyricFont) ? cfg.lyricFont : 'default';
     // 顶部工具条图标随状态切换（图标=当前状态）：锁定态=锁形（点击解除）；解锁态=开锁形（点击锁定）
     $('#unlockBtn').innerHTML = cfg.locked ? ICON_LOCK : ICON_UNLOCK;
     $('#unlockBtn').title = cfg.locked ? '解除锁定' : '重新锁定';
@@ -161,7 +177,7 @@
   function applyProgress(p, caller) {
     window.__lyrDbg.lastApply = { p: +p.toFixed(3), curTime: +curTime.toFixed(3), lineT: +lineT.toFixed(3), dur: +dur.toFixed(3), caller: caller || '?' };
     const pc = Math.min(1, Math.max(0, p));
-    if (curWord) { applyWordProgress(pc); return; }
+    if ($('#text').querySelector(':scope > .sweep')) { applyWordProgress(pc); return; }
     // 无逐字 span 时（占位等）直接整行颜色：播放过 → 蓝
     const t = Math.min(1, Math.max(0, pc));
     const lc = hexToRgb(cfg.color || '#bcfb89'), lc2 = hexToRgb(cfg.color2 || '#4deaff');
@@ -207,6 +223,7 @@
     } else if (payload && payload.title) {
       $('#text').textContent = `♪ ${payload.title}${payload.artist ? ' - ' + payload.artist : ''}`;
       $('#linePrev').textContent = '';
+      $('#lineTrans').textContent = '';
       $('#lineNext').textContent = '';
       curWord = null;
       lineT = 0;
@@ -232,6 +249,7 @@
         lineT = 0; dur = 3;
         $('#text').textContent = '';
         $('#linePrev').textContent = '';
+        $('#lineTrans').textContent = '';
         $('#lineNext').textContent = '';
         syncWinHeight();
       }
@@ -304,6 +322,7 @@
   window.api.onLyricWinLrc((d) => {
     const lines = (d && Array.isArray(d.lines)) ? d.lines : [];
     wordSegs = (d && Array.isArray(d.words)) ? d.words : [];
+    transLines = (d && Array.isArray(d.trans)) ? d.trans : [];
     if (!lines.length) { curTime = 0; curWord = null; } // 切歌清空：时间归零（等待新歌 play state/全量）
     lrcLines = lines;
     lineIdx = -1;
