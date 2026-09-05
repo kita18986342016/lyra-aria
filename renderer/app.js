@@ -141,7 +141,7 @@
     const merged = { ...c, ...conf };
     store.set('mp_search_n', JSON.stringify(merged));
   };
-  // 启用的在线搜索音源（mp_search_srcs = JSON 数组；QQ 音源无限制，强制默认开启）
+  // 启用的在线搜索音源（mp_search_srcs = JSON 数组；未设置时用 DEFAULT_SRCS）
   const ALL_SRCS = ['netease', 'kugou', 'qq']; // 注册表：以后加音源在这里扩展
   const DEFAULT_SRCS = ['netease', 'kugou', 'qq'];   // 默认启用集（QQ 源=波点酷我曲库）
   function enabledSources() {
@@ -151,11 +151,7 @@
         const p = JSON.parse(raw);
         if (Array.isArray(p)) {
           const en = p.filter((s) => ALL_SRCS.includes(s));
-          if (en.length) {
-            // QQ 音源无限制：无论历史设置如何，QQ 恒启用
-            if (!en.includes('qq')) en.push('qq');
-            return en;
-          }
+          if (en.length) return en;
         }
       }
     } catch { /* 忽略 */ }
@@ -6454,8 +6450,8 @@
     };
     bindSrcToggle('#stSrcNetease', 'netease');
     bindSrcToggle('#stSrcKugou', 'kugou');
-    bindSrcToggle('#stSrcQQ', 'qq'); // QQ 开关 disabled（无限制恒开），保留绑定保持结构一致
-    syncSrcButtons(); // 启动即按启用音源隐藏来源按钮（全部/曲库恒显）；QQ 音源无限制恒启用
+    bindSrcToggle('#stSrcQQ', 'qq'); // QQ 与其他音源一致，可开可关（至少保留一个音源的守卫在 bindSrcToggle 内）
+    syncSrcButtons(); // 启动即按启用音源隐藏来源按钮（全部/曲库恒显）
     // 音质三档绑定（item 18）：在线播放 #stOnlineQuality / 下载 #stDlQuality3（各存 mp_online_quality / mp_dl_quality）
     const bindQuality3 = (sel, key, dft) => {
       const wrap = document.getElementById(sel);
