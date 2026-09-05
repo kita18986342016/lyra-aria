@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('api', {
   dlDir: (dir) => ipcRenderer.invoke('dl:dir', dir),
   pickDlDir: () => ipcRenderer.invoke('dl:pickDir'),
   dlOverwrite: (v) => ipcRenderer.invoke('dl:overwrite', v),
+  autoSrcUpgrade: (v) => ipcRenderer.invoke('autoSrcUpgrade', v),
   dlStart: (song, level) => ipcRenderer.invoke('dl:start', song, level),
   dlBatch: (songs, level) => ipcRenderer.invoke('dl:batch', songs, level),
   dlCancel: (taskId) => ipcRenderer.invoke('dl:cancel', taskId),
@@ -61,6 +62,12 @@ contextBridge.exposeInMainWorld('api', {
   clearCache: () => ipcRenderer.invoke('app:clearCache'),
   pickBgImage: () => ipcRenderer.invoke('app:pickBgImage'),
 
+  // 本地账号（名字+头像；数据可导出，为 1.3.8 云端账号铺路）
+  localAccGet: () => ipcRenderer.invoke('local-acc:get'),
+  localAccSave: (name, avatar) => ipcRenderer.invoke('local-acc:save', name, avatar),
+  localAccPickAvatar: () => ipcRenderer.invoke('local-acc:pick-avatar'),
+  localAccExport: () => ipcRenderer.invoke('local-acc:export'),
+
   // 自动更新（electron-updater）
   updateCheck: () => ipcRenderer.invoke('update:check'),
   updateDownload: () => ipcRenderer.invoke('update:download'),
@@ -85,6 +92,49 @@ contextBridge.exposeInMainWorld('api', {
   leizSearch: (source, q, limit) => ipcRenderer.invoke('leiz:search', source, q, limit),
   leizResolve: (source, ref, level) => ipcRenderer.invoke('leiz:resolve', source, ref, level),
   leizLyrics: (source, ref, level) => ipcRenderer.invoke('leiz:lyrics', source, ref, level),
+  // QQ 音乐官方接口（2026-08 起弃用第三方 API；登录态 Cookie 只存主进程，渲染层只拿状态摘要）
+  qqStatus: () => ipcRenderer.invoke('qq:status'),
+  qqSetCookie: (cookie) => ipcRenderer.invoke('qq:setCookie', cookie),
+  qqSearch: (query, limit) => ipcRenderer.invoke('qq:search', query, limit),
+  qqLyrics: (songmid) => ipcRenderer.invoke('qq:lyrics', songmid),
+  qqResolve: (songmid) => ipcRenderer.invoke('qq:resolve', songmid),
+  qqPlaylist: (disstid) => ipcRenderer.invoke('qq:playlist', disstid),
+  // QQ 歌单导入进度（主进程逐批推送 done/total）；返回取消订阅函数
+  onQqPlaylistProgress: (cb) => {
+    const h = (_e, d) => { try { cb && cb(d); } catch { /* 忽略 */ } };
+    ipcRenderer.on('qq-playlist-progress', h);
+    return () => ipcRenderer.removeListener('qq-playlist-progress', h);
+  },
+  // 波点音乐（酷我曲库）官方音源：搜索/播放/歌词全走酷我官方接口
+  bdStatus: () => ipcRenderer.invoke('bd:status'),
+  bdSearch: (query, limit) => ipcRenderer.invoke('bd:search', query, limit),
+  bdResolve: (musicId, title, artist) => ipcRenderer.invoke('bd:resolve', musicId, title, artist),
+  bdLyrics: (musicId, title, artist) => ipcRenderer.invoke('bd:lyrics', musicId, title, artist),
+  bdPlaylists: () => ipcRenderer.invoke('bd:playlists'),
+  bdPlaylistMusic: (pid) => ipcRenderer.invoke('bd:playlistMusic', pid),
+  qqResolveLink: (url) => ipcRenderer.invoke('qq:resolveLink', url),
+  accMyPlaylists: (platform) => ipcRenderer.invoke('acc:my-playlists', platform),
+  netCaptchaSend: (phone) => ipcRenderer.invoke('acc:net-captcha-send', phone),
+  netCaptchaLogin: (phone, captcha) => ipcRenderer.invoke('acc:net-captcha-login', phone, captcha),
+  kgCaptchaSend: (phone) => ipcRenderer.invoke('acc:kg-captcha-send', phone),
+  kgCaptchaLogin: (phone, captcha) => ipcRenderer.invoke('acc:kg-captcha-login', phone, captcha),
+  winMin: () => ipcRenderer.send('win:min'),
+  winMaxToggle: () => ipcRenderer.send('win:max-toggle'),
+  winClose: () => ipcRenderer.send('win:close'),
+  onWinMaxChange: (cb) => ipcRenderer.on('win:max-changed', (_e, v) => cb && cb(v)),
+  rmbSave: (plat, user, pass) => ipcRenderer.invoke('acc:rmb-save', plat, user, pass),
+  rmbLoad: (plat) => ipcRenderer.invoke('acc:rmb-load', plat),
+  // 账号登录 + 推荐（网易云/酷狗官方接口；凭据只存主进程，渲染层仅拿登录态摘要）
+  accStatus: () => ipcRenderer.invoke('acc:status'),
+  accLogin: (platform, username, password) => ipcRenderer.invoke('acc:net-login', username, password),
+  accLogout: (platform) => ipcRenderer.invoke('acc:logout', platform),
+  accQr: (platform) => ipcRenderer.invoke(platform === 'kugou' ? 'acc:kg-qr' : 'acc:net-qr'),
+  accPoll: (platform, key) => ipcRenderer.invoke(platform === 'kugou' ? 'acc:kg-poll' : 'acc:net-poll', key),
+  accRecommend: (platform) => ipcRenderer.invoke('acc:recommend', platform),
+  accPlaylist: (source, ref) => ipcRenderer.invoke('acc:playlist', source, ref),
+  accQrImg: (text) => ipcRenderer.invoke('acc:qr-img', text),
+  // 性能诊断（体验版）
+  diagCollect: () => ipcRenderer.invoke('diag:collect'),
   leizPlaylist: (source, ref) => ipcRenderer.invoke('leiz:playlist', source, ref),
   sendThumbState: (playing) => ipcRenderer.send('thumb:state', playing),
   sendTitle: (title) => ipcRenderer.send('media:title', title),

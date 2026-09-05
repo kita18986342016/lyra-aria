@@ -2,6 +2,15 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
 body { font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; }
+/* 桌面歌词字体选择（设置→桌面歌词→字体）：只换字形，装饰仍走 stroke/filter 安全通道（text-shadow 一票否决） */
+body[data-font="noto"] { font-family: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", system-ui, sans-serif; }
+body[data-font="misans"] { font-family: "MiSans", "HarmonyOS Sans SC", "OPPO Sans", "Alibaba PuHuiTi 3.0", "Noto Sans SC", system-ui, sans-serif; }
+body[data-font="yahei"] { font-family: "Microsoft YaHei", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif; }
+body[data-font="songti"] { font-family: "SimSun", "Songti SC", "STSong", "Noto Serif SC", serif; }
+body[data-font="kai"] { font-family: "KaiTi", "楷体", "STKaiti", "KaiTi_GB2312", "SimSun", serif; }
+body[data-font="wenkai"] { font-family: "LXGW WenKai", "LXGW WenKai Medium", "KaiTi", "楷体", "SimSun", serif; }
+body[data-font="xingkai"] { font-family: "STXingkai", "华文行楷", "KaiTi", "楷体", "SimSun", serif; }
+body[data-font="xinwei"] { font-family: "STXinwei", "华文新魏", "KaiTi", "楷体", "SimSun", serif; }
 
 .ic { width: 14px; height: 14px; flex-shrink: 0; }
 .hidden { display: none !important; }
@@ -24,9 +33,10 @@ body:not(.locked).hover #stage {
   box-shadow: 0 12px 36px rgba(30, 50, 90, .16);
   backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
 }
-/* 当前句与下一句共用渲染基础：文字由 JS 逐字着色（唱过=蓝、未唱=绿，平滑过渡）。
-   不用 background-clip:text——Electron 43 的 Chromium 下它不可靠（text-shadow/filter 会破坏，
-   裸用也会渲染成矩形框）。阴影用 text-shadow 直接加，稳定。 */
+/* 当前句与下一句共用渲染基础：当前句由 JS 逐字 .sweep 渐变（background-clip:text 平滑扫过，像素级），
+   下一句整句静态着色（不参与卡拉OK）。注意：本 Chromium（Electron 43）下 background-clip:text 必须
+   text-shadow:none——任何非 none 阴影会把字形画成阴影色（黑）并吞掉渐变填充（#24 实测 A/B 证实）。
+   阴影方案只用于无 clip 的 #lineNext（纯色填充 + text-shadow 正常）。 */
 #text, #lineNext {
   color: var(--lc, #bcfb89); /* 未唱绿（#text 逐字 span 会被 JS 覆盖为插值色） */
   font-weight: 700;
@@ -50,6 +60,24 @@ body:not(.locked).hover #stage {
   padding-left: 14px;
 }
 #linePrev { display: none; }
+/* 桌面歌词翻译：当前句下方，小号柔色常显（不参与卡拉OK逐字，纯译文行） */
+#lineTrans {
+  max-width: 94%;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, .78);
+  text-shadow: 0 0 6px rgba(0, 0, 0, .45);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: -1px;
+}
+body.single #lineTrans { white-space: normal; max-width: 90%; }
+body.stroke #lineTrans {
+  text-shadow: 0 0 3px rgba(0, 0, 0, .9), 0 0 8px rgba(0, 0, 0, .55), 0 1px 2px rgba(0, 0, 0, .8);
+}
+body.taskbar #lineTrans { font-size: 12px; }
 #lineNext {
   position: absolute; right: 20px; bottom: 12px;
   max-width: 94%;
@@ -64,13 +92,116 @@ body.single #lineNext { display: none; }
 body:not(.locked) #lineNext { bottom: 46px; }
 /* 超长句：单句 + 允许换行（不截断、无省略号）；90% 行宽（28 字内单行放得下，>30 字才提前断行） */
 body.single #text { white-space: normal; max-width: 90%; }
-/* 描边/阴影开关：body.stroke 时给当前行加暗色描边（任何壁纸上都清晰），下一句同规则 */
-body.stroke #text,
-body.stroke #lineNext {
+/* 描边/阴影开关：body.stroke 时给 #text 兜底深描边（.sweep 内清零不生效，仅防无 span 场景）；
+   #lineNext 的装饰由下方"待播行跟随样式"规则接管 */
+body.stroke #text {
   text-shadow: 0 0 3px rgba(0, 0, 0, .9), 0 0 8px rgba(0, 0, 0, .55), 0 1px 2px rgba(0, 0, 0, .8);
 }
-/* 逐字卡拉OK：每字一个 span，颜色由 JS 直接设置（唱过=蓝，未唱=绿，插值过渡）——不依赖 background-clip */
-#text .w { color: var(--lc, #bcfb89); }
+/* #24 卡拉OK：每字单元一个 .sweep，段内按 --p 渐变滑动（background-clip:text 像素级推进，与主窗面板/详情同款；
+    已唱=--lc2（亮蓝），未唱=--lc（配置色）。
+    渲染红线（#24b/#24e 实测验证，字体模组必须遵守）：
+      ✗ text-shadow：background-clip:text + 非 none 的 text-shadow → 字形画成阴影色（黑）、填充整个丢失
+        （用户报告"桌面歌词是黑的"根因；同一时刻同 p，A 继承阴影=黑 / B text-shadow:none=青绿 截图铁证）。
+      ✓ -webkit-text-stroke / filter:drop-shadow：与渐变填充共存（S1 描边、S2 投影、S3 组合亮像素均未掉）。
+      阴影/描边只走这两条通道，绝不用 text-shadow。 */
+#text .sweep {
+  color: transparent;
+  text-shadow: none; /* 关键：继承自 #text / body.stroke 的深描边会把字形画成黑，必须清零 */
+  background: linear-gradient(90deg, var(--lc2, #4deaff) 0%, var(--lc2, #4deaff) calc(var(--p, 0) * 100%), var(--lc, #bcfb89) calc(var(--p, 0) * 100%));
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+/* 卡拉OK样式（#24 多款可选，#24j 立体重做）——仅安全通道（-webkit-text-stroke / filter:drop-shadow），禁用 text-shadow：
+   classic 描边（默认）/ soft 柔光 / clean 极简（无装饰，无需规则）/ bold 立体 / legacy 旧版深阴影；
+   stroke 开关（body.stroke）关闭时一律纯渐变。
+   bold 立体（#24j）：原 2.2px 粗描边 + 深投影把 静/懂/朦 等密笔画的笔画缝填成黑坨（实测深色 83.3%、渐变可见仅 13.6%），
+   改为「无描边挤出式立体」——0 模糊的两层偏移 drop-shadow 构成硬边 3D 挤出（1px/1px + 2px/2px），
+   黑坨降到 17.1%、渐变可见 80.2%，立体深度由下右侧偏移层保留（实测下侧暗像素为上侧约 2 倍）。 */
+body.stroke[data-sweep='classic'] #text .sweep {
+  -webkit-text-stroke: 1.2px rgba(0, 0, 0, .9);
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, .9)) drop-shadow(0 1px 2px rgba(0, 0, 0, .8));
+}
+/* 描边适配修复（字体模组）：细/密笔画面字体（MiSans、宋体）笔画窄，
+   1.2px 描边会盖住笔画缝 → 该字体下描边降至 0.8px（实测渐变可见像素回升 ~28%）
+   思源黑体=Noto（2026-08-27 视觉复核）：笔画粗、字面大，0.8px 描边 + classic 双层重投影
+   把内白吃光、字发灰发浊（球/途/星墨坨明显）；0.3px + 淡投影则描边不可见（用户反馈"描边直接灭了"）
+   → 拆出单独适配：0.6px 描边（可见不糊）+ 淡柔投影（墨坨元凶=重投影，已换轻） */
+body.stroke[data-sweep='classic'][data-font='noto'] #text .sweep {
+  -webkit-text-stroke: 0.6px rgba(0, 0, 0, .8);
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .35));
+}
+body.stroke[data-sweep='classic'][data-font='misans'] #text .sweep,
+body.stroke[data-sweep='classic'][data-font='songti'] #text .sweep {
+  -webkit-text-stroke: 0.8px rgba(0, 0, 0, .9);
+}
+/* 书法字体（楷体/霞鹜文楷/华文行楷/华文新魏）适配「描边」：笔画本来就细，硬描边+重阴影会把笔画糊成黑坨（实测 600ms 内不可读），
+   → 描边归零，只留一层淡柔投影保底可读性（描边开关关闭时此组不生效） */
+body.stroke[data-sweep='classic'][data-font='kai'] #text .sweep,
+body.stroke[data-sweep='classic'][data-font='wenkai'] #text .sweep,
+body.stroke[data-sweep='classic'][data-font='xingkai'] #text .sweep,
+body.stroke[data-sweep='classic'][data-font='xinwei'] #text .sweep {
+  -webkit-text-stroke: 0.2px rgba(0, 0, 0, .8);
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .35));
+}
+body.stroke[data-sweep='soft'] #text .sweep {
+  filter: drop-shadow(0 0 5px rgba(0, 0, 0, .55)) drop-shadow(0 0 12px rgba(0, 0, 0, .3));
+}
+body.stroke[data-sweep='bold'] #text .sweep {
+  -webkit-text-stroke: 0;
+  filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, .7)) drop-shadow(2px 2px 0 rgba(0, 0, 0, .45));
+}
+/* legacy：还原 #24 前 body.stroke 的三段深阴影观感（旧版黑字时代上方的"旧阴影"），
+   仅 drop-shadow 链（安全通道）——background-clip:text 下绝不能用 text-shadow，否则字形全黑；
+   不加描边，保持旧观感原本的纯轮廓投影 */
+body.stroke[data-sweep='legacy'] #text .sweep {
+  -webkit-text-stroke: 0;
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, .9)) drop-shadow(0 0 8px rgba(0, 0, 0, .55)) drop-shadow(0 1px 2px rgba(0, 0, 0, .8));
+}
+/* 兜底：JS 未设置 style（旧版本/配置未应用）时保持经典观感 */
+body:not([data-sweep]) #text .sweep {
+  -webkit-text-stroke: 1.2px rgba(0, 0, 0, .9);
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, .9)) drop-shadow(0 1px 2px rgba(0, 0, 0, .8));
+}
+/* 待播行 #lineNext：与当前行同构（-webkit-text-stroke + filter，text-shadow 清零），保证两行观感完全一致 */
+body.stroke[data-sweep='classic'] #lineNext {
+  text-shadow: none;
+  -webkit-text-stroke: 1.2px rgba(0, 0, 0, .9);
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, .9)) drop-shadow(0 1px 2px rgba(0, 0, 0, .8));
+}
+/* 描边适配修复：待播行与当前行同款降描边（MiSans/宋体 → 0.8px）；思源黑体 → 0.6px 描边 + 淡柔投影 */
+body.stroke[data-sweep='classic'][data-font='noto'] #lineNext {
+  text-shadow: none;
+  -webkit-text-stroke: 0.6px rgba(0, 0, 0, .8);
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .35));
+}
+body.stroke[data-sweep='classic'][data-font='misans'] #lineNext,
+body.stroke[data-sweep='classic'][data-font='songti'] #lineNext {
+  -webkit-text-stroke: 0.8px rgba(0, 0, 0, .9);
+}
+/* 书法字体（楷体/霞鹜文楷/华文行楷/华文新魏）：待播行同款——描边归零、淡柔投影 */
+body.stroke[data-sweep='classic'][data-font='kai'] #lineNext,
+body.stroke[data-sweep='classic'][data-font='wenkai'] #lineNext,
+body.stroke[data-sweep='classic'][data-font='xingkai'] #lineNext,
+body.stroke[data-sweep='classic'][data-font='xinwei'] #lineNext {
+  -webkit-text-stroke: 0.2px rgba(0, 0, 0, .8);
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .35));
+}
+body.stroke[data-sweep='soft'] #lineNext {
+  text-shadow: none;
+  filter: drop-shadow(0 0 5px rgba(0, 0, 0, .55)) drop-shadow(0 0 12px rgba(0, 0, 0, .3));
+}
+body.stroke[data-sweep='clean'] #lineNext { text-shadow: none; -webkit-text-stroke: 0; filter: none; }
+body.stroke[data-sweep='bold'] #lineNext {
+  text-shadow: none;
+  -webkit-text-stroke: 0;
+  filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, .7)) drop-shadow(2px 2px 0 rgba(0, 0, 0, .45));
+}
+body.stroke[data-sweep='legacy'] #lineNext {
+  text-shadow: none;
+  -webkit-text-stroke: 0;
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, .9)) drop-shadow(0 0 8px rgba(0, 0, 0, .55)) drop-shadow(0 1px 2px rgba(0, 0, 0, .8));
+}
+body:not(.stroke) #lineNext { text-shadow: none; -webkit-text-stroke: 0; filter: none; }
 
 
 /* 锁定时悬停工具条（顶部小胶囊：解除锁定，纯图标，浅色醒目） */

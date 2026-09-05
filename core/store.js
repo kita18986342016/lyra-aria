@@ -44,7 +44,12 @@ function save(name, data) {
   ensureDir();
   const file = path.join(DATA_DIR, name);
   try {
-    if (fs.existsSync(file)) fs.copyFileSync(file, file + '.bak');
+    // 备份前校验主文件可解析：损坏的主文件不再覆盖好备份（否则双份丢失）
+    if (fs.existsSync(file)) {
+      let good = false;
+      try { JSON.parse(fs.readFileSync(file, 'utf8')); good = true; } catch { /* 坏档 */ }
+      if (good) fs.copyFileSync(file, file + '.bak');
+    }
     const tmp = file + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(data, null, 1), 'utf8');
     fs.renameSync(tmp, file);

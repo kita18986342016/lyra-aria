@@ -1,5 +1,5 @@
 // 深空折韵 主进程（v2：单实例/IPC 校验/调和/缓存/媒体会话支持）
-const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, dialog, nativeImage, shell, session, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, dialog, nativeImage, shell, session, screen, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -7,7 +7,7 @@ const https = require('https');
 const { parseFile } = require('music-metadata');
 const NodeID3 = require('node-id3');
 const crypto = require('crypto');
-const { scanLibrary } = require('./core/scanner');
+const { scanLibrary, SCAN_VERSION } = require('./core/scanner');
 const store = require('./core/store');
 const { importSonglist } = require('./core/songlist');
 const lyrics = require('./core/lyrics');
@@ -558,14 +558,24 @@ function main() {
   const DEFAULT_DIRS = [];
   // 酷狗歌单映射文件：位于数据根（别人放一份同名文件也能用；不存在则跳过）
   const SONGLIST_FILE = path.join(dataRoot(), 'songlist.json');
-  const LYRIC_DEFAULTS = { enabled: false, mode: 'desktop', fontSize: 26, color: '#bcfb89', color2: '#4deaff', bgOpacity: 0.55, opacity: 1, locked: false, pos: null, lockedSize: { width: 840, height: 160 } };
+  // 桌面歌词默认 = 用户当前美学（#17 默认值迁移 v2）：字号 28、柔光、bgOpacity 0.3、锁定、描边开、字体默认
+  const LYRIC_DEFAULTS = { enabled: true, mode: 'desktop', fontSize: 28, color: '#bcfb89', color2: '#4deaff', bgOpacity: 0.3, opacity: 1, locked: true, pos: null, sweepStyle: 'soft', lyricFont: 'default', lockedSize: { width: 840, height: 160 }, stroke: true };
 
   let win = null;
   let tray = null;
   let library = store.load('library.json', { songs: [], scannedAt: 0 });
-  let config = store.load('config.json', { dirs: DEFAULT_DIRS, volume: 0.8, mode: 'order', lyricWin: LYRIC_DEFAULTS, bgBlur: 0, autoLaunch: false, closeBehavior: 'tray', downloadOverwrite: false, defaultPlSeeded: false });
+  let config = store.load('config.json', { dirs: DEFAULT_DIRS, volume: 0.8, mode: 'order', lyricWin: LYRIC_DEFAULTS, bgBlur: 2.5, autoLaunch: false, closeBehavior: 'tray', downloadOverwrite: false, autoSrcUpgrade: true, defaultPlSeeded: false });
   config.autoLaunch = app.getLoginItemSettings().openAtLogin; // 开机自启实际状态
   config.lyricWin = { ...LYRIC_DEFAULTS, ...(config.lyricWin || {}) };
+  // #17 默认值美学迁移：旧版本升级后强制重置为新默认（保留用户窗口位置 pos/lockedSize，不重置几何）
+  if (!config.defaultsV || config.defaultsV < 2) {
+    const oldPos = config.lyricWin.pos || null;
+    const oldLs = config.lyricWin.lockedSize || { width: 840, height: 160 };
+    config.bgBlur = 2.5;
+    config.lyricWin = { ...LYRIC_DEFAULTS, pos: oldPos, lockedSize: oldLs };
+    config.defaultsV = 2;
+    store.save('config.json', config);
+  }
   const songIndex = new Map(); // id -> song（O(1) 查找）
   const lyricsCache = new Map(); // id -> { text, mtime }
 
@@ -590,6 +600,7 @@ function main() {
       minHeight: 580,
       title: '深空折韵',
       icon: appIcon(),
+      frame: false, // 去掉系统标题栏（白框+最小化/放大/关闭）；自绘顶栏 #topbar + 窗口控制 #winCtrl
       backgroundColor: '#f3f5f9',
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
@@ -598,6 +609,14 @@ function main() {
         sandbox: true
       }
     });
+    // 无边框窗口控制（自绘按钮 → IPC）：最小化 / 最大化切换 / 关闭（走现有 close 行为=托盘或退出）
+    ipcMain.on('win:min', (e) => { if (isTrusted(e) && !win.isDestroyed()) win.minimize(); });
+    ipcMain.on('win:max-toggle', (e) => { if (isTrusted(e) && !win.isDestroyed()) { if (win.isMaximized()) win.unmaximize(); else win.maximize(); } });
+    ipcMain.on('win:close', (e) => { if (isTrusted(e) && !win.isDestroyed()) win.close(); });
+    const pushMaxState = () => { try { if (!win.isDestroyed()) win.webContents.send('win:max-changed', win.isMaximized()); } catch { /* 窗口已销毁 */ } };
+    win.on('maximize', pushMaxState);
+    win.on('unmaximize', pushMaxState);
+    try { win.setHasShadow(true); } catch { /* 平台不支持则忽略 */ } // 无边框窗口系统投影（Windows/macOS）
     win.webContents.setBackgroundThrottling(false); // 最小化/后台时保持渲染：任务栏缩略图实时更新
     win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
     win.on('close', (e) => {
@@ -616,7 +635,7 @@ function main() {
       const pTrue = iconicThumb.koffi.alloc('int', 1);
       iconicThumb.DwmSetWindowAttribute(hwndBig, 10, pTrue, 4); // DWMWA_HAS_ICONIC_BITMAP（声明支持图标化缩略图）
       const hrForce = iconicThumb.DwmSetWindowAttribute(hwndBig, 7, pTrue, 4);  // DWMWA_FORCE_ICONIC_REPRESENTATION（强制 iconic 表示 → 前台 hover 也走 0x0323）
-      try { fs.appendFileSync('D:\MusicPlayerData\\_thumb.log', `[${new Date().toLocaleTimeString()}] 设置 FORCE_ICONIC(7) hr=0x${(Number(hrForce) >>> 0).toString(16)}\n`); } catch {}
+      try { fs.appendFileSync(path.join(dataRoot(), '_thumb.log'), `[${new Date().toLocaleTimeString()}] 设置 FORCE_ICONIC(7) hr=0x${(Number(hrForce) >>> 0).toString(16)}\n`); } catch {}
       win.hookWindowMessage(0x0323, (w, l) => {
         const wd = w >>> 0, ht = l >>> 0;
         try { fs.appendFileSync(path.join(dataRoot(), '_thumb.log'), `[${new Date().toLocaleTimeString()}] 0x0323 触发 w=${wd} h=${ht} thumbDIB=${!!thumbDIB}\n`); } catch {}
@@ -923,7 +942,7 @@ function main() {
         win.webContents.send('scan:progress', { done, total, dir });
       }
     };
-    library = { songs: await scanLibrary(config.dirs, progress), scannedAt: Date.now() };
+    library = { songs: await scanLibrary(config.dirs, progress), scannedAt: Date.now(), scanVersion: SCAN_VERSION };
     reconcileLibrary();
     store.save('library.json', library);
     rebuildIndex();
@@ -959,7 +978,7 @@ function main() {
   }
 
   async function ensureLibrary() {
-    if (!library.songs || library.songs.length === 0) await rescanLibrary();
+    if (!library.songs || library.songs.length === 0 || library.scanVersion !== SCAN_VERSION) await rescanLibrary();
   }
 
   // 下载目录纳入曲库配置：确保 downloadsDir 已在 config.dirs 中（目录不存在则先创建，
@@ -1005,6 +1024,48 @@ function main() {
   // ---------- IPC 校验 ----------
   function isTrusted(e) {
     return (win && e.sender === win.webContents) || (lyricWin && e.sender === lyricWin.webContents);
+  }
+
+  // 网易云人机验证（拼图滑块）弹窗：加载 verify.url，轮询 window.puzzle.instance.vars() 拿 validate
+  function netVerifyDialog(verify) {
+    return new Promise((resolve) => {
+      const vUrl = (verify && (verify.url || verify.verifyUrl)) || '';
+      if (!vUrl) return resolve(null);
+      let done = false;
+      const vwin = new BrowserWindow({
+        width: 520, height: 680, autoHideMenuBar: true,
+        title: '安全验证', resizable: false,
+        webPreferences: { sandbox: false, contextIsolation: false, nodeIntegration: false }
+      });
+      vwin.loadURL(vUrl);
+      const probe = async () => {
+        if (done || vwin.isDestroyed()) return;
+        try {
+          const r = await vwin.webContents.executeJavaScript(`(function(){
+            try {
+              if (!window.puzzle || !window.puzzle.instance) return '';
+              var v = window.puzzle.instance.vars() || {};
+              for (var k in v) {
+                if (v[k] && v[k].validate) return JSON.stringify({ validate: v[k].validate, mod: k });
+              }
+              return '';
+            } catch (e) { return ''; }
+          })()`);
+          if (r) {
+            const o = JSON.parse(r);
+            if (o.validate) {
+              done = true;
+              resolve(o.validate);
+              if (!vwin.isDestroyed()) vwin.close();
+              return;
+            }
+          }
+        } catch { /* 页面未就绪 */ }
+        setTimeout(probe, 700);
+      };
+      probe();
+      vwin.on('closed', () => { if (!done) { done = true; resolve(null); } });
+    });
   }
 
   // 应用信息（版本号运行时读取，发版不用改页面）
@@ -1347,15 +1408,24 @@ function main() {
     }
     async function dlResolveUrl(song) {
       // 返回 { url, ext }；质量按 song.level（netease: higher/lossless；kugou: 320/lossless），
-      // 未指定时默认 网易云 higher / 酷狗 128（保证 mp3）
+      // 未指定时默认 网易云 higher / 酷狗 128（保证 mp3）；QQ 源=波点酷我曲库（ref=rid，免费无损 flac/320k）
       const lv = (song && song.level) || '';
+      let url, d;
+      if (song.source === 'qq') {
+        // QQ 源已切波点（酷我曲库）：ref 存 rid
+        const rid = String(song.ref || '');
+        if (!rid) throw new Error('QQ 歌曲缺少音乐 ID');
+        const rr = await bodianAcc.resolveUrl(rid, song.title || '', String(song.artist || '').split('、').filter(Boolean));
+        if (!rr.ok || !rr.url) throw new Error(rr.reason || '无法解析播放地址（QQ）');
+        return { url: rr.url, ext: (rr.format === 'flac') ? '.flac' : '.mp3' };
+      }
       const qs = song.source === 'kugou'
         ? '/kugou?hash=' + encodeURIComponent(song.ref) + (lv ? '&level=' + encodeURIComponent(lv) : '')
         : '/netease?id=' + encodeURIComponent(song.ref) + '&level=' + encodeURIComponent(lv || 'higher');
-      const r = await leizGet(qs);
-      const d = r && r.data ? r.data : null;
-      const url = d && (d.url || d.src) ? (d.url || d.src) : null;
-      if (!url) throw new Error('无法解析播放地址（' + (r && r.message ? r.message : '未知错误') + '）');
+      const r2 = await leizGet(qs);
+      d = r2 && r2.data ? r2.data : null;
+      url = d && (d.url || d.src) ? (d.url || d.src) : null;
+      if (!url) throw new Error('无法解析播放地址（' + (r2 && r2.message ? r2.message : '未知错误') + '）');
       // 从 content-disposition/url 推断扩展名（higher/128 均为 mp3，兜底 .mp3）
       let ext = '.mp3';
       const fn = (d.filename || '').toLowerCase();
@@ -1388,11 +1458,59 @@ function main() {
         .filter((l) => /^\[\d{1,2}:\d{1,2}/.test(l))
         .join('\n').trim();
     }
+    // 行时间戳（秒）：[mm:ss.xxx] → 秒；无时间戳返回 null
+    function lrcLineTime(line) {
+      const m = line.match(/\[(\d{1,2}):(\d{1,2})(?:[.:](\d{1,3}))?\]/);
+      if (!m) return null;
+      const fracStr = m[3] || '0';
+      const frac = fracStr.length === 1 ? +fracStr / 10 : (fracStr.length === 2 ? +fracStr / 100 : +fracStr / 1000);
+      return (+m[1]) * 60 + (+m[2]) + frac;
+    }
+    // 行文本（去时间戳）
+    function lrcLineText(line) { return line.replace(/\[\d{1,2}:\d{1,2}(?:[.:]\d{1,3})?\]/g, '').trim(); }
+    // 原文行 + 译文行交错合并：译文行仅在同时间戳（±0.05s，同源歌词时间戳一致）且原文无相同文本时插入其原文行后
+    function mergeLrcWithTrans(origLines, transLines) {
+      if (!transLines.length) return origLines.join('\n');
+      const out = [];
+      for (const ol of origLines) {
+        out.push(ol);
+        const ot = lrcLineTime(ol);
+        if (ot == null) continue;
+        for (const tl of transLines) {
+          const tt = lrcLineTime(tl);
+          if (tt == null || Math.abs(ot - tt) > 0.05) continue;
+          const tlText = lrcLineText(tl);
+          if (!tlText) continue;
+          // 同时间戳 original 已有相同文本（如 original 本身含译文）→ 跳过
+          if (origLines.some((o) => lrcLineTime(o) != null && Math.abs(lrcLineTime(o) - tt) < 0.05 && lrcLineText(o) === tlText)) continue;
+          out.push(tl);
+        }
+      }
+      return out.join('\n');
+    }
     async function dlSaveLyrics(task) {
       try {
-        const r = await leizGet('/' + task.song.source + '?type=lyrics&' + (task.song.source === 'kugou' ? 'hash=' : 'id=') + encodeURIComponent(task.song.ref));
+        let r = null;
+        const s = task.song || {};
+        if (s.source === 'qq') {
+          // QQ 源=波点歌词（mlyric f=bodian）优先；失败 → 网易云兜底（同歌名+歌手搜）
+          const bl = await bodianAcc.lyrics(String(s.ref || ''), s.title || '', s.artist || '');
+          if (bl.ok && bl.lyrics && bl.lyrics.original) r = { ok: true, data: { lyrics: bl.lyrics } };
+          if (!r) {
+            const q = ((s.title || '') + ' ' + String(s.artist || '').replace(/^未知$/, '')).trim();
+            const sr = await leizGet('/netease/search?q=' + encodeURIComponent(q) + '&limit=5');
+            const first = sr.ok && Array.isArray(sr.data) && sr.data[0] && sr.data[0].id ? sr.data[0] : null;
+            if (first) r = await leizGet('/netease?type=lyrics&id=' + encodeURIComponent(first.id) + '&level=lossless');
+          }
+        } else {
+          r = await leizGet('/' + s.source + '?type=lyrics&' + (s.source === 'kugou' ? 'hash=' : 'id=') + encodeURIComponent(s.ref));
+        }
         const ly = r && r.data && r.data.lyrics ? r.data.lyrics : null;
-        const text = lrcForSave(ly && ly.original);
+        const origLines = lrcForSave(ly && ly.original).split('\n').filter(Boolean);
+        if (!origLines.length) return false;
+        // 译文行也保存：下载到本地的歌同样享受翻译（在线歌单导入后下载落地，翻译跟着走）
+        const transLines = lrcForSave(ly && ly.translated).split('\n').filter(Boolean);
+        const text = mergeLrcWithTrans(origLines, transLines);
         if (text) {
           fs.writeFileSync(path.join(task.dir, task.base + '.lrc'), text, 'utf8');
           return true;
@@ -1400,8 +1518,8 @@ function main() {
       } catch { /* 歌词失败不影响主文件 */ }
       return false;
     }
-    // 严格同名判定：歌名+歌手+时长完全一致才视为同一首歌（时长容差 ±3s，编码/头尾静音差异）
-    // 任一字段缺失（无标签/无时长信息）都判为不同 → 不覆盖，走加序号保留两份（严格语义）
+    // 同名判定（用户定调：歌手+歌名相同即视为同一首 → 触发替换，不再校验时长）
+    // 任一字段缺失（无标签）都判为不同 → 不覆盖，走加序号保留两份
     async function sameSongAsFile(file, song) {
       try {
         const meta = await parseFile(file, { duration: true });
@@ -1412,10 +1530,7 @@ function main() {
         const wArtist = norm(song.artist);
         if (!fTitle || !wTitle || fTitle !== wTitle) return false;
         if (!fArtist || !wArtist || fArtist !== wArtist) return false;
-        const fDur = meta.format && meta.format.duration;
-        const wDur = Number(song.duration) || 0;
-        if (!(fDur > 0) || !(wDur > 0)) return false; // 时长缺失 → 不覆盖
-        return Math.abs(fDur - wDur) <= 3;
+        return true; // 歌手+歌名相同 → 覆盖（不再看时长）
       } catch { return false; } // 读不到标签/文件损坏 → 不覆盖
     }
     async function dlProcess(task) {
@@ -1434,8 +1549,8 @@ function main() {
       task.base = base; // 供歌词落盘使用（含序号，保证重名歌曲各自有 .lrc）
       let file = path.join(task.dir, base + ext);
       if (config.downloadOverwrite) {
-        // 覆盖模式：仅当已有文件是同一首歌（歌名+歌手+时长完全一致）才替换（用于更正错误版本）；
-        // 同名但不是同一首（或读不到元数据）→ 自动加序号保留两份
+        // 覆盖模式：已有文件与下载歌曲「歌手+歌名」相同即替换（更正错误版本/同名更新）；
+        // 歌手或歌名任一不同（或读不到标签）→ 自动加序号保留两份
         if (fs.existsSync(file) && !(await sameSongAsFile(file, task.song))) {
           let n = 1;
           while (fs.existsSync(file)) {
@@ -1530,9 +1645,15 @@ function main() {
       store.save('config.json', config);
       return config.downloadOverwrite;
     });
+    ipcMain.handle('autoSrcUpgrade', (e, v) => {
+      if (!isTrusted(e)) return config.autoSrcUpgrade !== false;
+      config.autoSrcUpgrade = v !== false;
+      store.save('config.json', config);
+      return config.autoSrcUpgrade;
+    });
     ipcMain.handle('dl:start', (e, song, level) => {
       if (!isTrusted(e) || !song || typeof song !== 'object') return { ok: false, reason: '参数错误' };
-      if (!['netease', 'kugou'].includes(song.source) || !song.ref || !song.title) return { ok: false, reason: '歌曲信息不完整' };
+      if (!['netease', 'kugou', 'qq'].includes(song.source) || !song.ref || !song.title) return { ok: false, reason: '歌曲信息不完整' };
       const s2 = typeof level === 'string' && level ? Object.assign({}, song, { level }) : song;
       const taskId = dlEnqueue(s2);
       return { ok: true, taskId, dir: dlDir() };
@@ -1745,6 +1866,8 @@ function main() {
       if (typeof patch.opacity === 'number') lc.opacity = Math.min(1, Math.max(0.3, patch.opacity)); // 整窗透明度（设置-桌面歌词-窗口透明度）
       if (typeof patch.locked === 'boolean') lc.locked = patch.locked;
       if (typeof patch.stroke === 'boolean') lc.stroke = patch.stroke;
+      if (typeof patch.sweepStyle === 'string' && ['classic', 'soft', 'clean', 'bold', 'legacy'].includes(patch.sweepStyle)) lc.sweepStyle = patch.sweepStyle;
+      if (typeof patch.lyricFont === 'string' && ['default', 'noto', 'misans', 'yahei', 'songti', 'kai', 'wenkai', 'xingkai', 'xinwei'].includes(patch.lyricFont)) lc.lyricFont = patch.lyricFont;
       if (patch.enabled !== undefined) lc.enabled = !!patch.enabled;
       if (lc.enabled) { lyricWinCreate(); applyLyricConfig(); }
       else if (lyricWin) { lyricWin.destroy(); lyricWin = null; }
@@ -1852,7 +1975,607 @@ function main() {
       const r = await leizGet(p);
       return r.ok ? { ok: true, data: r.data } : { ok: false, reason: r.message || ('HTTP ' + r.status) };
     });
-    // 酷狗分享链接解析：t1.kugou.com 短链（收藏歌单/单曲分享）没有标准歌单 ID。
+    // ---------- QQ 音乐官方接口（2026-08 起弃用第三方 API：官方搜索/歌单/歌词 + vkey 直链，只播免费歌）----------
+    // 登录态（y.qq.com Cookie）只存主进程 accounts.json；搜索/歌单/歌词匿名可用，播放直链需 Cookie
+    ipcMain.handle('qq:status', (e) => {
+      if (!isTrusted(e)) return { loggedIn: false, uin: '' };
+      const q = qqAcc.getState();
+      return { loggedIn: !!(q.cookie), uin: q.uin || qqAcc.parseUin(q.cookie) };
+    });
+    // 设置 QQ 登录态：粘贴 y.qq.com 的 Cookie（含 uin / qm_keyst 等票据）
+    ipcMain.handle('qq:setCookie', (e, cookie) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝访问' };
+      const c = String(cookie || '').trim();
+      if (!c) return { ok: false, reason: 'Cookie 为空' };
+      if (!/uin=/.test(c)) return { ok: false, reason: 'Cookie 缺少 uin，请复制 y.qq.com 的完整 Cookie' };
+      const uin = qqAcc.parseUin(c);
+      if (!uin) return { ok: false, reason: '无法从 Cookie 解析 QQ 号' };
+      qqAcc.setState({ cookie: c, uin });
+      saveAccounts();
+      return { ok: true, uin };
+    });
+    // 搜索：官方 search_for_qq_cp，只返回免费歌（payplay=0）
+    ipcMain.handle('qq:search', async (e, query, limit) => {
+      if (!isTrusted(e) || typeof query !== 'string' || !query.trim()) return { ok: false, reason: '参数错误' };
+      return qqAcc.search(query, limit);
+    });
+    // 歌词：官方 fcg_query_lyric_new（匿名可用）
+    ipcMain.handle('qq:lyrics', async (e, songmid) => {
+      if (!isTrusted(e) || typeof songmid !== 'string' || !songmid) return { ok: false, reason: '参数错误' };
+      return qqAcc.lyrics(songmid);
+    });
+    // 播放直链：vkey 需登录 Cookie；免费歌返回 purl，会员歌返回空（调用方换源）
+    ipcMain.handle('qq:resolve', async (e, songmid) => {
+      if (!isTrusted(e) || typeof songmid !== 'string' || !songmid) return { ok: false, reason: '参数错误' };
+      return qqAcc.resolveUrl(songmid);
+    });
+    // ---------- 波点音乐（酷我曲库）官方音源（2026-08 新增第四音源）----------
+    // 搜索/播放/歌词全走酷我官方接口；凭据（波点 uid/token）只存主进程，用于付费歌解锁尝试
+    ipcMain.handle('bd:status', (e) => {
+      if (!isTrusted(e)) return { loggedIn: false, uid: '' };
+      const b = bodianAcc.getState();
+      return { loggedIn: !!(b.uid && b.token), uid: b.uid || '' };
+    });
+    // 搜索：search.kuwo.cn（vipver=1），返回 rid/歌名/歌手/时长/锁定标记
+    ipcMain.handle('bd:search', async (e, query, limit) => {
+      if (!isTrusted(e) || typeof query !== 'string' || !query.trim()) return { ok: false, reason: '参数错误' };
+      return bodianAcc.search(query, limit);
+    });
+    // 播放直链：免费歌无损 flac/320k 免登录；付费歌先试解锁（有账号）→ 同歌可播 rid → 128k 兜底；
+    // 传入的 musicId 无效（旧 QQ 歌单 songmid 等）时按歌名+歌手搜波点匹配第一首再解析
+    ipcMain.handle('bd:resolve', async (e, musicId, title, artist) => {
+      if (!isTrusted(e) || typeof musicId !== 'string' || !musicId) return { ok: false, reason: '参数错误' };
+      const arts = typeof artist === 'string' && artist ? artist.split('、').filter(Boolean) : [];
+      let r = await bodianAcc.resolveUrl(musicId, String(title || ''), arts);
+      if (!r.ok && title) {
+        const q = (String(title) + ' ' + (arts[0] || '')).trim();
+        if (q) {
+          const s = await bodianAcc.search(q, 8);
+          if (s.ok && Array.isArray(s.data) && s.data.length) {
+            const it = s.data.find((x) => x && x.id && !x.payplay) || s.data[0];
+            r = await bodianAcc.resolveUrl(String(it.id), String(title), arts);
+          }
+        }
+      }
+      if (r.ok) return { ok: true, data: { url: r.url, bitrate: r.bitrate, duration: r.duration, size: r.size, format: r.format } };
+      return { ok: false, reason: r.reason };
+    });
+    // 歌词：mlyric f=bodian（免登录）
+    ipcMain.handle('bd:lyrics', async (e, musicId, title, artist) => {
+      if (!isTrusted(e) || typeof musicId !== 'string' || !musicId) return { ok: false, reason: '参数错误' };
+      return bodianAcc.lyrics(musicId, String(title || ''), String(artist || ''));
+    });
+    // 波点账号歌单（QQ 绑定同步的原曲歌单）
+    ipcMain.handle('bd:playlists', async (e) => {
+      if (!isTrusted(e)) return { ok: false, reason: '权限不足' };
+      return bodianAcc.userPlaylists();
+    });
+    // 波点歌单歌曲（source=5 全量）
+    ipcMain.handle('bd:playlistMusic', async (e, pid) => {
+      if (!isTrusted(e) || typeof pid !== 'string' || !pid) return { ok: false, reason: '参数错误' };
+      return bodianAcc.playlistMusic(pid);
+    });
+    // 解析 QQ 歌单短链（c6.y.qq.com/base/fcgi-bin/u?__=xxx 跳转链）→ 最终 URL
+    ipcMain.handle('qq:resolveLink', async (e, url) => {
+      if (!isTrusted(e) || typeof url !== 'string' || !/^https?:\/\//.test(url)) return { ok: false, reason: '参数错误' };
+      const resolved = await new Promise((resolve) => {
+        const mod = /^https:/.test(url) ? https : http;
+        const doGet = (u, depth) => {
+          if (depth > 8) return resolve(null);
+          let req;
+          try {
+            req = mod.get(u, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' } }, (res) => {
+              if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                res.resume();
+                let next;
+                try { next = new URL(res.headers.location, u).toString(); } catch { next = res.headers.location; }
+                return doGet(next, depth + 1);
+              }
+              res.resume();
+              resolve(u);
+            });
+          } catch { return resolve(null); }
+          req.on('error', () => resolve(null));
+          req.setTimeout(10000, () => { try { req.destroy(); } catch { /* */ } resolve(null); });
+        };
+        doGet(url, 0);
+      });
+      if (!resolved) return { ok: false, reason: '链接解析失败' };
+      return { ok: true, url: resolved };
+    });
+    // QQ 歌单导入（原逻辑保留为后备；渲染层优先走波点绑定歌单）
+    ipcMain.handle('qq:playlist', async (e, disstid) => {
+      if (!isTrusted(e) || typeof disstid !== 'string' || !disstid) return { ok: false, reason: '参数错误' };
+      const pl = await qqAcc.playlistAll(disstid);
+      if (!pl.ok) return { ok: false, reason: pl.reason || '歌单获取失败' };
+      const out = new Array(pl.songs.length); // 预分配保序（并发 worker 按索引写入）
+      let replaced = 0, failed = 0, kept = 0;
+      // 换源并发池：酷我(波点)→酷狗→网易云，命中即停；10 路并发（网络瓶颈，串行导入大歌单太慢）
+      const CONCURRENCY = 10;
+      const resolveOne = async (s) => {
+        const base = {
+          title: s.name, artist: Array.isArray(s.artists) ? s.artists.join('、') : '', album: s.album,
+          duration: s.duration, picUrl: s.picUrl, qqMid: s.id
+        };
+        // 全部歌都经酷我(波点)/酷狗/网易云换源：QQ 源已切波点（ref=酷我 rid 才能播）
+        const bare = String(s.name || '').trim();
+        const firstArtist = Array.isArray(s.artists) ? (s.artists[0] || '') : '';
+        const qFull = (bare + ' ' + firstArtist).trim();
+        let hit = null;
+        // 波点优先：「歌名+歌手」先搜（精确命中目标版本，避免纯歌名撞热门翻唱/他人版本），
+        // miss 再纯歌名兜底（歌名强匹配保底）；命中即停（减少走酷狗/网易云 = 更快）
+        if (bare || qFull) {
+          for (const qq of [qFull, bare].filter(Boolean)) {
+            try {
+              const bd = await bodianAcc.search(qq, 20);
+              if (bd.ok && Array.isArray(bd.data)) hit = pickFallback(bd.data, s.name, s.artists, 'bodian');
+            } catch { /* 单歌失败不拖垮整体 */ }
+            if (hit) break;
+          }
+        }
+        // 波点命中但仅付费 128k（payplay 锁定）+ 「导入自动换源」开关 → 严格换源找其他平台高音质版本；
+        // 严格匹配（歌名+歌手完全相等）无结果则保持波点 128k，宁缺毋滥
+        if (hit && hit.source === 'qq' && hit.payplay && config.autoSrcUpgrade) {
+          const keep = hit;
+          hit = null;
+          if (qFull) {
+            try {
+              const kg = await leizGet('/kugou/search?q=' + encodeURIComponent(qFull) + '&limit=8');
+              if (kg.ok && Array.isArray(kg.data)) hit = pickFallback(kg.data, s.name, s.artists, 'kugou', true);
+            } catch { /* 忽略 */ }
+          }
+          if (!hit && qFull) {
+            try {
+              const ne = await leizGet('/netease/search?q=' + encodeURIComponent(qFull) + '&limit=8');
+              if (ne.ok && Array.isArray(ne.data)) hit = pickFallback(ne.data, s.name, s.artists, 'netease', true);
+            } catch { /* 忽略 */ }
+          }
+          if (!hit) hit = keep;
+        }
+        // 波点 miss → 严格换源（酷狗/网易云，歌名+歌手严格相等才换，避免换错版本）
+        if (!hit && qFull) {
+          try {
+            const kg = await leizGet('/kugou/search?q=' + encodeURIComponent(qFull) + '&limit=8');
+            if (kg.ok && Array.isArray(kg.data)) hit = pickFallback(kg.data, s.name, s.artists, 'kugou', true);
+          } catch { /* 忽略 */ }
+        }
+        if (!hit && qFull) {
+          try {
+            const ne = await leizGet('/netease/search?q=' + encodeURIComponent(qFull) + '&limit=8');
+            if (ne.ok && Array.isArray(ne.data)) hit = pickFallback(ne.data, s.name, s.artists, 'netease', true);
+          } catch { /* 忽略 */ }
+        }
+        return { base, hit };
+      };
+      let idx = 0;
+      const win = BrowserWindow.fromWebContents(e.sender);
+      const pushProgress = (done, total) => {
+        try { if (win && !win.isDestroyed()) win.webContents.send('qq-playlist-progress', { done, total }); } catch { /* 窗口已关忽略 */ }
+      };
+      let doneCount = 0;
+      const worker = async () => {
+        while (idx < pl.songs.length) {
+          const i = idx++;
+          const { base, hit } = await resolveOne(pl.songs[i]);
+          doneCount++;
+          if (doneCount % 25 === 0 || doneCount === pl.songs.length) pushProgress(doneCount, pl.songs.length);
+          if (hit) {
+            if (hit.source === 'qq') replaced++; // 酷我命中 → 显示为 QQ 源（播放走波点）
+            else kept++;
+            // 封面优先保留 QQ 原曲封面（gtimg CDN 稳定）；换源封面(kuwo 等)仅作兜底——实测 kuwo albumcover 常 404
+            out[i] = Object.assign({ source: hit.source, ref: hit.ref, qqMid: pl.songs[i].id }, base, { title: hit.title, artist: hit.artist, album: hit.album, duration: hit.duration, picUrl: base.picUrl || hit.picUrl });
+          } else {
+            failed++;
+            out[i] = Object.assign({ source: 'qq', ref: pl.songs[i].id, payplay: pl.songs[i].payplay ? 1 : 0 }, base);
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pl.songs.length) }, worker));
+      const flat = out.filter(Boolean);
+      return { ok: true, data: { name: pl.name || 'QQ 歌单', picUrl: pl.picUrl, desc: pl.desc || '', songs: flat, total: pl.songs.length }, replaced, failed, kept };
+    });
+    // 会员歌换源匹配：同歌名同歌手（宽松：小写去空格比较歌名；歌手任一匹配）
+    // strict=true（换到酷狗/网易云等外部源）：歌手名与歌曲名须严格相等，否则宁愿保持原源 128k（避免换错版本）
+    function pickFallback(list, qqTitle, qqArtists, source, strict) {
+      const norm = (t) => String(t || '').trim().toLowerCase().replace(/\s+/g, '');
+      const want = norm(qqTitle);
+      const artists = (Array.isArray(qqArtists) ? qqArtists : []).map(norm).filter(Boolean);
+      const mkb = (it) => ({ source: 'qq', ref: String(it.id), title: it.name || it.title, artist: Array.isArray(it.artists) ? it.artists.join('、') : String(it.artists || ''), album: it.album || '', duration: it.duration || 0, picUrl: it.picUrl || '', payplay: it.payplay ? 1 : 0 });
+      const mkk = (it) => ({ source: 'kugou', ref: String(it.hash), title: it.name || it.title, artist: String(it.artists || ''), album: it.album || '', duration: it.duration || 0, picUrl: it.picUrl || '' });
+      const mkn = (it) => ({ source: 'netease', ref: String(it.id), title: it.name || it.title, artist: String(it.artists || ''), album: it.album || '', duration: it.duration || 0, picUrl: it.picUrl || '' });
+      // 歌手验证：pass1 歌名≥1分+歌手匹配；pass2 歌名≥1分不验歌手（保底同歌名任意版本）；
+      // pass3 歌名0分(包含)+歌手匹配。合集/多人歌（群星、歌手≥3）跳过歌手验证避免误弃。
+      const bareName = (t) => norm(t).replace(/[\(（].*?[\)）]/g, '').replace(/[-·—]?\s*《[^》]*》/g, '').trim();
+      const wantBare = bareName(qqTitle);
+      const score = (it) => {
+        const t = norm(it.name || it.title || '');
+        if (!t) return -1;
+        if (t === want) return 2;
+        if (bareName(it.name || it.title || '') === wantBare) return 1;
+        if (wantBare && (t.includes(wantBare) || wantBare.includes(t)) && Math.abs(t.length - wantBare.length) <= 6) return 0;
+        return -1;
+      };
+      const artistsOf = (it) => Array.isArray(it.artists) ? it.artists.join('、').toLowerCase() : String(it.artists || it.author_name || '').toLowerCase();
+      const isCollective = artists.length >= 3 || artists.some((a) => /群星|合辑|原声带|影视|soundtrack|va\b/i.test(a));
+      const ranked = list.map((it) => ({ it, s: score(it) })).filter((x) => x.s >= 0).sort((a, b) => b.s - a.s);
+      const mk = (it) => {
+        // 波点：rid 即保留（含 PAY 锁定歌——播放时 resolveUrl 自动走 antiserver 128k 兜底，保证能播且保持 QQ 源）
+        if (source === 'bodian' && it.id) return mkb(it);
+        if (source === 'kugou' && it.hash) return mkk(it);
+        if (source === 'netease' && it.id) return mkn(it);
+        return null;
+      };
+      if (strict) {
+        // 严格模式：歌名完全相等（norm 后）且歌手匹配（歌手缺失时只验歌名），否则宁缺毋滥
+        for (const { it, s } of ranked) {
+          if (s < 2) continue;
+          const artOk = !artists.length || artists.some((a) => artistsOf(it).includes(a));
+          if (!artOk) continue;
+          return mk(it);
+        }
+        return null;
+      }
+      for (const { it, s } of ranked) {
+        const artOk = !artists.length || isCollective || artists.some((a) => artistsOf(it).includes(a));
+        if (!artOk) continue;
+        if (s >= 1) return mk(it);
+      }
+      for (const { it, s } of ranked) {
+        if (s >= 1) return mk(it); // 歌名强匹配保底（歌手对不上也取同歌名版本，避免换源）
+      }
+      for (const { it } of ranked) {
+        const artOk = !artists.length || isCollective || artists.some((a) => artistsOf(it).includes(a));
+        if (!artOk) continue;
+        return mk(it);
+      }
+      return null;
+    }
+    // ---------- 账号登录 + 推荐（网易云/酷狗官方接口，登录态与推荐走官方链路，凭据只存主进程）----------
+    // 模块：core/netease.js（weapi/eapi 扫码+密码登录、推荐、歌单全量）、core/kugou.js（扫码登录、推荐歌单）
+    const neteaseAcc = require('./core/netease');
+    const kugouAcc = require('./core/kugou');
+    const qqAcc = require('./core/qq');
+    const bodianAcc = require('./core/bodian');
+    // 波点内置账号（播放器共用同一波点身份解锁付费歌；uid/token 过期时播放自动回落 128k 完整版兜底）
+    const BUILTIN_BODIAN = { uid: '74016982', token: '25442042d67a4e01b2b8fa36ec1964f1', devId: '64927edd3d271abc292a31f853e105b1' };
+    // 凭据持久化（主进程私有：cookie/token 不出主进程，渲染层只拿登录态摘要；D 盘数据根）
+    // v2 格式：safeStorage 加密（DPAPI，绑定当前 Windows 用户）；v1 明文自动迁移
+    const ACC_FILE = () => path.join(store.getDataDir(), 'accounts.json');
+    function accEncryptAvailable() { try { return !!(safeStorage && safeStorage.isEncryptionAvailable && safeStorage.isEncryptionAvailable()); } catch { return false; } }
+    function loadAccounts() {
+      try {
+        let raw = '';
+        try { raw = fs.readFileSync(ACC_FILE(), 'utf8'); } catch { return; }
+        let acc = null;
+        try {
+          const j = JSON.parse(raw);
+          if (j && j.v === 2 && j.enc) {
+            if (!accEncryptAvailable()) return; // 加密不可用(环境变化) → 按匿名处理，避免读到乱码
+            acc = JSON.parse(safeStorage.decryptString(Buffer.from(j.enc, 'base64')).toString('utf8'));
+          } else if (j && typeof j === 'object' && j.netease !== undefined) {
+            acc = j; // v1 明文 → 下次保存自动迁移为 v2
+          }
+        } catch { /* 损坏忽略，按匿名处理 */ }
+        if (acc && typeof acc === 'object') {
+          neteaseAcc.setState(acc.netease || { cookie: '', csrf: '', account: null });
+          kugouAcc.setState(acc.kugou || { token: '', userid: '', mid: '', dfid: '', vipType: '', vipToken: '', dev: '' });
+          qqAcc.setState({ cookie: (acc.qq && acc.qq.cookie) || '', uin: (acc.qq && acc.qq.uin) || qqAcc.parseUin(acc.qq && acc.qq.cookie) });
+          // 波点：无自配凭据时用内置账号（付费歌解锁尝试；过期自动回落 128k 兜底）
+          bodianAcc.setState((acc.bodian && acc.bodian.uid) ? acc.bodian : BUILTIN_BODIAN);
+        } else {
+          bodianAcc.setState(BUILTIN_BODIAN);
+        }
+      } catch { /* 损坏忽略，按匿名处理 */ }
+    }
+    function saveAccounts() {
+      try {
+        const data = { netease: neteaseAcc.getState(), kugou: kugouAcc.getState(), qq: qqAcc.getState(), bodian: bodianAcc.getState() };
+        fs.mkdirSync(store.getDataDir(), { recursive: true });
+        if (accEncryptAvailable()) {
+          const enc = safeStorage.encryptString(JSON.stringify(data)).toString('base64');
+          fs.writeFileSync(ACC_FILE(), JSON.stringify({ v: 2, enc }), 'utf8');
+        } else {
+          fs.writeFileSync(ACC_FILE(), JSON.stringify(data, null, 1), 'utf8'); // 加密不可用 → 降级明文
+        }
+      } catch (e) { console.error('[acc] 保存凭据失败', e.message); }
+    }
+    loadAccounts();
+    function accStatus() {
+      const n = neteaseAcc.getState();
+      const k = kugouAcc.getState();
+      const q = qqAcc.getState();
+      const b = bodianAcc.getState();
+      return {
+        netease: { loggedIn: !!(n.cookie && /MUSIC_U=/.test(n.cookie)), nickname: n.account || '' },
+        kugou: { loggedIn: !!(k.token && k.userid), nickname: k.account || '' },
+        qq: { loggedIn: !!(q.cookie), uin: q.uin || qqAcc.parseUin(q.cookie), nickname: '' },
+        bodian: { loggedIn: !!(b.uid && b.token), nickname: b.uid ? 'QQ 内置' : '' }
+      };
+    }
+    // 网易云扫码：换取新二维码（返回 unikey + qrurl 供二维码渲染）
+    ipcMain.handle('acc:net-qr', async (e) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝访问' };
+      const r = await neteaseAcc.qrCreate();
+      return r.ok ? { ok: true, unikey: r.unikey, qrurl: r.qrurl } : { ok: false, reason: r.msg || '二维码获取失败' };
+    });
+    // 网易云扫码状态轮询：803 成功 → 持久化并返回登录态；800/801/802 返回 code
+    ipcMain.handle('acc:net-poll', async (e, unikey) => {
+      if (!isTrusted(e) || typeof unikey !== 'string' || !unikey) return { ok: false, reason: '参数错误' };
+      const r = await neteaseAcc.qrCheck(unikey);
+      if (r.ok) {
+        const a = await neteaseAcc.accountInfo();
+        if (a.ok) neteaseAcc.getState().account = a.nickname || '';
+        saveAccounts();
+        const s = accStatus();
+        return { ok: true, code: 803, status: s.netease };
+      }
+      return { ok: false, code: r.code, reason: r.msg || '' };
+    });
+    // 网易云密码登录（邮箱或手机号）：email/phone + password
+    ipcMain.handle('acc:net-login', async (e, username, password) => {
+      if (!isTrusted(e) || typeof username !== 'string' || !username.trim() || typeof password !== 'string' || !password) return { ok: false, reason: '参数错误' };
+      const isMail = /@/.test(username.trim());
+      const r = isMail ? await neteaseAcc.loginByEmail(username.trim(), password) : await neteaseAcc.loginByCellphone(username.trim(), password);
+      if (r.ok) {
+        const a = await neteaseAcc.accountInfo();
+        if (a.ok) neteaseAcc.getState().account = a.nickname || '';
+        saveAccounts();
+        return { ok: true, status: accStatus().netease };
+      }
+      return { ok: false, reason: r.msg || '登录失败' };
+    });
+    // 酷狗扫码：换取二维码 key
+    ipcMain.handle('acc:kg-qr', async (e) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝访问' };
+      const r = await kugouAcc.qrCreate();
+      return r.ok ? { ok: true, key: r.key, img: r.img || '', qrurl: r.qrurl || '' } : { ok: false, reason: (r.raw || r.msg || '二维码获取失败').slice(0, 120) };
+    });
+    // 酷狗扫码状态轮询：status 4 成功 → 持久化并返回登录态
+    ipcMain.handle('acc:kg-poll', async (e, key) => {
+      if (!isTrusted(e) || typeof key !== 'string' || !key) return { ok: false, reason: '参数错误' };
+      const r = await kugouAcc.qrCheck(key);
+      if (r.ok) {
+        saveAccounts();
+        const s = accStatus();
+        s.kugou.nickname = r.nickname || '';
+        return { ok: true, status: s.kugou };
+      }
+      return { ok: false, code: r.status, reason: r.msg || '' };
+    });
+    // 登出：清当前平台凭据并持久化
+    ipcMain.handle('acc:logout', (e, platform) => {
+      if (!isTrusted(e) || !['netease', 'kugou'].includes(platform)) return { ok: false, reason: '参数错误' };
+      if (platform === 'netease') neteaseAcc.setState({ cookie: '', csrf: '', account: null });
+      else kugouAcc.setState({ token: '', userid: '', mid: kugouAcc.getState().mid, dfid: '', vipType: '', vipToken: '', dev: kugouAcc.getState().dev });
+      saveAccounts();
+      return { ok: true, status: accStatus() };
+    });
+    // 登录态查询（渲染层启动/推荐页刷新用）
+    ipcMain.handle('acc:status', (e) => {
+      if (!isTrusted(e)) return null;
+      return accStatus();
+    });
+    // 记住密码（登录弹窗）：safeStorage 加密存 D 盘（不进 localStorage），与凭据同目录
+    const RMB_FILE = () => path.join(store.getDataDir(), 'rmb.json');
+    ipcMain.handle('acc:rmb-save', (e, plat, user, pass) => {
+      if (!isTrusted(e) || typeof plat !== 'string' || typeof user !== 'string') return false;
+      try {
+        let all = {};
+        try {
+          const raw = fs.readFileSync(RMB_FILE(), 'utf8');
+          const j = JSON.parse(raw);
+          if (j && j.v === 2 && j.enc && accEncryptAvailable()) all = JSON.parse(safeStorage.decryptString(Buffer.from(j.enc, 'base64')).toString('utf8'));
+        } catch { /* 忽略损坏 */ }
+        if (!pass) delete all[plat];
+        else all[plat] = { user, pass };
+        fs.mkdirSync(store.getDataDir(), { recursive: true });
+        if (accEncryptAvailable()) {
+          fs.writeFileSync(RMB_FILE(), JSON.stringify({ v: 2, enc: safeStorage.encryptString(JSON.stringify(all)).toString('base64') }), 'utf8');
+        } else {
+          fs.writeFileSync(RMB_FILE(), JSON.stringify(all, null, 1), 'utf8');
+        }
+        return true;
+      } catch { return false; }
+    });
+    ipcMain.handle('acc:rmb-load', (e, plat) => {
+      if (!isTrusted(e) || typeof plat !== 'string') return null;
+      try {
+        const raw = fs.readFileSync(RMB_FILE(), 'utf8');
+        const j = JSON.parse(raw);
+        let all = {};
+        if (j && j.v === 2 && j.enc && accEncryptAvailable()) all = JSON.parse(safeStorage.decryptString(Buffer.from(j.enc, 'base64')).toString('utf8'));
+        else if (j && typeof j === 'object' && !j.enc) all = j;
+        return all[plat] || null;
+      } catch { return null; }
+    });
+    // 账号「我的歌单」列表（登录后）：netease 已实现；kugou 接口待逆向
+    ipcMain.handle('acc:my-playlists', async (e, platform) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝访问' };
+      if (platform === 'netease') {
+        const n = neteaseAcc.getState();
+        if (!(n.cookie && /MUSIC_U=/.test(n.cookie))) return { ok: false, reason: '未登录网易云（推荐页可登录）' };
+        return await neteaseAcc.myPlaylists();
+      }
+      if (platform === 'kugou') {
+        const k = kugouAcc.getState();
+        if (!(k.token && k.userid)) return { ok: false, reason: '未登录酷狗（推荐页可登录）' };
+        return { ok: false, reason: '酷狗「我的歌单」接口暂未支持，可在推荐页导入酷狗推荐歌单' };
+      }
+      return { ok: false, reason: '未知平台' };
+    });
+    // 二维码图（登录弹窗渲染用）：任意文本 → dataURL（qrcode 纯 JS 生成，无外链）
+    const qrCodeLib = (() => { try { return require('qrcode'); } catch { return null; } })();
+    // 网易云手机验证码：发送 + 登录
+    ipcMain.handle('acc:net-captcha-send', async (e, phone) => {
+      if (!isTrusted(e) || typeof phone !== 'string' || !/^\d{5,15}$/.test(phone)) return { ok: false, reason: '手机号格式不正确' };
+      let r = await neteaseAcc.captchaSend(phone);
+      // -462 人机验证:弹窗完成滑块后自动重发验证码
+      if (!r.ok && Number(r.code) === -462 && r.verify) {
+        const vr = await netVerifyDialog(r.verify);
+        if (!vr) return { ok: false, reason: '安全验证未完成', code: -462 };
+        r = await neteaseAcc.captchaSend(phone, '86', vr);
+      }
+      return { ok: r.ok, reason: r.msg || '' };
+    });
+    ipcMain.handle('acc:net-captcha-login', async (e, phone, captcha) => {
+      if (!isTrusted(e) || typeof phone !== 'string' || typeof captcha !== 'string' || !captcha) return { ok: false, reason: '参数错误' };
+      let r = await neteaseAcc.captchaLogin(phone, captcha);
+      // -462 人机验证(拼图滑块):弹出验证窗口,完成后自动重试登录
+      if (!r.ok && Number(r.code) === -462 && r.verify) {
+        const vr = await netVerifyDialog(r.verify);
+        if (!vr) return { ok: false, reason: '安全验证未完成', code: -462 };
+        r = await neteaseAcc.captchaLogin(phone, captcha, '86', vr);
+      }
+      console.error('[net-captcha-login]', JSON.stringify({ code: r.code, ok: r.ok, msg: r.msg || '', raw: (r.raw || '').slice(0, 160) }));
+      if (r.ok) {
+        neteaseAcc.getState().account = r.nickname || '';
+        saveAccounts();
+      }
+      return { ok: r.ok, reason: r.msg || '', nickname: r.nickname || '' };
+    });
+    // 酷狗手机验证码：发送 + 登录（官方接口，逻辑在 kugou.js）
+    ipcMain.handle('acc:kg-captcha-send', async (e, phone) => {
+      if (!isTrusted(e) || typeof phone !== 'string' || !/^\d{5,15}$/.test(phone)) return { ok: false, reason: '手机号格式不正确' };
+      const r = await kugouAcc.captchaSend(phone);
+      return { ok: r.ok, reason: r.reason || '' };
+    });
+    ipcMain.handle('acc:kg-captcha-login', async (e, phone, captcha) => {
+      if (!isTrusted(e) || typeof phone !== 'string' || typeof captcha !== 'string' || !captcha) return { ok: false, reason: '参数错误' };
+      const r = await kugouAcc.captchaLogin(phone, captcha);
+      console.error('[kg-captcha-login]', JSON.stringify({ code: r.code, ok: r.ok, raw: (r.raw || '').slice(0, 160) }));
+      if (r.ok) {
+        kugouAcc.getState().account = r.nickname || '';
+        saveAccounts();
+      }
+      const reason = r.reason + (r.code ? `（错误码 ${r.code}）` : '');
+      return { ok: r.ok, reason, nickname: r.nickname || '' };
+    });
+    ipcMain.handle('acc:qr-img', async (e, text) => {
+      if (!isTrusted(e) || typeof text !== 'string' || !text || !qrCodeLib) return null;
+      try {
+        const url = await qrCodeLib.toDataURL(text.slice(0, 500), { margin: 1, width: 240, errorCorrectionLevel: 'M' });
+        return url;
+      } catch { return null; }
+    });
+    // 推荐数据：网易云每日推荐（需登录）+ 歌单推荐（匿名可用）+ 酷狗推荐歌单（匿名可用）
+    ipcMain.handle('acc:recommend', async (e, platform) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝访问' };
+      const out = {};
+      if (!platform || platform === 'netease') {
+        const n = neteaseAcc.getState();
+        let daily = { ok: false, songs: [] }, pls = { ok: false, playlists: [] };
+        if (n.cookie && /MUSIC_U=/.test(n.cookie)) daily = await neteaseAcc.recommendSongs();
+        else daily = { ok: false, needLogin: true, songs: [] };
+        pls = await neteaseAcc.personalizedPlaylists(30);
+        out.netease = {
+          loggedIn: !!(n.cookie && /MUSIC_U=/.test(n.cookie)),
+          daily: daily.songs.map((s) => ({
+            id: 'online:netease:' + s.id, online: true, source: 'netease', ref: s.id,
+            title: s.name, artist: s.artist, album: s.album, picUrl: s.picUrl, duration: Math.round((s.duration || 0) / 1000)
+          })),
+          dailyOk: daily.ok, dailyNeedLogin: !!daily.needLogin,
+          playlists: (pls.playlists || []).map((p) => ({
+            id: 'online:netease:' + p.id, source: 'netease', ref: String(p.id), name: p.name,
+            picUrl: p.picUrl, desc: p.copywriter, playCount: p.playCount, creator: p.creator
+          }))
+        };
+      }
+      if (!platform || platform === 'kugou') {
+        const k = kugouAcc.getState();
+        const pr = await kugouAcc.recommendPlaylists(0, 1, 30);
+        out.kugou = {
+          loggedIn: !!(k.token && k.userid),
+          playlists: (pr.playlists || []).map((p) => ({
+            id: 'online:kugou:' + p.gcid, source: 'kugou', ref: p.gcid, name: p.name,
+            picUrl: p.img, desc: p.desc, playCount: p.count, creator: p.creator
+          }))
+        };
+      }
+      return { ok: true, data: out };
+    });
+    // 推荐歌单全量拉取：网易云 trackIds→song/detail 分批（无上限）；酷狗官方分页（复用现有 fetchKugouCollectAll）
+    ipcMain.handle('acc:playlist', async (e, source, ref) => {
+      if (!isTrusted(e) || !['netease', 'kugou'].includes(source) || typeof ref !== 'string' || !ref) return { ok: false, reason: '参数错误' };
+      if (source === 'netease') {
+        const r = await neteaseAcc.playlistSongsAll(ref, null);
+        if (!r.ok || !r.songs.length) return { ok: false, reason: r.reason || '歌单为空或获取失败' };
+        return {
+          ok: true, name: r.name || '', desc: r.desc || '',
+          songs: r.songs.map((s) => ({
+            id: 'online:netease:' + s.id, online: true, source: 'netease', ref: s.id,
+            title: s.name, artist: s.artist, album: s.album, picUrl: s.picUrl, duration: Math.round((s.duration || 0) / 1000)
+          }))
+        };
+      }
+      const full = await fetchKugouCollectAll(ref);
+      return full.ok ? { ok: true, name: '酷狗推荐歌单', desc: '', songs: full.songs } : { ok: false, reason: '歌单获取失败' };
+    });
+    // ---------- 本地账号（名字+头像；数据可序列化，为 1.3.8 云端账号同步铺路）----------
+    // 存储：dataRoot()/local-account.json（含 avatar 本地路径）；头像复制到 dataRoot()/avatars/local.<ext>
+    const LOCAL_ACC_FILE = () => path.join(dataRoot(), 'local-account.json');
+    function localAccRead() {
+      try {
+        if (fs.existsSync(LOCAL_ACC_FILE())) return JSON.parse(fs.readFileSync(LOCAL_ACC_FILE(), 'utf8'));
+      } catch { /* 损坏回退默认 */ }
+      return { name: '', avatar: '' };
+    }
+    function localAccWrite(acc) {
+      try {
+        fs.mkdirSync(path.dirname(LOCAL_ACC_FILE()), { recursive: true });
+        fs.writeFileSync(LOCAL_ACC_FILE(), JSON.stringify(acc, null, 2), 'utf8');
+        return true;
+      } catch { return false; }
+    }
+    ipcMain.handle('local-acc:get', (e) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝' };
+      return { ok: true, account: localAccRead() };
+    });
+    ipcMain.handle('local-acc:save', (e, name, avatar) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝' };
+      // avatar 必须落在 dataRoot()/avatars/ 下（防任意路径注入渲染层 file:// 读取）
+      let safeAvatar = '';
+      if (typeof avatar === 'string' && avatar) {
+        const avDir = path.join(dataRoot(), 'avatars');
+        const resolved = path.resolve(avatar);
+        if (resolved === avDir || resolved.startsWith(avDir + path.sep)) safeAvatar = resolved;
+      }
+      const acc = {
+        name: String(name || '').trim().slice(0, 24),
+        avatar: safeAvatar,
+        updatedAt: new Date().toISOString()
+      };
+      return { ok: localAccWrite(acc), account: acc };
+    });
+    ipcMain.handle('local-acc:pick-avatar', async (e) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝' };
+      const win = BrowserWindow.fromWebContents(e.sender);
+      const r = await dialog.showOpenDialog(win, {
+        title: '选择头像图片', properties: ['openFile'],
+        filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }]
+      });
+      if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
+      const src = r.filePaths[0];
+      const ext = (path.extname(src) || '.png').toLowerCase();
+      try {
+        const dir = path.join(dataRoot(), 'avatars');
+        fs.mkdirSync(dir, { recursive: true });
+        const dest = path.join(dir, 'local' + ext);
+        fs.copyFileSync(src, dest);
+        return { ok: true, avatar: dest };
+      } catch (err) { return { ok: false, reason: '头像保存失败：' + (err.message || err) }; }
+    });
+    ipcMain.handle('local-acc:export', async (e) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝' };
+      const acc = localAccRead();
+      const win = BrowserWindow.fromWebContents(e.sender);
+      const r = await dialog.showSaveDialog(win, {
+        title: '导出本地账号数据', defaultPath: 'local-account.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }]
+      });
+      if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+      try { fs.writeFileSync(r.filePath, JSON.stringify(acc, null, 2), 'utf8'); return { ok: true, path: r.filePath }; }
+      catch (err) { return { ok: false, reason: '导出失败：' + (err.message || err) }; }
+    });
     // 方案升级：先跟随重定向拿最终分享页 URL → 优先走 LeiZ 歌单接口（可返回全量，
     // 实测收藏合集分享页只内嵌 100 首，LeiZ 解析完整 zlist.html URL 返回 trackCount 全量 201 首）；
     // LeiZ 失败才兜底抓分享页 dataFromSmarty（最多 100 首）。
@@ -1909,7 +2632,8 @@ function main() {
             id: 'online:kugou:' + s.hash, online: true, source: 'kugou', ref: s.hash,
             title, artist: singerNames || s.artists || s.author_name || '',
             duration: Math.round((s.timelen || s.duration || s.timelength || 0) / 1000),
-            album: albumInfo.name || s.album || '', picUrl: (s.cover || '').replace('{size}', '200'), level: '128'
+            album: albumInfo.name || s.album || '', picUrl: (s.cover || '').replace('{size}', '200')
+            // level 不硬编码：LeiZ/官方接口歌单数据无音质字段，交由渲染层按 mp_online_quality 兜底（默认高品 320）
           });
         }
         if (all.length >= total || songs.length < pageSize) break;
@@ -1918,6 +2642,7 @@ function main() {
       return all.length ? { ok: true, songs: all } : { ok: false };
     }
 
+    // 酷狗分享链接解析：t1.kugou.com 短链（收藏歌单/单曲分享）没有标准歌单 ID。
     async function kugouResolveShare(rawUrl) {
       try {
         // 1) 跟随重定向拿最终分享页 URL（并保留最后一跳页面 body 供兜底）
@@ -1975,8 +2700,8 @@ function main() {
               title: s.name || s.song_name || '',
               artist: s.artists || s.author_name || '',
               duration: Math.round((s.duration || s.timelength || 0) / (s.duration ? 1 : 1000)),
-              album: s.album || s.album_id || '', picUrl: s.picUrl || '',
-              level: '128'
+              album: s.album || s.album_id || '', picUrl: s.picUrl || ''
+              // level 不硬编码：LeiZ 歌单数据无音质字段，交由渲染层按 mp_online_quality 兜底（默认高品 320）
             }));
             if (songs.length) return { ok: true, name: lz.data.name || '', songs };
           }
@@ -2245,8 +2970,24 @@ function main() {
   });
 
   // ---------- 自动更新（electron-updater，GitHub Release 源）----------
-  // 更新公告表：版本号 → 更新内容列表（新版本首次启动展示，须随发版同步维护）
+  // 更新公告表：版本号 → 更新内容列表（新版本首次启动展示；设置-软件更新页侧栏按历代版本浏览，须随发版同步维护）
   const CHANGELOG = {
+    '1.3.7': [
+      '**全新首页推荐**：推荐歌单 + 每日推荐，网易云/酷狗一键切换',
+      '**全新皮肤系统**：7 款主题皮肤（背景+面板+强调色联动），配合 12 款背景预设，一键换肤',
+      '**QQ 音源**：在线搜索/播放/下载可选「QQ」来源；免费歌无损直出，其余歌曲自动提供可播放版本并如实标注音质',
+      '**搜索结果更干净**：自动排除试听片段与非原版版本（Live/现场/DJ/伴奏/翻唱等），原版优先',
+      '**QQ 歌单一键导入**：实时显示进度；同歌名同歌手的原版优先保留，仅标准音质版本自动尝试替换为其他平台高音质版本（可在 设置-音源 关闭）',
+      '**桌面歌词卡拉OK**：逐字推进 + 5 款样式可选（极简/柔光/立体/旧影/描边）',
+      '**歌词字体**：9 款可选（楷体/行书/新魏/思源黑体/MiSans 等）',
+      '**本地账号**：自定义名字与头像，选完自动保存；账号菜单与账号管理页以本地账号置顶',
+      '**登录更顺手**：登录弹窗重做（记住密码/明文切换/手机验证码），账号管理页卡片化',
+      '**无边框窗口**：自定义标题栏（最小化/最大化/关闭），界面更沉浸',
+      '**歌单信息卡整合**：封面/名字/副标题并入标题栏，工具栏右对齐更紧凑',
+      '**无损音质标签升级**：香槟金渐变高亮，视觉更醒目',
+      '**播放修复**：部分 FLAC 歌曲时长显示错误已修复（升级后自动重扫一次曲库）',
+      '细节优化与问题修复'
+    ],
     '1.3.6': [
       '全新界面：浅色/深色主题 + 6 款强调色 + 自定义背景图；侧栏全面翻新（全高布局/歌单封面/数量常显/在线胶囊）；底栏信息增强（收藏/来源/音质）；进度条两版可切',
       '搜索体验：每源条数可配（默认 30，最多 100）；「显示更多歌曲」一键追加；即时加载动画先到先显；来源筛选（全部/网易云/酷狗）',
@@ -2266,6 +3007,27 @@ function main() {
     '1.3.4': [
       '酷狗分享短链全量拉取（LeiZ 服务端解析）',
       '一键下载全量分批入队'
+    ],
+    '1.3.3': [
+      '图标修复：exe 内嵌 v6 多尺寸图标（rcedit 直嵌源 exe，桌面快捷方式/任务栏恢复定制图标）',
+      '更新通道切为 generic 直链（绕开 api.github.com 限流，国内收更新更稳定）'
+    ],
+    '1.3.2': [
+      '更新失败提示增加手动下载兜底链接（GitHub Release 最新版安装包覆盖安装）'
+    ],
+    '1.3.1': [
+      '任务栏应用名修复（AppUserModelId，安装版显示「深空折韵」而非 Electron）',
+      '自动更新首次实战：已装 1.3.0 的用户启动后自动收到更新提示 → 下载 → 重启安装'
+    ],
+    '1.3.0': [
+      '普适化改造 + 交互增强（全新 1.3 大版本）',
+      '自动更新链路就绪：安装版启动静默检查，设置-软件更新可手动检查/下载/安装',
+      '版本号改为运行时读取（页面不再写死）',
+      '修复 artifactName 文件名不一致导致的自动更新下载失败'
+    ],
+    '1.2.8': [
+      '设置按钮固定在右上角（详情页也能随时打开设置）',
+      '默认值对齐用户用法；桌面歌词已唱/未唱双色独立可调'
     ]
   };
   function sendUpdate(type, data) {
@@ -2366,6 +3128,56 @@ function main() {
     if (!isTrusted(e) || !autoUpdater || !app.isPackaged) return;
     // 静默安装（true,true）：/S --updated --force-run → 无向导、装回原目录、装完自动重启（方案C，源码已验证）
     try { autoUpdater.quitAndInstall(true, true); } catch { /* 忽略 */ }
+  });
+  // 性能诊断（体验版）：GPU 加速状态 + 系统/窗口信息 + 主进程 CPU 采样——远程排查用户机器高 CPU
+  ipcMain.handle('diag:collect', async (e) => {
+    if (!isTrusted(e)) return null;
+    try {
+      const gpu = (app.getGPUFeatureStatus && app.getGPUFeatureStatus()) || {};
+      const mem = (process.getSystemMemoryInfo && process.getSystemMemoryInfo()) || {};
+      const displays = screen.getAllDisplays().map((d) => ({ size: d.size.width + 'x' + d.size.height, scale: d.scaleFactor }));
+      const cpu0 = process.cpuUsage();
+      await new Promise((r) => setTimeout(r, 500));
+      const cpu1 = process.cpuUsage(cpu0); // 相对差值（微秒）
+      return {
+        app: app.getVersion(),
+        platform: process.platform + ' ' + process.arch,
+        node: process.versions.node,
+        electron: process.versions.electron,
+        chrome: process.versions.chrome,
+        memTotalMB: mem.total ? Math.round(mem.total / 1048576) : null,
+        displays,
+        gpu: gpu, // 原样返回（key 形如 'gpu_compositing'/'2d_canvas'，避免字段名随版本漂移）
+        mainCpu500ms: cpu1,
+        lyricWin: (() => { // 歌词窗存在性与可见性（播放时可见=60fps 逐字循环在跑）
+          try {
+            if (typeof lyricWin === 'undefined' || !lyricWin || lyricWin.isDestroyed()) return { exists: false };
+            return { exists: true, visible: lyricWin.isVisible() };
+          } catch { return { exists: false }; }
+        })(),
+        procs: (() => { // 各进程原始信息（type/cpu/memory 原样返回，BigInt 转 Number；播放时采集直接定位烧 CPU 的进程）
+          try {
+            return app.getAppMetrics().map((m) => {
+              const o = { type: m.type, service: m.serviceName || '', pid: m.pid };
+              for (const k of Object.keys(m)) {
+                if (k === 'type' || k === 'serviceName' || k === 'pid') continue;
+                const v = m[k];
+                if (typeof v === 'bigint') { o[k] = Number(v); continue; }
+                if (v && typeof v === 'object' && k === 'memory') {
+                  o[k] = {};
+                  for (const mk of Object.keys(v)) o[k][mk] = typeof v[mk] === 'bigint' ? Number(v[mk]) : v[mk];
+                  continue;
+                }
+                o[k] = v;
+              }
+              return o;
+            });
+          } catch (err) { return [{ error: (err && err.message) || String(err) }]; }
+        })()
+      };
+    } catch (err) {
+      return { error: (err && err.message) || String(err) };
+    }
   });
 
   // 旧命名（<id>.jpg，超长路径会超 255 字符）迁移为 hash 命名
