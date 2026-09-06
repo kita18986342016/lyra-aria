@@ -576,6 +576,8 @@ function main() {
     config.defaultsV = 2;
     store.save('config.json', config);
   }
+  // 快捷键配置合并：存量配置保留用户自定义值，新增动作补默认值（local=应用内聚焦生效，global=全局注册）
+  config.hotkeys = { enabled: true, binds: {}, ...(config.hotkeys || {}) };
   const songIndex = new Map(); // id -> song（O(1) 查找）
   const lyricsCache = new Map(); // id -> { text, mtime }
 
@@ -768,6 +770,7 @@ function main() {
   let lyricLrc = null; // 最近一次全量歌词缓存（悬浮窗重载后重发，恢复两句显示）
   let lyricHover = false; // 锁定状态下鼠标是否悬停在歌词上（悬停则显示解锁工具条）
   let lyricNearBtn = false; // 锁定状态下鼠标是否在解锁按钮附近（仅此小范围解除穿透，其余区域保持穿透）
+  let lyricAdaptiveH = 0; // 渲染层 syncWinHeight 最近申请的自适应高度（0=未知，兜底 160）；防拉伸兜底用它而非固定 160
 
   // 从任务栏/任务视图/Alt+Tab 彻底隐藏歌词窗：Electron 43 的 skipTaskbar 在此组合下
   // 只移除 WS_EX_APPWINDOW、不添加 WS_EX_TOOLWINDOW → 任务视图/Win+Tab 仍会列出歌词页。
@@ -833,7 +836,10 @@ function main() {
         positionLyricWin(); // 任务栏模式：弹回任务栏尺寸与底部位置
       } else {
         const s = lyricWin.getSize();
-        if (s[0] !== 840 || s[1] !== 160) lyricWin.setSize(840, 160);
+        // 高度以渲染层最近申请的自适应值为准（紧凑间距公式）；
+        // 固定弹回 840x160 会覆盖自适应高度 → 间距压缩失效（2026-09-06 实测）
+        const wantH = lyricAdaptiveH > 0 ? lyricAdaptiveH : 160;
+        if (s[0] !== 840 || s[1] !== wantH) lyricWin.setSize(840, wantH);
         clearTimeout(moveTimer);
         moveTimer = setTimeout(saveLyricPos, 400);
       }
@@ -1724,7 +1730,16 @@ function main() {
     ipcMain.handle('opl:save', (e, pls) => {
       if (!isTrusted(e)) return [];
       if (!Array.isArray(pls)) return [];
-      store.save('online-playlists.json', pls.filter((p) => p && typeof p.id === 'string' && typeof p.name === 'string' && Array.isArray(p.songs)));
+      const filtered = pls.filter((p) => p && typeof p.id === 'string' && typeof p.name === 'string' && Array.isArray(p.songs));
+      // 护栏：空列表不覆盖非空文件——半初始化实例退出时误刷空数组会抹掉收藏的歌单（2026-09-06 实际发生）
+      if (!filtered.length) {
+        const cur = store.load('online-playlists.json', []);
+        if (Array.isArray(cur) && cur.length) {
+          console.error('[opl] 拒绝用空列表覆盖 ' + cur.length + ' 个已收藏歌单（疑似半初始化实例的误刷）');
+          return cur;
+        }
+      }
+      store.save('online-playlists.json', filtered);
       return pls;
     });
 
@@ -1884,6 +1899,7 @@ function main() {
       if (!isTrusted(e)) return;
       if (!lyricWin || lyricWin.isDestroyed() || !(h > 0) || h > 900) return;
       if (config.lyricWin && config.lyricWin.mode === 'taskbar') return; // 任务栏模式保持细长条固定高度
+      lyricAdaptiveH = Math.round(h); // 记录自适应高度，resize 防拉伸兜底以此为准
       const b = lyricWin.getBounds();
       lyricWin.setBounds({ x: b.x, y: b.y, width: 840, height: Math.round(h) }, false);
     });
@@ -1897,6 +1913,53 @@ function main() {
       if (!isTrusted(e)) return;
       // 穿透状态完全由悬停轮询的 nearBtn 判定控制（仅解锁按钮附近解除）；此处只记录悬停标志
       lyricHover = !!on;
+    });
+
+    // ---------- 快捷键 ----------
+    ipcMain.handle('hotkeys:get', (e) => {
+      if (!isTrusted(e)) return null;
+      return { enabled: config.hotkeys.enabled, defs: HK_DEFS.map((d) => ({ id: d.id, name: d.name })), binds: config.hotkeys.binds };
+    });
+    // 设置单项：{ id, layer: 'local'|'global', value }（''=清除）或 { enabled: bool } 总开关。
+    // 全局键注册失败（被其他程序占用）自动回滚并返回 reason:'taken'
+    ipcMain.handle('hotkeys:set', (e, patch) => {
+      if (!isTrusted(e) || !patch || typeof patch !== 'object') return { ok: false, reason: 'bad' };
+      // 恢复默认：全部动作回到 HK_DEFS 出厂键位并重载全局注册
+      if (patch.reset) {
+        for (const d of HK_DEFS) config.hotkeys.binds[d.id] = { local: d.local, global: d.global };
+        store.save('config.json', config);
+        registerAllHotkeys();
+        return { ok: true };
+      }
+      if (typeof patch.enabled === 'boolean') {
+        config.hotkeys.enabled = patch.enabled;
+        store.save('config.json', config);
+        registerAllHotkeys();
+        return { ok: true };
+      }
+      const { id, layer, value } = patch;
+      if (!HK_DEFS.find((d) => d.id === id) || !['local', 'global'].includes(layer)) return { ok: false, reason: 'bad' };
+      const val = typeof value === 'string' ? value.trim() : '';
+      if (!hkIsValidAccel(val)) return { ok: false, reason: 'format' };
+      for (const d of HK_DEFS) {
+        if (d.id !== id && val && config.hotkeys.binds[d.id][layer] === val) return { ok: false, reason: 'dup', dup: d.name };
+      }
+      const old = config.hotkeys.binds[id][layer];
+      config.hotkeys.binds[id][layer] = val;
+      store.save('config.json', config);
+      registerAllHotkeys();
+      if (layer === 'global' && val && !globalShortcut.isRegistered(val)) {
+        config.hotkeys.binds[id][layer] = old; // 被其他程序占用 → 回滚
+        store.save('config.json', config);
+        registerAllHotkeys();
+        return { ok: false, reason: 'taken' };
+      }
+      return { ok: true };
+    });
+    // 应用内层触达主进程侧动作（桌面歌词开关/锁定）
+    ipcMain.handle('hotkey:run', (e, id) => {
+      if (!isTrusted(e)) return;
+      if (id === 'lyric' || id === 'lyricLock') hkDispatch(id);
     });
 
     // ---------- LeiZ 在线音乐服务（网易云/酷狗爬歌，key 只存主进程）----------
@@ -1974,6 +2037,414 @@ function main() {
       }
       const r = await leizGet(p);
       return r.ok ? { ok: true, data: r.data } : { ok: false, reason: r.message || ('HTTP ' + r.status) };
+    });
+
+    // ---------- B 站收藏夹导入 + 播放解析（一期：公开收藏夹；播放走 LeiZ /bilibili 合并流）----------
+    // 收藏夹清单是公开内容：直接调 B 站公开接口（实测无 WBI/风控）；私密收藏夹需设为公开才能导入
+    function biliGet(pathWithQuery) {
+      return new Promise((resolve) => {
+        const req = https.get('https://api.bilibili.com' + pathWithQuery, { headers: { 'User-Agent': 'Mozilla/5.0 MusicPlayer/1.3.8', Referer: 'https://www.bilibili.com' } }, (res) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => {
+            try { resolve({ ok: true, status: res.statusCode, data: JSON.parse(Buffer.concat(chunks).toString('utf8')) }); }
+            catch { resolve({ ok: false, status: res.statusCode, message: '响应解析失败' }); }
+          });
+        });
+        req.on('error', (e) => resolve({ ok: false, status: 0, message: e.message }));
+        req.setTimeout(20000, () => { req.destroy(); resolve({ ok: false, status: 0, message: '请求超时' }); });
+      });
+    }
+    // 收藏夹识别：URL 里的 fid= 数字，或纯数字 media_id；自动翻页拉全（上限 400，防误粘超大收藏夹）
+    ipcMain.handle('bili:favlist', async (e, ref) => {
+      if (!isTrusted(e) || typeof ref !== 'string' || !ref.trim()) return { ok: false, reason: '参数错误' };
+      const m = ref.match(/fid=(\d{4,})/) || ref.trim().match(/^(\d{4,})$/);
+      if (!m) return { ok: false, reason: '无法识别收藏夹（请粘贴 space.bilibili.com 的 favlist 链接）' };
+      const mediaId = m[1];
+      const first = await biliGet('/x/v3/fav/resource/list?media_id=' + mediaId + '&pn=1&ps=20&order=mtime&type=2');
+      if (!first.ok || !first.data || first.data.code !== 0 || !first.data.data || !first.data.data.info) {
+        const code = first.data && first.data.code;
+        return { ok: false, reason: code === -403 || code === -404 ? '收藏夹不存在或未公开（私密收藏夹请先设为公开）' : '收藏夹拉取失败（' + ((first.data && first.data.message) || ('HTTP ' + first.status)) + '）' };
+      }
+      const info = first.data.data.info;
+      const total = Math.min(Number(info.media_count) || 0, 400);
+      const songs = [];
+      const push = (v) => {
+        if (!v || !v.bvid) return;
+        songs.push({
+          ref: v.bvid,
+          title: String(v.title || '').replace(/【[^】]*】/g, '').trim() || String(v.title || '').trim(), // 去【】标签但保底原标题
+          artist: (v.upper && v.upper.name) || '未知UP主',
+          album: '', duration: Number(v.duration) || 0, picUrl: v.cover || v.pic || ''
+        });
+      };
+      for (const v of (first.data.data.medias || [])) push(v);
+      const pages = Math.ceil(total / 20);
+      for (let pn = 2; pn <= pages; pn++) {
+        const r = await biliGet('/x/v3/fav/resource/list?media_id=' + mediaId + '&pn=' + pn + '&ps=20&order=mtime&type=2');
+        const medias = r.ok && r.data && r.data.code === 0 && r.data.data ? r.data.data.medias : null;
+        if (!medias || !medias.length) break;
+        for (const v of medias) push(v);
+      }
+      if (!songs.length) return { ok: false, reason: '收藏夹为空' };
+      // 后台预热前 5 首：导入完成后立即开始合成，用户点开头几首即可秒开（点播其他歌时预热自动作废）
+      biliWarmPending = songs.slice(0, 5).map((x) => x.ref).filter((x) => /^BV[0-9A-Za-z]{8,12}$/.test(x));
+      biliWarmKick();
+      return {
+        ok: true,
+        data: {
+          name: info.title || 'B站收藏夹',
+          cover: info.cover || (songs[0] && songs[0].picUrl) || '',
+          desc: 'UP：' + ((info.upper && info.upper.name) || '') + ' · ' + songs.length + ' 个视频',
+          songs,
+          truncated: total < (Number(info.media_count) || 0)
+        }
+      };
+    });
+    // 播放解析（混合）：自建直连优先（纯音频 DASH、登录后自动会员档），失败退 LeiZ 合并流兜底
+    // 缓存：解析结果缓存 50 分钟；收藏夹导入后自动预热前 5 首 → 点播秒开
+    const biliCache = new Map(); // bvid -> resolve data（50 分钟 TTL，对齐 token ~1h 有效期）
+    const BILI_CACHE_TTL = 50 * 60 * 1000;
+    let biliWarmPending = []; // 待预热 bvid 队列（用户点播其他歌时清空，不浪费服务端算力）
+    let biliWarming = false;
+    // ---------- 自建直连（@seiuna/bilibili-api，ESM 动态加载；凭证存数据根 bili-credentials.json）----------
+    let biliLibPromise = null;
+    let biliClient = null;
+    let biliLoginBusy = false;
+    let biliLastQr = ''; // 最近一张扫码二维码（弹窗关了会话还在，重开弹窗时补发）
+    const biliCredPath = () => path.join(dataRoot(), 'bili-credentials.json');
+    const biliCredBackupPath = () => path.join(dataRoot(), 'bili-credentials.backup.json');
+    // 凭据健康检查：cookie+refreshToken 都非空才算有效（库里刷新失败会把主文件覆写成空串）
+    function biliCredHasData(p) {
+      try {
+        const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+        return !!(j && j.cookie && j.refreshToken);
+      } catch { return false; }
+    }
+    function biliCredRestoreIfNeeded() {
+      try {
+        if (!biliCredHasData(biliCredPath()) && biliCredHasData(biliCredBackupPath())) {
+          fs.copyFileSync(biliCredBackupPath(), biliCredPath());
+          console.log('[bili] 凭据主文件为空 → 已从备份恢复登录态');
+        }
+      } catch { /* 忽略 */ }
+    }
+    async function biliGetClient() {
+      if (biliClient) return biliClient;
+      const lib = await (biliLibPromise || (biliLibPromise = import('@seiuna/bilibili-api')));
+      biliCredRestoreIfNeeded(); // 空文件（刷新失败覆写）→ 从备份还原，保住登录态
+      biliClient = await lib.BiliClient.create(biliCredPath());
+      return biliClient;
+    }
+    // 自建解析：view+playurl 取 DASH 最高音轨（纯音频，无视频轨/无合成等待；登录后自动 192k/Hi-Res）
+    async function biliSelfImpl(bvid) {
+      const client = await biliGetClient();
+      const video = await client.getVideo(bvid);
+      const pu = await video.getPlayUrl({ fnval: 16 | 512 }); // 512=Hi-Res 无损位（无权益时服务端自动降级）
+      // 库返回扁平结构（playurl 字段直接在顶层）；兼容 {data:{...}} 包装
+      const pd = (pu && pu.data) || pu || {};
+      const dash = pd.dash || (pu && pu.result && pu.result.dash);
+      const tracks = [];
+      if (dash && Array.isArray(dash.audio)) tracks.push(...dash.audio);
+      if (dash && dash.flac && dash.flac.baseUrl) tracks.push(dash.flac); // Hi-Res 无损独立字段（大会员）
+      if (!tracks.length) throw new Error('响应中没有音频轨');
+      const best = tracks.slice().sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0))[0];
+      const bitrate = Math.round((best.bandwidth || 0) / 1000);
+      // 按音轨代码诚实标档：30251=Hi-Res无损、30280=高清(192k)、30232/30216=标准
+      const level = best.id === 30251 || /flac/i.test(String(best.codec || '')) ? 'lossless' : best.id === 30280 ? 'high' : 'standard';
+      return {
+        ok: true,
+        data: {
+          url: best.baseUrl, bitrate, format: level === 'lossless' ? 'flac' : 'm4a', level,
+          title: video.title || '', artist: video.owner ? video.owner.name : '', duration: video.duration || 0,
+          self: true
+        }
+      };
+    }
+    // LeiZ 兜底：合并流 MP4（qn=16 最低清晰度——纯音频播放用不着视频轨，低清合成快得多）
+    // 流程：解析拿 merged token → POST prepare 触发服务端合成（202）→ 轮询合并流至 200/206（约 10-20s，上限 90s）
+    async function biliResolveImpl(bvid) {
+      const r = await leizGet('/bilibili?bvid=' + encodeURIComponent(bvid) + '&qn=16');
+      // 注意：leizGet 已拆信封——r.data 即视频数据（kind/bvid/dash/merged...），无 success 包装
+      if (!r.ok || !r.data) {
+        return { ok: false, reason: r.message || ('HTTP ' + r.status) };
+      }
+      const d = r.data;
+      const audioArr = (d.dash && d.dash.audio) || [];
+      let best = null;
+      for (const a of audioArr) if (!best || (a.bandwidth || 0) > (best.bandwidth || 0)) best = a;
+      const bitrate = best ? Math.round((best.bandwidth || 0) / 1000) : 0; // kbps（如 132）
+      const fmt = best ? (/flac/i.test(String(best.codec || '')) || best.id === 30251 ? 'flac' : 'm4a') : 'mp4';
+      if (!d.merged || !d.merged.url) return { ok: false, reason: '响应中没有可播放的流' };
+      const abs = (u) => 'https://api.bileizhen.top' + u + (u.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(LEIZ_KEY);
+      const url = abs(d.merged.url);
+      const code = (method, u) => new Promise((resolve) => {
+        const req = https.request(u, { method, headers: { 'User-Agent': 'Mozilla/5.0 MusicPlayer/1.3.8' } }, (res) => { res.resume(); resolve(res.statusCode); });
+        req.on('error', () => resolve(0));
+        req.setTimeout(15000, () => { req.destroy(); resolve(0); });
+        req.end();
+      });
+      await code('POST', abs(d.merged.prepareUrl)); // 触发合成（202=已开始；不触发则永远 425）
+      for (let i = 0; i < 30; i++) {
+        const st = await code('GET', url + '&r=' + i); // Range 探测：200/206=就绪，425=合并中
+        if (st === 200 || st === 206) {
+          return { ok: true, data: { url, bitrate, format: fmt, title: d.partTitle || d.title || '', artist: d.owner || '', duration: d.duration || 0 } };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+      return { ok: false, reason: '音视频合并超时，请稍后重试' };
+    }
+    // 统一入口：缓存 → 自建直连 → LeiZ 兜底
+    async function biliResolveFull(bvid) {
+      const cached = biliCache.get(bvid);
+      if (cached && Date.now() - cached.ts < BILI_CACHE_TTL) return { ok: true, data: cached };
+      try {
+        const self = await biliSelfImpl(bvid);
+        if (self && self.ok) { self.data.ts = Date.now(); biliCache.set(bvid, self.data); return self; }
+      } catch (err) {
+        console.error('[bili] 自建直连失败 → LeiZ 兜底:', (err && err.message) || err);
+      }
+      const lz = await biliResolveImpl(bvid);
+      if (lz.ok) { lz.data.ts = Date.now(); biliCache.set(bvid, lz.data); }
+      return lz;
+    }
+    async function biliWarmKick() {
+      if (biliWarming) return;
+      biliWarming = true;
+      try {
+        while (biliWarmPending.length) {
+          const bvid = biliWarmPending.shift();
+          const c = biliCache.get(bvid);
+          if (c && Date.now() - c.ts < BILI_CACHE_TTL) continue;
+          const r = await biliResolveFull(bvid);
+          if (!r.ok) break; // 上游异常（风控/网络）→ 停止预热轰炸
+          await new Promise((resolve) => setTimeout(resolve, 1500)); // 预热节流：对上游礼貌
+        }
+      } finally { biliWarming = false; }
+    }
+    ipcMain.handle('bili:resolve', async (e, bvid) => {
+      if (!isTrusted(e) || typeof bvid !== 'string' || !/^BV[0-9A-Za-z]{8,12}$/.test(bvid)) return { ok: false, reason: '无效的 BV 号' };
+      biliWarmPending = []; // 用户点播了别的歌 → 未开始的预热作废
+      return biliResolveFull(bvid);
+    });
+    // ---------- B 站账号（扫码登录；会员档随登录态自动生效）----------
+    ipcMain.handle('bili:loginStart', async (e) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝访问' };
+      if (biliLoginBusy) { // 已有扫码会话进行中：补发当前二维码（否则重开弹窗会一直卡「正在获取二维码…」）
+        if (biliLastQr && win && !win.isDestroyed()) win.webContents.send('bili:loginStatus', { status: 'qr', msg: '', qr: biliLastQr });
+        return { ok: true };
+      }
+      try {
+        const lib = await (biliLibPromise || (biliLibPromise = import('@seiuna/bilibili-api')));
+        const client = await biliGetClient();
+        biliLoginBusy = true;
+        client.ensureLogin({
+          pollInterval: 2000,
+          timeout: 180000,
+          onStatusChange: (status, msg, qrBase64) => {
+            if (qrBase64) biliLastQr = qrBase64;
+            if (win && !win.isDestroyed()) win.webContents.send('bili:loginStatus', { status, msg: msg || '', qr: qrBase64 || null });
+          }
+        }).then((authed) => {
+          biliLoginBusy = false;
+          biliClient = authed;
+          biliCache.clear(); // 会员解析结果与匿名不同，清掉旧缓存与预热
+          biliWarmPending = [];
+          try { if (biliCredHasData(biliCredPath())) fs.copyFileSync(biliCredPath(), biliCredBackupPath()); } catch { /* 备份失败不影响登录 */ }
+          (async () => { // 补取昵称写进凭据文件，并把名字随成功事件带给界面
+            let uname = '';
+            try { const d = JSON.parse(fs.readFileSync(biliCredPath(), 'utf8')); uname = await biliFetchUname(d && d.cookie); if (uname) { d.uname = uname; fs.writeFileSync(biliCredPath(), JSON.stringify(d, null, 2), 'utf8'); } } catch { /* 忽略 */ }
+            if (win && !win.isDestroyed()) win.webContents.send('bili:loginStatus', { status: 'success', msg: '登录成功', uname });
+          })();
+        }).catch((err) => {
+          biliLoginBusy = false;
+          if (win && !win.isDestroyed()) win.webContents.send('bili:loginStatus', { status: 'error', msg: (err && err.message) || '登录失败' });
+        });
+        return { ok: true };
+      } catch (err) {
+        biliLoginBusy = false;
+        return { ok: false, reason: (err && err.message) || '登录初始化失败' };
+      }
+    });
+    // 登录态判定直接读凭据文件（不走库：create/init 偶发挂起时设置页不该被拖住）
+    ipcMain.handle('bili:account', async (e) => {
+      if (!isTrusted(e)) return { loggedIn: false };
+      let uname = '';
+      try { uname = String((JSON.parse(fs.readFileSync(biliCredPath(), 'utf8')) || {}).uname || '').slice(0, 40); } catch { /* 未登录/损坏 */ }
+      return { loggedIn: biliCredHasData(biliCredPath()), uname };
+    });
+    ipcMain.handle('bili:logout', async (e) => {
+      if (!isTrusted(e)) return { ok: false };
+      try { fs.rmSync(biliCredPath(), { force: true }); } catch { /* 忽略 */ }
+      biliClient = null;
+      biliLastQr = '';
+      biliCache.clear();
+      biliWarmPending = [];
+      return { ok: true };
+    });
+    // —— B站验证码（短信）登录：先过官方人机验证（弹窗滑块），再发短信、用验证码换登录 Cookie ——
+    let biliSmsCtx = null; // { captchaKey, tel, ts } 发短信成功后的上下文（10 分钟内有效）
+    let biliBuvid3 = '';
+    const biliGetBuvid = () => (biliBuvid3 || (biliBuvid3 = crypto.randomUUID().toUpperCase() + 'infoc'));
+    // 官方人机验证弹窗：加载验证组件，用户完成后返回 { challenge, validate, seccode }；关闭/超时返回 null
+    function biliGeetestWindow(gt, challenge) {
+      return new Promise((resolve) => {
+        let done = false;
+        let srv = null;
+        const finish = (v) => { if (done) return; done = true; try { if (srv) srv.close(); } catch { /* 忽略 */ } try { if (geeWin && !geeWin.isDestroyed()) geeWin.destroy(); } catch { /* 忽略 */ } resolve(v); };
+        const html = '<!doctype html><html><head><meta charset="utf-8"><title>安全验证</title>' +
+          '<style>body{font-family:system-ui,"Segoe UI",sans-serif;background:#fff;margin:0;padding:20px;text-align:center}h3{margin:6px 0 2px;color:#333;font-weight:600}.sub{color:#999;font-size:12px;margin:0 0 14px}#cap{display:inline-block;min-height:60px}</style></head>' +
+          '<body><h3>安全验证</h3><p class="sub">完成后，验证码短信将发送到你的手机</p><div id="cap"></div>' +
+          '<script src="https://static.geetest.com/static/tools/gt.js"><' + '/script>' +
+          '<script>window.__geeResult=null;(function wait(){if(typeof initGeetest!=="function"){setTimeout(wait,150);return;}initGeetest({gt:"__GT__",challenge:"__CH__",offline:false,new_captcha:true,product:"float",width:"300px"},function(c){c.appendTo("#cap");c.onSuccess(function(){window.__geeResult=c.getValidate();});});})();<' + '/script></body></html>';
+        const page = html.replace('__GT__', String(gt)).replace('__CH__', String(challenge));
+        const geeWin = new BrowserWindow({
+          width: 380, height: 460, show: false, resizable: false, minimizable: false, maximizable: false,
+          title: '安全验证', autoHideMenuBar: true,
+          webPreferences: { contextIsolation: true, nodeIntegration: false }
+        });
+        geeWin.setMenu(null);
+        geeWin.once('ready-to-show', () => { try { geeWin.show(); } catch { /* 忽略 */ } });
+        // 本地 http 源承载验证页：验证组件按 location.protocol 拼资源地址，data:/file: 页面会拼出非法地址报网络错误
+        srv = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(page); });
+        srv.on('error', () => finish(null));
+        srv.listen(0, '127.0.0.1', () => {
+          geeWin.loadURL('http://127.0.0.1:' + srv.address().port + '/').catch(() => {});
+        });
+        geeWin.on('closed', () => finish(null));
+        const t0 = Date.now();
+        const poll = setInterval(() => {
+          if (done) { clearInterval(poll); return; }
+          if (Date.now() - t0 > 180000) { clearInterval(poll); finish(null); return; } // 3 分钟未完成视为放弃
+          try {
+            if (geeWin.isDestroyed()) { clearInterval(poll); finish(null); return; }
+            geeWin.webContents.executeJavaScript('window.__geeResult || null').then((r) => {
+              if (r && r.geetest_validate) { clearInterval(poll); finish({ challenge: r.geetest_challenge, validate: r.geetest_validate, seccode: r.geetest_seccode }); }
+            }).catch(() => { /* 下轮再取 */ });
+          } catch { /* 窗口销毁竞态：下轮检测 */ }
+        }, 700);
+      });
+    }
+    
+    // 取B站昵称（nav 端点，凭 SESSDATA；失败返回空 → 界面显示「已登录」兜底）
+    const BILI_NAV_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36';
+    async function biliFetchUname(cookie) {
+      try {
+        const r = await fetch('https://api.bilibili.com/x/web-interface/nav', { headers: { 'User-Agent': BILI_NAV_UA, 'Cookie': String(cookie || '') } });
+        const j = await r.json();
+        if (j && j.code === 0 && j.data && j.data.uname) return String(j.data.uname).slice(0, 40);
+      } catch { /* 忽略 */ }
+      return '';
+    }
+    // 旧凭据补昵称：已登录但凭据没有 uname（升级前登录的）时后台补一次，不阻塞启动
+    (async () => {
+      try {
+        if (biliCredHasData(biliCredPath())) {
+          const d = JSON.parse(fs.readFileSync(biliCredPath(), 'utf8'));
+          if (d && d.cookie && !d.uname) {
+            const u = await biliFetchUname(d.cookie);
+            if (u) {
+              d.uname = u;
+              fs.writeFileSync(biliCredPath(), JSON.stringify(d, null, 2), 'utf8');
+              if (win && !win.isDestroyed()) win.webContents.send('bili:loginStatus', { status: 'profile', msg: '', uname: u });
+            }
+          }
+        }
+      } catch { /* 忽略 */ }
+    })();
+    // 发送验证码短信：11 位大陆手机号（国际区号固定 86）
+    ipcMain.handle('bili:sms-send', async (e, phone) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝访问' };
+      if (!/^1\d{10}$/.test(String(phone || ''))) return { ok: false, reason: '请输入正确的手机号' };
+      try {
+        const cfgRes = await fetch('https://passport.bilibili.com/x/passport-login/captcha?source=main_web', { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' } });
+        const cfg = await cfgRes.json();
+        if (!cfg || cfg.code !== 0 || !cfg.data || !cfg.data.geetest) return { ok: false, reason: '安全验证配置获取失败，请稍后重试' };
+        const { token, geetest } = cfg.data;
+        const gee = await biliGeetestWindow(geetest.gt, geetest.challenge);
+        if (!gee) return { ok: false, reason: '未完成安全验证' };
+        const body = new URLSearchParams({ cid: '86', tel: String(phone), source: 'main_web', token, challenge: gee.challenge, validate: gee.validate, seccode: gee.seccode });
+        const res = await fetch('https://passport.bilibili.com/x/passport-login/web/sms/send', {
+          method: 'POST',
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36', 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': 'buvid3=' + biliGetBuvid(), 'Referer': 'https://passport.bilibili.com/login' },
+          body
+        });
+        const j = await res.json();
+        if (j && j.code === 0 && j.data && j.data.captcha_key) {
+          biliSmsCtx = { captchaKey: j.data.captcha_key, tel: String(phone), ts: Date.now() };
+          return { ok: true };
+        }
+        return { ok: false, reason: ((j && (j.message || j.msg)) || '短信发送失败').slice(0, 120) };
+      } catch (err) { return { ok: false, reason: (err && err.message) || '网络异常' }; }
+    });
+    // 用短信验证码换登录凭据：成功后写入凭据文件（与扫码登录同款格式与备份机制），播放自动升级音质
+    ipcMain.handle('bili:sms-login', async (e, phone, code) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝访问' };
+      const ctx = biliSmsCtx;
+      if (!ctx || ctx.tel !== String(phone || '') || Date.now() - ctx.ts > 600000) return { ok: false, reason: '请先获取验证码' };
+      if (!/^\d{4,8}$/.test(String(code || ''))) return { ok: false, reason: '请输入短信验证码' };
+      try {
+        const body = new URLSearchParams({ cid: '86', tel: ctx.tel, code: String(code), captcha_key: ctx.captchaKey, source: 'main_web' });
+        const res = await fetch('https://passport.bilibili.com/x/passport-login/web/login/sms', {
+          method: 'POST',
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36', 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': 'buvid3=' + biliGetBuvid(), 'Referer': 'https://passport.bilibili.com/login' },
+          body
+        });
+        const j = await res.json();
+        if (!j || j.code !== 0) return { ok: false, reason: ((j && (j.message || j.msg)) || '验证码校验失败').slice(0, 120) };
+        let setCookies = [];
+        try { setCookies = res.headers.getSetCookie ? res.headers.getSetCookie() : String(res.headers.get('set-cookie') || '').split(/,(?=[^;]+=)/); } catch { setCookies = []; }
+        const pairs = {};
+        for (const sc of setCookies) {
+          const kv = String(sc).split(';')[0];
+          const i = kv.indexOf('=');
+          if (i > 0) pairs[kv.slice(0, i).trim()] = kv.slice(i + 1).trim();
+        }
+        if (!pairs.SESSDATA) return { ok: false, reason: '登录响应缺少凭据，请重试' };
+        // 写入凭据文件（沿用扫码登录的文件格式与备份机制）
+        biliCredRestoreIfNeeded();
+        let data = {};
+        try { data = JSON.parse(fs.readFileSync(biliCredPath(), 'utf8')) || {}; } catch { data = {}; }
+        const existing = {};
+        String(data.cookie || '').split(';').forEach((pc) => { const i = pc.indexOf('='); if (i > 0) existing[pc.slice(0, i).trim()] = pc.slice(i + 1).trim(); });
+        for (const k of ['DedeUserID', 'DedeUserID__ckMd5', 'SESSDATA', 'bili_jct', 'sid']) if (pairs[k]) existing[k] = pairs[k];
+        data.cookie = Object.entries(existing).map(([k, v]) => k + '=' + v).join('; ');
+        const mid = parseInt(pairs.DedeUserID, 10);
+        if (mid) data.mid = mid;
+        const uname = await biliFetchUname(data.cookie);
+        if (uname) data.uname = uname;
+        fs.writeFileSync(biliCredPath(), JSON.stringify(data, null, 2), 'utf8');
+        try { fs.copyFileSync(biliCredPath(), biliCredBackupPath()); } catch { /* 备份失败不影响登录 */ }
+        biliClient = null;
+        biliCache.clear();
+        biliWarmPending = [];
+        biliSmsCtx = null;
+        if (win && !win.isDestroyed()) win.webContents.send('bili:loginStatus', { status: 'success', msg: '登录成功', uname });
+        return { ok: true };
+      } catch (err) { return { ok: false, reason: (err && err.message) || '网络异常' }; }
+    });
+    // 一键导入：列出登录账号创建的收藏夹（公开接口，mid 取凭据）
+    ipcMain.handle('bili:myfav', async (e) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝访问' };
+      try {
+        let mid = 0, cookie = '';
+        try { const d = JSON.parse(fs.readFileSync(biliCredPath(), 'utf8')) || {}; mid = Number(d.mid || 0); cookie = String(d.cookie || ''); } catch { /* 未登录 */ }
+        if (!mid) { const m = /DedeUserID=(\d+)/.exec(cookie); if (m) mid = Number(m[1]); }
+        if (!mid) return { ok: false, reason: '未登录B站，请先在账号管理登录' };
+        const res = await fetch('https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=' + mid, { headers: { 'User-Agent': BILI_NAV_UA, 'Cookie': cookie, 'Referer': 'https://space.bilibili.com/' } });
+        const j = await res.json();
+        if (j && j.code === 0 && Array.isArray(j.data && j.data.list)) {
+          return { ok: true, folders: j.data.list.map((f) => ({ id: String(f.id), title: String(f.title || ''), count: Number(f.media_count || 0) })) };
+        }
+        return { ok: false, reason: ((j && (j.message || j.msg)) || '收藏夹获取失败').slice(0, 120) };
+      } catch (err) { return { ok: false, reason: (err && err.message) || '网络异常' }; }
+    });
+    // 主动预热（渲染层在当前歌开始播放时预热队列下一首；导入时预热前 5 首同款队列）
+    ipcMain.on('bili:warm', (e, bvid) => {
+      if (!isTrusted(e) || typeof bvid !== 'string' || !/^BV[0-9A-Za-z]{8,12}$/.test(bvid)) return;
+      const c = biliCache.get(bvid);
+      if (c && Date.now() - c.ts < BILI_CACHE_TTL) return;
+      if (!biliWarmPending.includes(bvid)) { biliWarmPending.push(bvid); biliWarmKick(); }
     });
     // ---------- QQ 音乐官方接口（2026-08 起弃用第三方 API：官方搜索/歌单/歌词 + vkey 直链，只播免费歌）----------
     // 登录态（y.qq.com Cookie）只存主进程 accounts.json；搜索/歌单/歌词匿名可用，播放直链需 Cookie
@@ -2311,19 +2782,6 @@ function main() {
       }
       return { ok: false, code: r.code, reason: r.msg || '' };
     });
-    // 网易云密码登录（邮箱或手机号）：email/phone + password
-    ipcMain.handle('acc:net-login', async (e, username, password) => {
-      if (!isTrusted(e) || typeof username !== 'string' || !username.trim() || typeof password !== 'string' || !password) return { ok: false, reason: '参数错误' };
-      const isMail = /@/.test(username.trim());
-      const r = isMail ? await neteaseAcc.loginByEmail(username.trim(), password) : await neteaseAcc.loginByCellphone(username.trim(), password);
-      if (r.ok) {
-        const a = await neteaseAcc.accountInfo();
-        if (a.ok) neteaseAcc.getState().account = a.nickname || '';
-        saveAccounts();
-        return { ok: true, status: accStatus().netease };
-      }
-      return { ok: false, reason: r.msg || '登录失败' };
-    });
     // 酷狗扫码：换取二维码 key
     ipcMain.handle('acc:kg-qr', async (e) => {
       if (!isTrusted(e)) return { ok: false, reason: '拒绝访问' };
@@ -2355,39 +2813,6 @@ function main() {
       if (!isTrusted(e)) return null;
       return accStatus();
     });
-    // 记住密码（登录弹窗）：safeStorage 加密存 D 盘（不进 localStorage），与凭据同目录
-    const RMB_FILE = () => path.join(store.getDataDir(), 'rmb.json');
-    ipcMain.handle('acc:rmb-save', (e, plat, user, pass) => {
-      if (!isTrusted(e) || typeof plat !== 'string' || typeof user !== 'string') return false;
-      try {
-        let all = {};
-        try {
-          const raw = fs.readFileSync(RMB_FILE(), 'utf8');
-          const j = JSON.parse(raw);
-          if (j && j.v === 2 && j.enc && accEncryptAvailable()) all = JSON.parse(safeStorage.decryptString(Buffer.from(j.enc, 'base64')).toString('utf8'));
-        } catch { /* 忽略损坏 */ }
-        if (!pass) delete all[plat];
-        else all[plat] = { user, pass };
-        fs.mkdirSync(store.getDataDir(), { recursive: true });
-        if (accEncryptAvailable()) {
-          fs.writeFileSync(RMB_FILE(), JSON.stringify({ v: 2, enc: safeStorage.encryptString(JSON.stringify(all)).toString('base64') }), 'utf8');
-        } else {
-          fs.writeFileSync(RMB_FILE(), JSON.stringify(all, null, 1), 'utf8');
-        }
-        return true;
-      } catch { return false; }
-    });
-    ipcMain.handle('acc:rmb-load', (e, plat) => {
-      if (!isTrusted(e) || typeof plat !== 'string') return null;
-      try {
-        const raw = fs.readFileSync(RMB_FILE(), 'utf8');
-        const j = JSON.parse(raw);
-        let all = {};
-        if (j && j.v === 2 && j.enc && accEncryptAvailable()) all = JSON.parse(safeStorage.decryptString(Buffer.from(j.enc, 'base64')).toString('utf8'));
-        else if (j && typeof j === 'object' && !j.enc) all = j;
-        return all[plat] || null;
-      } catch { return null; }
-    });
     // 账号「我的歌单」列表（登录后）：netease 已实现；kugou 接口待逆向
     ipcMain.handle('acc:my-playlists', async (e, platform) => {
       if (!isTrusted(e)) return { ok: false, reason: '拒绝访问' };
@@ -2398,8 +2823,8 @@ function main() {
       }
       if (platform === 'kugou') {
         const k = kugouAcc.getState();
-        if (!(k.token && k.userid)) return { ok: false, reason: '未登录酷狗（推荐页可登录）' };
-        return { ok: false, reason: '酷狗「我的歌单」接口暂未支持，可在推荐页导入酷狗推荐歌单' };
+        if (!(k.token && k.userid)) return { ok: false, reason: '未登录酷狗（账号管理可登录）' };
+        return await kugouAcc.myPlaylists();
       }
       return { ok: false, reason: '未知平台' };
     });
@@ -2923,17 +3348,83 @@ function main() {
     tray.on('click', () => win.show());
   }
 
-  function setupShortcuts() {
-    const regs = [
-      ['MediaPlayPause', () => sendMedia('toggle')],
-      ['MediaNextTrack', () => sendMedia('next')],
-      ['MediaPreviousTrack', () => sendMedia('prev')]
-    ];
-    for (const [acc, cb] of regs) {
-      if (!globalShortcut.register(acc, cb)) {
-        console.warn('[深空折韵] 媒体键注册失败（可能被其他应用占用）:', acc);
-      }
+  // ---------- 快捷键系统（应用内 + 全局双层，可自定义；参考网易云/Spotify 公约） ----------
+  // global 由主进程 globalShortcut 注册（窗口未聚焦也生效）；local 由渲染层 keydown 处理（聚焦生效）。
+  // 空字符串 = 未绑定；全局层支持单键但会全系统拦截，设置页录入时由用户自行权衡。
+  const HK_DEFS = [
+    { id: 'toggle',    name: '播放 / 暂停',      local: 'Space',      global: 'Ctrl+Alt+P' },
+    { id: 'prev',      name: '上一首',           local: 'Ctrl+Left',  global: 'Ctrl+Alt+Left' },
+    { id: 'next',      name: '下一首',           local: 'Ctrl+Right', global: 'Ctrl+Alt+Right' },
+    { id: 'volUp',     name: '音量增大',         local: 'Up',         global: 'Ctrl+Alt+Up' },
+    { id: 'volDown',   name: '音量减小',         local: 'Down',       global: 'Ctrl+Alt+Down' },
+    { id: 'mute',      name: '静音',             local: 'M',          global: '' },
+    { id: 'seekFwd',   name: '快进 5 秒',        local: 'Right',      global: '' },
+    { id: 'seekBack',  name: '快退 5 秒',        local: 'Left',       global: '' },
+    { id: 'playMode',  name: '切换播放模式',     local: 'Ctrl+R',     global: 'Ctrl+Alt+R' },
+    { id: 'fav',       name: '收藏当前歌曲',     local: 'Ctrl+L',     global: '' },
+    { id: 'lyric',     name: '桌面歌词 开/关',   local: 'Ctrl+D',     global: 'Ctrl+Alt+D' },
+    { id: 'lyricLock', name: '桌面歌词 锁/解锁', local: '',           global: 'Ctrl+Alt+L' }
+  ];
+  // 补齐 binds（保留用户已自定义的值，新增动作用默认值）
+  for (const d of HK_DEFS) {
+    const cur = (config.hotkeys.binds && config.hotkeys.binds[d.id]) || {};
+    config.hotkeys.binds[d.id] = {
+      local: typeof cur.local === 'string' ? cur.local : d.local,
+      global: typeof cur.global === 'string' ? cur.global : d.global
+    };
+  }
+
+  const HK_MEDIA_KEYS = [['MediaPlayPause', 'toggle'], ['MediaNextTrack', 'next'], ['MediaPreviousTrack', 'prev']];
+  const HK_MODS = ['Ctrl', 'Alt', 'Shift', 'Super'];
+  function hkIsValidAccel(s) {
+    if (typeof s !== 'string') return false;
+    if (s === '') return true; // 空 = 未绑定
+    const parts = s.split('+');
+    const key = parts[parts.length - 1];
+    if (!key || key.length > 24 || HK_MODS.includes(key)) return false;
+    const seen = [];
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!HK_MODS.includes(parts[i]) || seen.includes(parts[i])) return false;
+      seen.push(parts[i]);
     }
+    return true;
+  }
+  // 动作分发：主进程能直接执行的就地执行；需要播放状态的（音量/seek/收藏）转发主窗
+  function hkDispatch(id) {
+    if (id === 'toggle' || id === 'prev' || id === 'next') { sendMedia(id); return; }
+    if (id === 'playMode') {
+      const order = ['order', 'repeat-one', 'shuffle'];
+      config.mode = order[(order.indexOf(config.mode) + 1) % order.length];
+      store.save('config.json', config);
+      if (lyricWin && !lyricWin.isDestroyed()) lyricWin.webContents.send('lyricwin:mode', config.mode);
+      if (win && !win.isDestroyed()) win.webContents.send('player:control', { mode: config.mode });
+      return;
+    }
+    if (id === 'lyric') { lyricWinToggle(!config.lyricWin.enabled); return; }
+    if (id === 'lyricLock') {
+      config.lyricWin.locked = !config.lyricWin.locked;
+      store.save('config.json', config);
+      applyLyricConfig();
+      return;
+    }
+    if (win && !win.isDestroyed()) win.webContents.send('player:control', { hk: id });
+  }
+  // 注册全部全局键：先 unregisterAll 再装回媒体键 + 自定义键（全局总开关关闭时只留媒体键）
+  function registerAllHotkeys() {
+    try { globalShortcut.unregisterAll(); } catch { /* 忽略 */ }
+    for (const [acc, act] of HK_MEDIA_KEYS) {
+      if (!globalShortcut.register(acc, () => sendMedia(act))) console.warn('[深空折韵] 媒体键注册失败（可能被其他应用占用）:', acc);
+    }
+    if (!config.hotkeys.enabled) return;
+    for (const d of HK_DEFS) {
+      const acc = config.hotkeys.binds[d.id].global;
+      if (!acc) continue;
+      if (!globalShortcut.register(acc, () => hkDispatch(d.id))) console.warn('[深空折韵] 全局快捷键注册失败（可能被占用）:', d.id, acc);
+    }
+  }
+
+  function setupShortcuts() {
+    registerAllHotkeys();
   }
 
   // ---------- 生命周期 ----------
@@ -2953,6 +3444,14 @@ function main() {
 
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null); // 移除默认菜单栏（File/Edit/View/Window）
+    // B 站 CDN 热链保护：<audio> 发不了自定义头，用 webRequest 统一补 Referer（音视频直链/封面必备）
+    try {
+      session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['*://*.bilivideo.com/*', '*://*.akamaized.net/*', '*://*.bilitv.com/*'] }, (details, callback) => {
+        const h = details.requestHeaders;
+        if (!h.Referer) h.Referer = 'https://www.bilibili.com/';
+        callback({ requestHeaders: h });
+      });
+    } catch { /* 拦截失败不影响主流程（LeiZ 兜底路径不依赖） */ }
     try { session.defaultSession.setCacheSize(200 * 1024 * 1024); } catch {} // 磁盘缓存上限 200MB（防 D 盘堆到 300MB+）
     await ensureLibrary();
     // 下载目录直接纳入曲库（不等待首次下载）；首次纳入时全量刷新以索引其歌曲
@@ -2972,7 +3471,14 @@ function main() {
   // ---------- 自动更新（electron-updater，GitHub Release 源）----------
   // 更新公告表：版本号 → 更新内容列表（新版本首次启动展示；设置-软件更新页侧栏按历代版本浏览，须随发版同步维护）
   const CHANGELOG = {
-    '1.3.8': [
+    '1.3.9': [
+      '**B站音源**：收藏夹一键导入（粘贴链接，或登录后勾选账号内收藏夹批量导入）；大会员登录自动获得高音质（高清 192k / Hi-Res 无损）；纯音频播放秒开，封面与歌词详情齐备',
+      '**账号歌单一键导入**：设置-账号管理点击「一键导入」，列出账号内歌单/收藏夹，勾选批量导入（支持网易云 / 酷狗 / B站）',
+      '**账号管理改版**：网易云 / 酷狗 / B站三平台统一管理，显示账号昵称与登录权益；登录方式精简为扫码 + 短信验证码',
+      '**快捷键系统**：播放控制、歌词锁定等 12 个动作支持自定义（应用内 + 全局双层，最少单个按键），可一键恢复默认',
+      '**桌面歌词优化**：锁定 / 解锁歌词零位移，行距更紧凑，锁定时控制条原地消失不再跳动',
+      '**修复**：重新打开登录窗二维码不显示；B站歌曲音质标注与实际不符；音源标签颜色区分度不足'
+    ],    '1.3.8': [
       '**修复：QQ 音源开关可关闭**：设置-音源与音质中的 QQ 音源开关现在可以自由开关（此前固定开启）；关闭后在线搜索不再使用 QQ 音源',
       '**修复：安装包版本信息**：exe 文件属性显示正确版本号（此前为旧值）'
     ],

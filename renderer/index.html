@@ -78,6 +78,7 @@
           <button class="st-side-item" data-sec="timer">定时</button>
           <button class="st-side-item" data-sec="library">曲库维护</button>
           <button class="st-side-item" data-sec="download">下载</button>
+          <button class="st-side-item" data-sec="hotkeys">快捷键</button>
           <button class="st-side-item" data-sec="help">帮助</button>
           <button class="st-side-item" data-sec="update">软件更新</button>
         </div>
@@ -137,7 +138,7 @@
             <div class="st-row st-row-sw"><span class="st-label">歌词翻译</span><label class="st-switch"><input type="checkbox" id="stLyrTrans" checked><span class="st-slider"></span></label></div>
             <div class="st-group">桌面歌词</div>
             <div class="st-row st-row-sw"><span class="st-label">显示</span><label class="st-switch"><input type="checkbox" id="stLyric"><span class="st-slider"></span></label></div>
-            <div class="st-row"><span class="st-label">字号</span><input type="range" id="stLyrFs" min="14" max="36" step="1" value="28"><span id="stLyrFsVal" class="st-val"></span></div>
+            <div class="st-row"><span class="st-label">字号</span><input type="range" id="stLyrFs" min="14" max="64" step="1" value="28"><span id="stLyrFsVal" class="st-val"></span></div>
             <div class="st-row"><span class="st-label">窗口透明度</span><input type="range" id="stLyrOp" min="30" max="100" step="1" value="55"><span id="stLyrOpVal" class="st-val"></span></div>
             <div class="st-row"><span class="st-label">已唱颜色</span><input type="color" id="stLyrColor2" value="#4deaff" title="已播放歌词颜色"></div>
             <div class="st-row"><span class="st-label">未唱颜色</span><input type="color" id="stLyrColor" value="#bcfb89" title="未播放歌词颜色"></div>
@@ -162,7 +163,7 @@
           </div>
           <div class="st-section" data-sec="account">
             <div class="st-group">账号管理</div>
-            <div class="st-row st-sub"><span class="st-tip">本地账号是播放器的总账号；登录网易云/酷狗可在推荐页获取每日推荐，凭据保存在本机不会上传</span></div>
+            <div class="st-row st-sub"><span class="st-tip">本地账号是播放器的总账号；登录网易云/酷狗/B站可解锁对应平台的推荐与高音质，凭据保存在本机不会上传</span></div>
             <!-- 本地账号卡片（置顶，总账号） -->
             <div class="acc-local-card">
               <div id="accLocalAvatar" class="acc-local-avatar big" title="点击更换头像"></div>
@@ -175,8 +176,12 @@
                 <button id="accLocalSave" class="st-action">保存</button>
               </div>
             </div>
-            <div class="acc-row"><span class="acc-plat">网易云音乐</span><span id="accNetState" class="acc-state">未登录</span><button id="accNetLogin" class="st-action">登录</button><button id="accNetLogout" class="st-action hidden">退出</button></div>
-            <div class="acc-row"><span class="acc-plat">酷狗音乐</span><span id="accKgState" class="acc-state">未登录</span><button id="accKgLogin" class="st-action">登录</button><button id="accKgLogout" class="st-action hidden">退出</button></div>
+            <div class="acc-row"><span class="acc-plat">网易云音乐</span><button id="accNetImport" class="st-action">一键导入</button><span id="accNetState" class="acc-state">未登录</span><button id="accNetLogin" class="st-action">登录</button><button id="accNetLogout" class="st-action hidden">退出</button></div>
+            <div class="st-row st-sub"><span class="st-tip">登录后可在推荐页获取「每日推荐」歌曲，并可一键导入账号内的歌单</span></div>
+            <div class="acc-row"><span class="acc-plat">酷狗音乐</span><button id="accKgImport" class="st-action">一键导入</button><span id="accKgState" class="acc-state">未登录</span><button id="accKgLogin" class="st-action">登录</button><button id="accKgLogout" class="st-action hidden">退出</button></div>
+            <div class="st-row st-sub"><span class="st-tip">登录后可在推荐页获取「每日推荐」歌曲，并可一键导入账号内的歌单</span></div>
+            <div class="acc-row"><span class="acc-plat">哔哩哔哩</span><button id="accBiliImport" class="st-action">一键导入</button><span id="accBiliState" class="acc-state">未登录</span><button id="accBiliLogin" class="st-action">登录</button><button id="accBiliLogout" class="st-action hidden">退出</button></div>
+            <div class="st-row st-sub"><span class="st-tip">登录后B站歌曲按你的账号档位自动选高音质（高清 192k / 大会员 Hi-Res 无损），收藏夹一键导入；凭据只保存在本机</span></div>
           </div>
           <div class="st-section" data-sec="timer">
             <div class="st-group">定时</div>
@@ -201,8 +206,20 @@
             <div class="st-row"><span class="st-label">同名覆盖</span><label class="st-switch"><input id="stDlOverwrite" type="checkbox"><span class="st-slider"></span></label></div>
             <div class="st-row st-sub"><span class="st-tip">开启后歌手＋歌名相同即覆盖同名文件（用于更正错误版本）；关闭则重名文件自动加序号保留两份</span></div>
           </div>
+          <div class="st-section" data-sec="hotkeys">
+            <div class="st-group">快捷键</div>
+            <div class="st-row st-row-sw"><span class="st-label">全局快捷键</span><label class="st-switch"><input type="checkbox" id="stHkGlobal" checked><span class="st-slider"></span></label></div>
+            <div class="st-row st-sub"><span class="st-tip">点击框后直接按组合键即可录入（支持单键）；Esc 取消，Backspace 清除。左框=应用内生效，右框=全局生效（窗口未聚焦也可用）。</span></div>
+            <div id="stHkList"></div>
+            <div class="st-row"><span class="st-label"></span><button id="stHkReset" class="st-action">恢复默认</button></div>
+          </div>
           <div class="st-section" data-sec="help">
             <div class="st-group">帮助</div>
+            <div class="st-help-sec"><b>快捷键</b>
+              <p>每个快捷键动作有两个绑定框：左「应用内」在主窗口聚焦时生效；右「全局」无论主窗口是否聚焦都生效（比如在其他软件前台时也能切歌），全局键可用总开关一键停用。</p>
+              <p>录入方法：点击绑定框后直接按下想要的组合键，支持单个键（如只按 N）；按 Esc 放弃录入，按 Backspace 清除该绑定。全局键会在整个系统范围拦截按键，建议使用 Ctrl+Alt+ 类组合，避免与日常打字或其他软件冲突；若提示「注册失败」，说明该组合键已被其他程序占用，换一个即可。</p>
+              <p>「恢复默认」会把全部动作的应用内/全局键位还原为出厂设置。键盘上的媒体键（播放/暂停/上一首/下一首）始终可用，不受快捷键设置影响。</p>
+            </div>
             <div class="st-help-sec"><b>基本操作</b>
               <p>点击播放条左下角封面可打开歌曲详情，底部控制条支持上一首/播放暂停/下一首与倍速/音量调整。</p>
               <p>右侧「歌词」旁可切换桌面歌词与任务栏歌词；点击歌曲行的心形收藏。</p>
@@ -335,6 +352,7 @@
         <div class="login-top-plats">
           <button id="loginPlatNet" class="active"><span class="lgp-dot netease"></span>网易云</button>
           <button id="loginPlatKg"><span class="lgp-dot kugou"></span>酷狗</button>
+          <button id="loginPlatBili"><span class="lgp-dot bili"></span>哔哩哔哩</button>
           <button id="loginPlatLocal"><span class="lgp-dot local"></span>本地账号</button>
         </div>
         <button id="loginClose" title="关闭"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
@@ -353,30 +371,11 @@
             <span id="loginTitle">登录</span>
           </div>
           <div id="loginBody">
-            <div class="login-tabs"><button id="loginTabQr" class="active">扫码登录</button><button id="loginTabPwd">账号密码</button></div>
+            <div class="login-tabs"><button id="loginTabQr" class="active">扫码登录</button><button id="loginTabCap">验证码登录</button></div>
             <div id="loginQrPane">
               <div id="loginQrImg"><div class="login-qr-hint">正在获取二维码…</div></div>
               <p class="login-qr-tip" id="loginQrTip">请用网易云音乐 App 扫码</p>
               <button id="loginQrRefresh" class="rec-btn rec-btn-ghost hidden">二维码过期，刷新</button>
-            </div>
-            <div id="loginPwdPane" class="hidden">
-              <div class="login-field">
-                <input id="loginPwdUser" type="text" placeholder="邮箱 / 手机号" autocomplete="off" spellcheck="false">
-              </div>
-              <div class="login-field">
-                <input id="loginPwdPass" type="password" placeholder="密码" autocomplete="off" spellcheck="false" class="fld-has-tail">
-                <button id="loginPwdEye" class="login-eye" type="button" title="显示密码" aria-pressed="false">
-                  <svg class="ic eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                  <svg class="ic eye-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-                </button>
-              </div>
-              <div class="login-rmb-row">
-                <label class="login-rmb"><input type="checkbox" id="loginRmb"><span class="rmb-box"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span><span class="rmb-txt">记住密码</span></label>
-                <button id="loginGoCaptcha" class="link-btn">手机号验证码登录</button>
-              </div>
-              <button id="loginPwdSubmit" class="rec-btn">登录</button>
-              <p class="login-pwd-tip">账号密码仅用于本次登录取授权，凭据保存在本机主进程，不会上传</p>
-              <div id="loginPwdErr" class="login-err hidden"></div>
             </div>
             <div id="loginCaptchaPane" class="hidden">
               <div class="login-field">
@@ -387,7 +386,6 @@
                 <button id="loginCapSend" class="tag-btn" type="button">获取验证码</button>
               </div>
               <button id="loginCaptchaSubmit" class="rec-btn">登录</button>
-              <p class="login-switch"><button id="loginGoPwd" class="link-btn">使用账号密码登录</button></p>
               <p class="login-pwd-tip">验证码将发送到你的网易云绑定手机</p>
               <div id="loginCaptchaErr" class="login-err hidden"></div>
             </div>
@@ -642,6 +640,20 @@
       <input id="pVol" type="range" min="0" max="100" value="80" title="音量">
     </div>
   </footer>
+
+  <!-- 账号一键导入弹窗：列出该账号的歌单/收藏夹，勾选批量导入 -->
+  <div id="accImportOverlay" class="hidden">
+    <div id="accImportPanel">
+      <div class="st-head"><span id="accImportTitle">一键导入</span><button id="accImportClose" title="关闭"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+      <p class="acc-import-tip">勾选要导入的歌单（可多选），导入后可在侧栏在线歌单中查看</p>
+      <div id="accImportList"></div>
+      <div class="acc-import-foot">
+        <label class="acc-import-all"><input type="checkbox" id="accImportAll"><span>全选</span></label>
+        <span id="accImportCount" class="acc-import-count">已选 0 张</span>
+        <button id="accImportGo" class="rec-btn" disabled>导入</button>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

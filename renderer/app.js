@@ -598,7 +598,7 @@
       // 桌面歌词字号/透明度（config.lyricWin 持久化）
       const lc = await window.api.getLyricWin();
       if (lc) {
-        $('#stLyrFs').value = Math.min(36, Math.max(14, lc.fontSize || 26));
+        $('#stLyrFs').value = Math.min(64, Math.max(14, lc.fontSize || 26));
         $('#stLyrFsVal').textContent = $('#stLyrFs').value;
         // 窗口透明度：恢复读 lc.opacity（与写入/生效键一致；旧实现误读 bgOpacity 导致滑块≠实际窗口透明度）
         const op = Math.round((lc.opacity ?? 1) * 100);
@@ -1482,30 +1482,42 @@
   let qrMode = 'qr';             // qr | pwd（tab 状态）
 
   // 各平台登录输入记忆（平台间独立，不共用；切换 tab 时手机号互通）
-  const platInputs = { netease: { user: '', pass: '', phone: '', code: '' }, kugou: { user: '', pass: '', phone: '', code: '' } };
+  const platInputs = { netease: { phone: '', code: '' }, kugou: { phone: '', code: '' }, bilibili: { phone: '', code: '' } };
+
+  // 账号一键导入：当前平台与歌单候选（勾选批量导入）
+  let accImportPlat = 'netease';
+  let accImportItems = [];
 
   function openLoginDialog(plat) {
     loginPlat = plat;
     qrMode = 'qr';
     const isLocal = plat === 'local';
-    $('#loginTitle').textContent = isLocal ? '本地账号' : (plat === 'netease' ? '网易云登录' : '酷狗登录');
+    $('#loginTitle').textContent = isLocal ? '本地账号' : ({ netease: '网易云登录', kugou: '酷狗登录', bilibili: '哔哩哔哩登录' }[plat] || '登录');
     const panel = $('#loginPanel');
     if (panel) panel.dataset.plat = plat;
     const sideName = $('#loginSideName'), sideSlogan = $('#loginSideSlogan');
-    if (sideName) sideName.textContent = isLocal ? '本地账号' : (plat === 'netease' ? '网易云音乐' : '酷狗音乐');
-    if (sideSlogan) sideSlogan.textContent = isLocal ? '自定义名字与头像，数据在本机' : (plat === 'netease' ? '听见每一种声音' : '就是现在，听见我');
+    const sideMap = {
+      local: ['本地账号', '自定义名字与头像，数据在本机'],
+      netease: ['网易云音乐', '听见每一种声音'],
+      kugou: ['酷狗音乐', '就是现在，听见我'],
+      bilibili: ['哔哩哔哩', '哔哩哔哩 (゜-゜)つロ 干杯~']
+    };
+    if (sideName) sideName.textContent = (sideMap[plat] || [''])[0];
+    if (sideSlogan) sideSlogan.textContent = (sideMap[plat] || ['', ''])[1];
     const pNet = $('#loginPlatNet'), pKg = $('#loginPlatKg'), pLocal = $('#loginPlatLocal');
     if (pNet) pNet.classList.toggle('active', plat === 'netease');
     if (pKg) pKg.classList.toggle('active', plat === 'kugou');
     if (pLocal) pLocal.classList.toggle('active', isLocal);
+    const pBili = $('#loginPlatBili');
+    if (pBili) pBili.classList.toggle('active', plat === 'bilibili');
     $('#loginTabQr').classList.add('active');
-    $('#loginTabPwd').classList.remove('active');
+    const tabCap0 = $('#loginTabCap');
+    if (tabCap0) tabCap0.classList.remove('active');
     $('#loginQrPane').classList.toggle('hidden', isLocal);
-    $('#loginPwdPane').classList.add('hidden');
     $('#loginCaptchaPane').classList.add('hidden');
     $('#loginStatus').classList.add('hidden');
-    $('#loginPwdErr').classList.add('hidden');
-    $('#loginCaptchaErr') && $('#loginCaptchaErr').classList.add('hidden');
+    const capErr0 = $('#loginCaptchaErr');
+    if (capErr0) capErr0.classList.add('hidden');
     $('#loginLocalPane').classList.toggle('hidden', !isLocal);
     const tabsRow = document.querySelector('.login-tabs');
     if (tabsRow) tabsRow.style.display = isLocal ? 'none' : '';
@@ -1515,45 +1527,29 @@
       $('#loginOverlay').classList.remove('hidden');
       return;
     }
-    $('#loginQrTip').textContent = plat === 'netease' ? '请用网易云音乐 App 扫码' : '请用酷狗音乐 App 扫码';
-    // 平台独立输入记忆：恢复该平台上次输入（不因切换平台/tab 清空，各平台互不共用）
+    $('#loginQrTip').textContent = { netease: '请用网易云音乐 App 扫码', kugou: '请用酷狗音乐 App 扫码', bilibili: '请用哔哩哔哩 App 扫码' }[plat] || '';
+    // 平台独立输入记忆：恢复该平台上次输入的手机号/验证码（不因切换平台/tab 清空）
     const memo = platInputs[plat];
-    const uInp = $('#loginPwdUser'), pInp = $('#loginPwdPass'), rmbChk = $('#loginRmb');
     const capPh = $('#loginCapPhone'), capCd = $('#loginCapCode');
-    if (uInp) uInp.value = memo.user;
-    if (pInp) pInp.value = memo.pass;
     if (capPh) capPh.value = memo.phone;
     if (capCd) capCd.value = memo.code;
-    if (rmbChk) rmbChk.checked = false;
-    // 记住密码自动填充（仅网易云账密；仅当该平台没手动输入过账号时）
-    rmbLoad2().then((rmb) => {
-      if (!rmb || !rmb.user) return;
-      if (!memo.user && uInp) uInp.value = rmb.user;
-      if (!memo.pass && pInp) pInp.value = plat === 'netease' && rmb.pass ? rmb.pass : '';
-      if (rmbChk) rmbChk.checked = !!rmb.user;
-    });
-    // 实时保存输入
-    [uInp, pInp, capPh, capCd].forEach((el) => {
+    [capPh, capCd].forEach((el) => {
       if (el) el.addEventListener('input', () => {
         const m = platInputs[loginPlat];
-        if (uInp) m.user = uInp.value;
-        if (pInp) m.pass = pInp.value;
         if (capPh) m.phone = capPh.value;
         if (capCd) m.code = capCd.value;
       });
     });
-    // 验证码登录：网易云 + 酷狗均支持（手机验证码）；切换平台/重新打开时重置发送按钮与倒计时（两平台独立，互不占用 CD）
-    const goCap = $('#loginGoCaptcha');
-    if (goCap) goCap.style.display = '';
+    // 验证码登录：网易云/酷狗/B站均支持；切换平台/重新打开时重置发送按钮与倒计时（各平台独立，互不占用 CD）
     if (capTimer) { clearInterval(capTimer); capTimer = null; }
     const sndBtn = $('#loginCapSend');
     if (sndBtn) { sndBtn.disabled = false; sndBtn.textContent = '获取验证码'; }
     const capErr2 = $('#loginCaptchaErr');
     if (capErr2) capErr2.classList.add('hidden');
     const capTip = document.querySelector('#loginCaptchaPane .login-pwd-tip');
-    if (capTip) capTip.textContent = plat === 'kugou' ? '验证码将发送到你的酷狗绑定手机' : '验证码将发送到你的网易云绑定手机';
+    if (capTip) capTip.textContent = { kugou: '验证码将发送到你的酷狗绑定手机', netease: '验证码将发送到你的网易云绑定手机', bilibili: '发送前需完成一次安全验证（滑块），验证码将发送到你的B站绑定手机' }[plat] || '';
     $('#loginOverlay').classList.remove('hidden');
-    startQrPoll();
+    if (loginPlat === 'bilibili') startBiliQr(); else startQrPoll();
   }
   function closeLoginDialog() {
     stopQrPoll();
@@ -1603,6 +1599,7 @@
   }
   // 扫码登录：取 key → 渲染二维码 → 轮询（过期自动换新码，主流软件式）
   async function startQrPoll() {
+    if (loginPlat === 'bilibili') { startBiliQr(); return; } // B站二维码由主进程事件推送，不走轮询
     stopQrPoll();
     const imgWrap = $('#loginQrImg');
     const refBtn = $('#loginQrRefresh');
@@ -1664,42 +1661,123 @@
     recPolling = false;
     if (recTimer) { clearInterval(recTimer); recTimer = null; }
   }
-  // 密码登录（记住密码：账号+密码经主进程 safeStorage 加密落盘，不进 localStorage）
-  async function rmbSave2(user, pass) {
-    await window.api.rmbSave(loginPlat, user, pass || '').catch(() => {});
-  }
-  async function rmbLoad2() {
-    return await window.api.rmbLoad(loginPlat).catch(() => null);
-  }
-  async function submitPwdLogin() {
-    const u = $('#loginPwdUser').value.trim();
-    const p = $('#loginPwdPass').value;
-    const err = $('#loginPwdErr');
-    if (!u || !p) { err.textContent = '请输入账号与密码'; err.classList.remove('hidden'); return; }
-    err.classList.add('hidden');
-    const btn = $('#loginPwdSubmit');
-    btn.disabled = true;
-    btn.textContent = '登录中…';
-    const r = await window.api.accLogin(loginPlat, u, p).catch(() => null);
-    btn.disabled = false;
-    btn.textContent = '登录';
-    if (r && r.ok) {
-      if ($('#loginRmb').checked) rmbSave2(u, p);
-      $('#loginStatus').textContent = '已登录 ✓';
-      $('#loginStatus').classList.remove('hidden');
-      setTimeout(() => closeLoginDialog(), 900);
-      if (state.view === 'recommend') refreshRecommend();
-      window.__syncAccTop && window.__syncAccTop();
-      try { updateRecAccountBar(); } catch { /* 设置区同步非关键 */ }
-    } else {
-      err.textContent = (r && r.reason) || '登录失败';
-      err.classList.remove('hidden');
+  // B站扫码：二维码/状态经 bili:loginStatus 事件推送（渲染层只管展示与刷新）
+  async function startBiliQr() {
+    stopQrPoll();
+    const imgWrap = $('#loginQrImg');
+    const refBtn = $('#loginQrRefresh');
+    imgWrap.innerHTML = '<div class="login-qr-hint">正在获取二维码…</div>';
+    if (refBtn) refBtn.classList.add('hidden');
+    $('#loginQrTip').textContent = '请用哔哩哔哩 App 扫码';
+    const r = await window.api.biliLoginStart().catch(() => null);
+    if (!r || !r.ok) {
+      imgWrap.innerHTML = '<div class="login-qr-hint">二维码获取失败，请检查网络后重试</div>';
+      return;
     }
+    if (refBtn) refBtn.onclick = () => startBiliQr();
+  }
+  // —— 账号一键导入：列出登录账号的歌单/收藏夹，勾选批量导入 ——
+  async function openAccImport(plat) {
+    const ov = $('#accImportOverlay');
+    if (!ov) return;
+    accImportPlat = plat;
+    accImportItems = [];
+    $('#accImportTitle').textContent = { bilibili: '导入B站收藏夹', kugou: '导入酷狗歌单', netease: '导入网易云歌单' }[plat] || '一键导入';
+    const list = $('#accImportList');
+    list.innerHTML = '<div class="acc-import-loading">正在获取歌单列表…</div>';
+    const go = $('#accImportGo');
+    go.disabled = true; go.textContent = '导入';
+    const cnt = $('#accImportCount');
+    if (cnt) cnt.textContent = '已选 0 张';
+    const all = $('#accImportAll');
+    if (all) all.checked = false;
+    ov.classList.remove('hidden');
+    let items = [];
+    if (plat === 'bilibili') {
+      const r = await window.api.biliMyfav().catch(() => null);
+      if (!r || !r.ok) { list.innerHTML = '<div class="acc-import-loading">获取失败：' + ((r && r.reason) || '未知错误') + '</div>'; return; }
+      items = (r.folders || []).map((f) => ({ ref: String(f.id), name: f.title, count: f.count }));
+    } else {
+      const r = await window.api.accMyPlaylists(plat).catch(() => null);
+      if (!r || !r.ok) { list.innerHTML = '<div class="acc-import-loading">获取失败：' + ((r && r.reason) || '未知错误') + '</div>'; return; }
+      items = (r.playlists || []).map((x) => ({ ref: String(x.id), name: x.name, count: x.trackCount }));
+    }
+    if (!items.length) { list.innerHTML = '<div class="acc-import-loading">该账号还没有可导入的歌单</div>'; return; }
+    accImportItems = items;
+    list.innerHTML = '';
+    items.forEach((it, i) => {
+      const row = el('label', 'acc-import-row');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.className = 'acc-import-cb';
+      const nm = el('span', 'acc-import-name', it.name || ('歌单' + (i + 1)));
+      nm.title = nm.textContent;
+      const ct = el('span', 'acc-import-n', it.count ? it.count + ' 首' : '');
+      row.append(cb, nm, ct);
+      cb.addEventListener('change', updateAccImportCount);
+      list.appendChild(row);
+    });
+  }
+  function accImportSelected() {
+    const rows = [...document.querySelectorAll('#accImportList .acc-import-row')];
+    return rows.map((row, i) => ({ row, item: accImportItems[i], cb: row.querySelector('input[type=checkbox]') }))
+      .filter((x) => x.cb && x.cb.checked).map((x) => x.item);
+  }
+  function updateAccImportCount() {
+    const sel = accImportSelected();
+    const cnt = $('#accImportCount'), go = $('#accImportGo'), all = $('#accImportAll');
+    if (cnt) cnt.textContent = '已选 ' + sel.length + ' 张';
+    if (go) go.disabled = !sel.length;
+    if (all) all.checked = !!accImportItems.length && sel.length === accImportItems.length;
+  }
+  async function runAccImport() {
+    const ov = $('#accImportOverlay');
+    const sel = accImportSelected();
+    if (!sel.length) return;
+    const go = $('#accImportGo');
+    go.disabled = true;
+    let done = 0, failed = 0, totalSongs = 0, lastPl = null;
+    for (const it of sel) {
+      go.textContent = `导入中 ${done + failed + 1}/${sel.length}…`;
+      let songs = [], name = it.name || '在线歌单', cover = '', desc = '';
+      if (accImportPlat === 'bilibili') {
+        const r = await window.api.biliFavlist(it.ref).catch(() => null);
+        const d = r && r.ok ? r.data : null;
+        if (d && Array.isArray(d.songs)) {
+          name = d.name || name; cover = d.cover || d.picUrl || ''; desc = d.desc || '';
+          for (const t of d.songs) {
+            if (!t || !t.ref) continue;
+            songs.push({ id: 'online:bilibili:' + t.ref, online: true, source: 'bilibili', ref: t.ref, title: t.title || '', artist: t.artist || '', album: '', duration: t.duration || 0, picUrl: t.picUrl || '', level: 'standard' });
+          }
+        }
+      } else {
+        // 网易云/酷狗：acc:playlist 已返回映射好的歌曲（ref/title/artist/album/picUrl/duration）
+        const r = await window.api.accPlaylist(accImportPlat, it.ref).catch(() => null);
+        if (r && r.ok && Array.isArray(r.songs)) {
+          if (accImportPlat !== 'kugou') name = r.name || name; // 酷狗分支的 r.name 是硬编码兜底名，保留列表真实名
+          desc = r.desc || '';
+          for (const t of r.songs) {
+            if (!t || !t.ref) continue;
+            songs.push(Object.assign({}, t, { id: 'online:' + accImportPlat + ':' + t.ref, online: true, source: accImportPlat, ref: String(t.ref), level: t.level || qualityToLevel(accImportPlat, store.get('mp_online_quality', 'lossless')) }));
+          }
+        }
+      }
+      if (!songs.length) { failed++; continue; }
+      const pl = { id: (accImportPlat === 'bilibili' ? 'b:' : accImportPlat === 'kugou' ? 'k:' : 'n:') + it.ref, name, source: accImportPlat, cover, desc, songs };
+      const dup = state.onlinePlaylists.findIndex((x) => x.id === pl.id);
+      if (dup >= 0) state.onlinePlaylists.splice(dup, 1);
+      state.onlinePlaylists.unshift(pl); // 未收藏 → 仅会话内，与其他导入路径一致
+      totalSongs += songs.length; lastPl = pl; done++;
+    }
+    go.textContent = '导入';
+    go.disabled = false;
+    ov.classList.add('hidden');
+    if (lastPl) setView('opl:' + lastPl.id);
+    toast(`已导入 ${done} 张歌单（共 ${totalSongs} 首）` + (failed ? `，${failed} 张失败或为空` : ''));
   }
   // 手机验证码登录（网易云/酷狗按平台分发）
   let capTimer = null;
-  const capApi = (plat) => (plat === 'kugou' ? window.api.kgCaptchaSend : window.api.netCaptchaSend);
-  const capLoginApi = (plat) => (plat === 'kugou' ? window.api.kgCaptchaLogin : window.api.netCaptchaLogin);
+  const capApi = (plat) => (plat === 'kugou' ? window.api.kgCaptchaSend : plat === 'bilibili' ? window.api.biliSmsSend : window.api.netCaptchaSend);
+  const capLoginApi = (plat) => (plat === 'kugou' ? window.api.kgCaptchaLogin : plat === 'bilibili' ? window.api.biliSmsLogin : window.api.netCaptchaLogin);
   async function submitCaptchaLogin() {
     const phone = $('#loginCapPhone').value.trim();
     const code = $('#loginCapCode').value.trim();
@@ -1784,6 +1862,8 @@
     $('#loginPlatNet') && ($('#loginPlatNet').onclick = () => openLoginDialog('netease'));
     $('#loginPlatKg') && ($('#loginPlatKg').onclick = () => openLoginDialog('kugou'));
     $('#loginPlatLocal') && ($('#loginPlatLocal').onclick = () => openLoginDialog('local'));
+    $('#loginPlatBili') && ($('#loginPlatBili').onclick = () => openLoginDialog('bilibili'));
+    $('#accBiliLogin') && ($('#accBiliLogin').onclick = () => openLoginDialog('bilibili'));
     // 本地账号事件（登录弹窗 + 设置-账号管理）
     $('#localAccPick') && ($('#localAccPick').onclick = pickLocalAccAvatar);
     $('#localAccSave') && ($('#localAccSave').onclick = () => saveLocalAcc('login'));
@@ -1791,39 +1871,7 @@
     $('#accLocalPick') && ($('#accLocalPick').onclick = pickLocalAccAvatar);
     $('#accLocalSave') && ($('#accLocalSave').onclick = () => saveLocalAcc('settings'));
     $('#accLocalAvatar') && ($('#accLocalAvatar').onclick = pickLocalAccAvatar);
-    // v1.4.1 登录弹窗：密码可见切换（眼睛图标随状态睁/闭） / 记住密码 / 验证码登录
-    const eye = $('#loginPwdEye');
-    if (eye) eye.addEventListener('click', () => {
-      const inp = $('#loginPwdPass');
-      const show = inp.type === 'password';
-      inp.type = show ? 'text' : 'password';
-      eye.classList.toggle('open', show);
-      eye.title = show ? '隐藏密码' : '显示密码';
-      eye.setAttribute('aria-pressed', show ? 'true' : 'false');
-    });
-    const goCap = $('#loginGoCaptcha');
-    if (goCap) goCap.addEventListener('click', () => {
-      // 密码端输入的手机号带过去（验证码端手机号为空且密码端账号是纯数字时）
-      const ph = $('#loginCapPhone'), u = $('#loginPwdUser');
-      if (ph && u && !ph.value && /^\d{5,15}$/.test(u.value.trim())) {
-        ph.value = u.value.trim();
-        platInputs[loginPlat].phone = ph.value;
-      }
-      $('#loginPwdPane').classList.add('hidden');
-      $('#loginCaptchaPane').classList.remove('hidden');
-    });
-    const goPwd = $('#loginGoPwd');
-    if (goPwd) goPwd.addEventListener('click', () => {
-      // 验证码端手机号带回去（密码端账号为空时）
-      const ph = $('#loginCapPhone'), u = $('#loginPwdUser');
-      if (ph && u && !u.value && ph.value) {
-        u.value = ph.value;
-        platInputs[loginPlat].user = ph.value;
-      }
-      $('#loginCaptchaPane').classList.add('hidden');
-      $('#loginPwdPane').classList.remove('hidden');
-    });
-    $('#loginPwdSubmit') && ($('#loginPwdSubmit').onclick = submitPwdLogin);
+    // 登录弹窗：验证码提交与发送（扫码/验证码两 tab，无账号密码入口）
     $('#loginCaptchaSubmit') && ($('#loginCaptchaSubmit').onclick = submitCaptchaLogin);
     $('#loginCapSend') && ($('#loginCapSend').onclick = sendCaptchaCode);
     $('#loginCapPhone') && ($('#loginCapPhone').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendCaptchaCode(); }));
@@ -1897,6 +1945,18 @@
         net.loggedIn ? btn('logout', '退出', () => logoutPlat('netease')) : btn('login', '登录', () => openLoginDialog('netease'))));
       list.appendChild(item('kugou', '酷狗音乐', kg.loggedIn ? (kg.nickname || '已登录') : '未登录',
         kg.loggedIn ? btn('logout', '退出', () => logoutPlat('kugou')) : btn('login', '登录', () => openLoginDialog('kugou'))));
+      const biliAcc = await window.api.getBiliAccount().catch(() => null);
+      const biliIn = !!(biliAcc && biliAcc.loggedIn);
+      list.appendChild(item('bilibili', '哔哩哔哩', biliIn ? ((biliAcc && biliAcc.uname) || '已登录') : '未登录',
+        biliIn ? btn('logout', '退出', async () => {
+          const r = await window.api.biliLogout().catch(() => null);
+          if (r && r.ok) { // 直接同步设置区账号行（syncBiliAcc 在设置模块作用域内，这里直改 DOM）
+            const a = $('#accBiliState'); if (a) a.textContent = '未登录';
+            const bl = $('#accBiliLogin'); if (bl) bl.classList.remove('hidden');
+            const bo = $('#accBiliLogout'); if (bo) bo.classList.add('hidden');
+            toast('已退出 B 站账号');
+          }
+        }) : btn('login', '登录', () => openLoginDialog('bilibili'))));
       accMenu.appendChild(list);
       const foot = document.createElement('div');
       foot.className = 'acc-menu-foot';
@@ -1956,23 +2016,21 @@
     $('#loginTabQr') && ($('#loginTabQr').onclick = () => {
       qrMode = 'qr';
       $('#loginTabQr').classList.add('active');
-      $('#loginTabPwd').classList.remove('active');
+      const tc = $('#loginTabCap');
+      if (tc) tc.classList.remove('active');
       $('#loginQrPane').classList.remove('hidden');
-      $('#loginPwdPane').classList.add('hidden');
       $('#loginCaptchaPane').classList.add('hidden'); // 从验证码 pane 切回扫码时隐藏验证码输入（否则两 pane 同时显示）
-      if (qrMode === 'qr') startQrPoll();
+      if (loginPlat === 'bilibili') startBiliQr(); else startQrPoll();
     });
-    $('#loginTabPwd') && ($('#loginTabPwd').onclick = () => {
-      qrMode = 'pwd';
+    $('#loginTabCap') && ($('#loginTabCap').onclick = () => {
+      qrMode = 'cap';
       stopQrPoll();
-      $('#loginTabPwd').classList.add('active');
+      const tc = $('#loginTabCap');
+      if (tc) tc.classList.add('active');
       $('#loginTabQr').classList.remove('active');
       $('#loginQrPane').classList.add('hidden');
-      $('#loginPwdPane').classList.remove('hidden');
-      $('#loginCaptchaPane').classList.add('hidden');
+      $('#loginCaptchaPane').classList.remove('hidden');
     });
-    $('#loginPwdSubmit') && ($('#loginPwdSubmit').onclick = () => submitPwdLogin());
-    $('#loginPwdPass') && ($('#loginPwdPass').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitPwdLogin(); }));
   }
   async function logoutPlat(plat) {
     await window.api.accLogout(plat).catch(() => null);
@@ -2016,7 +2074,7 @@
   }
 
   // ---------- 在线搜索（网易云/酷狗 LeiZ + QQ=波点酷我曲库）----------
-  const SRC_NAMES = { netease: '网易云', kugou: '酷狗', qq: 'QQ' };
+  const SRC_NAMES = { netease: '网易云', kugou: '酷狗', qq: 'QQ', bilibili: 'B站' };
   const SRCS = ALL_SRCS; // 兼容旧引用：遍历时请用 enabledSources() 过滤
   // 每源结果计数
   function srcCount(src) { return state.searchResults.filter((s) => s.source === src).length; }
@@ -2571,6 +2629,12 @@
       source = 'netease';
       const m = s.match(/playlist\?(?:[^#]*&)?id=(\d+)/) || s.match(/playlist\/(\d+)/) || s.match(/^(\d{5,15})$/) || s.match(/id=(\d+)/);
       ref = m ? m[1] : s;
+    } else if (/bilibili\.com|b23\.tv/i.test(s)) {
+      // B 站收藏夹：space.bilibili.com/{uid}/favlist?fid={mediaId}&ftype=collect（一期仅公开收藏夹）
+      source = 'bilibili';
+      const m = s.match(/fid=(\d{4,})/);
+      if (!m) { toast('无法识别 B 站收藏夹链接（需包含 fid= 数字）'); return; }
+      ref = m[1];
     } else if (/kugou\.com|gcid_/i.test(s)) {
       source = 'kugou';
       const mp = s.match(/plist\/list\/(\d+)/);
@@ -2596,7 +2660,7 @@
     } else if (/^\d{5,15}$/.test(s)) {
       source = 'netease'; ref = s;
     } else {
-      toast('无法识别歌单链接（支持网易云 / 酷狗 / QQ 音乐）');
+      toast('无法识别歌单链接（支持网易云 / 酷狗 / QQ 音乐 / B站收藏夹链接）');
       return;
     }
     toast('正在导入歌单…');
@@ -2611,6 +2675,8 @@
       } finally {
         if (offProg) { try { offProg(); } catch { /* 忽略 */ } }
       }
+    } else if (source === 'bilibili') {
+      r = await window.api.biliFavlist(ref).catch(() => null);
     } else {
       r = await window.api.leizPlaylist(source, ref).catch(() => null);
     }
@@ -2637,6 +2703,16 @@
         });
         continue;
       }
+      if (source === 'bilibili') {
+        if (!it.ref) continue;
+        songs.push({
+          id: 'online:bilibili:' + it.ref,
+          online: true, source: 'bilibili', ref: it.ref,
+          title: it.title || '', artist: it.artist || '', album: '',
+          duration: it.duration || 0, picUrl: it.picUrl || '', level: 'standard'
+        });
+        continue;
+      }
       const songRef = source === 'netease' ? String(it.id || '') : String(it.hash || it.id || '');
       if (!songRef) continue;
       songs.push({
@@ -2652,7 +2728,7 @@
     }
     // item 16：按 id/url 导入 → 名 = 原名（缺省「在线歌单」）
     const pl = {
-      id: (source === 'netease' ? 'n' : source === 'kugou' ? 'k' : 'q') + ':' + (source === 'netease' ? ref : source === 'kugou' ? (ref.match(/gcid_(\w+)/) || [null, ref])[1] : ref),
+      id: (source === 'netease' ? 'n' : source === 'kugou' ? 'k' : source === 'bilibili' ? 'b' : 'q') + ':' + (source === 'netease' ? ref : source === 'kugou' ? (ref.match(/gcid_(\w+)/) || [null, ref])[1] : ref),
       name: d.name || '在线歌单', source, cover: d.cover || d.picUrl || '', desc: d.desc || '', songs
     };
     const dup = state.onlinePlaylists.findIndex((x) => x.id === pl.id);
@@ -3197,6 +3273,19 @@
           else if (rr && rr.reason) r = { ok: false, reason: rr.reason };
           return _playResolved(r);
         }
+        if (song.source === 'bilibili') {
+          toast('正在解析 B 站视频…');
+          const rb = await window.api.biliResolve(String(song.ref || '')).catch(() => null);
+          if (rb && rb.ok) {
+            // 播放当前歌时后台预热后面五首：顺序听歌基本每首都已合成好，秒开
+            for (const n of state.queue.slice(state.queueIndex + 1, state.queueIndex + 6)) {
+              if (n && n.online && n.source === 'bilibili' && n.ref) window.api.biliWarm(n.ref);
+            }
+          }
+          if (rb && rb.ok && rb.data && rb.data.url) r = { ok: true, data: { url: rb.data.url, bitrate: rb.data.bitrate, format: rb.data.format, level: rb.data.level } };
+          else r = { ok: false, reason: (rb && rb.reason) || '解析失败' };
+          return _playResolved(r);
+        }
         r = await window.api.leizResolve(song.source, song.ref, song.level || 'lossless').catch(() => null);
         return _playResolved(r);
       })();
@@ -3208,10 +3297,13 @@
           const br = Number(r.data.bitrate) || 0;
           const fmt = String(r.data.format || '');
           if (br > 0 || fmt) {
-            let real = null;
-            if (fmt === 'flac' || br >= 1000) real = 'lossless';
-            else if (br >= 320) real = 'high';
-            else if (br > 0) real = 'standard';
+            // B站自建解析按音轨代码诚实标档（30251=Hi-Res无损 / 30280=高清192k），其余源按码率推
+            let real = r.data.level || null;
+            if (!real) {
+              if (fmt === 'flac' || br >= 1000) real = 'lossless';
+              else if (br >= 320) real = 'high';
+              else if (br > 0) real = 'standard';
+            }
             if (real && song.level !== real) {
               song.level = real;
               if (br) song.bitrate = br;
@@ -3678,7 +3770,9 @@
     const meta = { title: song.title, artist: song.artist || '', album: song.album || '' };
     try { navigator.mediaSession.metadata = new MediaMetadata(meta); } catch { /* 忽略 */ }
     // 酷狗式：任务栏媒体浮出（Win11 SMTC 音符图标）显示专辑封面 → artwork 必须提供
-    getCover(song.id).then((src) => {
+    // 在线歌曲走在线封面管线（此前 getCover 对在线 id 恒 null → SMTC/任务栏缩略图无封面）
+    const coverP = song.online ? loadOnlineCover(song) : getCover(song.id);
+    coverP.then((src) => {
       if (!src || state.playingId !== song.id) return;
       try {
         navigator.mediaSession.metadata = new MediaMetadata({ ...meta, artwork: [{ src, sizes: '512x512' }] });
@@ -3704,7 +3798,12 @@
   function getCover(id) {
     if (coverCache.has(id)) return Promise.resolve(coverCache.get(id));
     return window.api.getCover(id).then((c) => {
-      if (!c) { coverCache.set(id, null); return null; }
+      if (!c) {
+        // 在线歌曲 id（online:*）没有本地封面文件，不缓存 null——否则会污染 onlineCoverUrl
+        // 的缓存判断，导致详情页等在线封面管线永远拿不到封面（偶现"详情页默认音符"根因）
+        if (!String(id).startsWith('online:')) coverCache.set(id, null);
+        return null;
+      }
       const src = `data:${c.mime};base64,${c.data}`;
       if (coverCache.size > 200) {
         const first = coverCache.keys().next().value;
@@ -3737,7 +3836,8 @@
   // v1.3.6b：优先走磁盘缓存返回 dataURL（首次联网抓取落盘，之后本地秒读）
   async function onlineCoverUrl(song) {
     if (!song || !song.online) return null;
-    if (coverCache.has(song.id)) return coverCache.get(song.id);
+    const cc = coverCache.get(song.id);
+    if (cc) return cc; // 只复用真值缓存；历史 null（旧逻辑污染）不短路，继续走 picUrl 管线
     let url = song.picUrl || '';
     if (!url && song.source === 'kugou') {
       url = await window.api.kugouCover({ albumId: song.album, hash: song.ref }).catch(() => null);
@@ -4051,7 +4151,7 @@
 
   let lastLyricIdx = -1;
   let rafId = null;
-  let lastLyricPushTs = 0; // 酷狗式高频时间推送节流（~60/s）
+  let lastLyricPushTs = 0; // 播放中心跳时间推送节流（20/s，校正歌词窗本地时钟漂移）
   let lastKaraokeTs = 0; // karaokeLoop 60fps 上限节流（高刷屏 120/144/240Hz 防 240fps 空转）
 
   // 行切换：高亮 + 悬浮窗推送（仅在行变化时执行）
@@ -4267,11 +4367,11 @@
     }
     if ($('#thumbView').classList.contains('show')) updateThumbView(); // 缩略图封面同步（show class 为准）
     if (!$('#pageDetail').classList.contains('hidden')) updateDetailLyric(); // 详情页歌词实时滚动
-    // 酷狗式高频时间推送：每帧把真实音频时间推给歌词窗（节流 ~60/s，防最小化时 rAF 加速导致的 IPC 洪泛）。
-    // 主窗已 setBackgroundThrottling(false)，最小化/遮挡时 rAF 照常运行 → 歌词窗始终拿到最新时间，
+    // 播放中心跳推送：把真实音频时间推给歌词窗（节流 20/s）。歌词窗本地 rAF 自主推进逐帧进度，
+    // 该心跳只用于校正时钟漂移，20/s 足够；暂停/seek/切歌走事件驱动推送（playing:false 等各自发送），
     // 暂停时本循环被 cancel → 推送停止 → 歌词窗冻结在最后位置（暂停即停，酷狗同款体验）
     const now = performance.now();
-    if (now - lastLyricPushTs >= 16) {
+    if (now - lastLyricPushTs >= 50) {
       lastLyricPushTs = now;
       window.api.sendLyricPlayState({ playing: true, audioTime: audio.currentTime || lastAudioTime, duration: audio.duration || 0 });
     }
@@ -4327,9 +4427,13 @@
     const note = $('#pdCover .pd-note');
     img.classList.add('hidden');
     note.classList.remove('hidden');
-    getCover(s.id).then((src) => {
+    // 在线歌曲（网易云/酷狗/QQ/B站）封面走 loadOnlineCover（picUrl→磁盘缓存→兜底），本地走 getCover
+    // 此前只调 getCover → 在线歌详情页永远显示默认音符（播放条封面正常，两套管线不一致）
+    const fillDetailCover = (src) => {
       if (src && state.playingId === s.id) { img.src = src; img.classList.remove('hidden'); note.classList.add('hidden'); }
-    });
+    };
+    if (s.online) loadOnlineCover(s).then(fillDetailCover);
+    else getCover(s.id).then(fillDetailCover);
     renderDetailLyrics();
     $('#main').classList.add('hidden');
     $('#topbar').classList.add('hidden'); // 详情页不显示顶栏（搜索行）
@@ -4877,7 +4981,11 @@
   let dlDialogQuality = 'lossless';
   let dlDialogDir = '';
   async function openDlDialog(songs) {
-    const list = (songs || []).filter((s) => s && s.online);
+    const online = (songs || []).filter((s) => s && s.online);
+    const biliCnt = online.filter((s) => s.source === 'bilibili').length;
+    const list = online.filter((s) => s.source !== 'bilibili'); // B 站一期仅在线播放，不支持下载
+    if (biliCnt && !list.length) { toast('B站歌曲暂不支持下载（仅在线播放）'); return; }
+    if (biliCnt) toast('B站歌曲 ' + biliCnt + ' 首暂不支持下载，已跳过');
     if (!list.length) { toast('可下载 0 首（歌单内均为本地歌曲）'); return; }
     dlDialogTarget = list;
     dlDialogQuality = qualityToLevel('netease', store.get('mp_dl_quality', 'lossless')); // 三档：standard|high|lossless
@@ -6059,6 +6167,208 @@
         updateLyricHighlight();
         window.api.sendLyricPlayState({ playing: !audio.paused, audioTime: audio.currentTime, duration: audio.duration });
       }
+    });
+
+    // —— 快捷键系统（应用内层；全局层在主进程 hkDispatch）——
+    let hkBinds = {};      // id -> { local, global }
+    let hkCapturing = null; // 设置页录入中的 input 元素（此时应用内快捷键暂停）
+    let hkVolTimer = null;
+    let hkMutePrev = 0.8;
+    const HK_KEYMAP = { ' ': 'Space', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right' };
+    // 事件 → 归一化组合键串（Electron accelerator 风格，支持单键）；只按修饰键返回 ''
+    function hkAccelFromEvent(e) {
+      const k = e.key;
+      if (['Control', 'Alt', 'Shift', 'Meta'].includes(k)) return '';
+      let key;
+      if (/^[a-zA-Z]$/.test(k)) key = k.toUpperCase();
+      else if (/^F([1-9]|1[0-9])$/.test(k)) key = k;
+      else if (/^Arrow/.test(k)) key = HK_KEYMAP[k];
+      else if (k === ' ') key = 'Space';
+      else if (k === 'Delete') key = 'Delete';
+      else if (k === 'Backspace') key = 'Backspace';
+      else if (k === 'Tab') key = 'Tab';
+      else if (k === 'Escape') key = 'Esc';
+      else if (/^[0-9 -=;,.'\/]/.test(k)) key = k.toUpperCase();
+      else return '';
+      const parts = [];
+      if (e.ctrlKey) parts.push('Ctrl');
+      if (e.altKey) parts.push('Alt');
+      if (e.shiftKey) parts.push('Shift');
+      if (e.metaKey) parts.push('Super');
+      parts.push(key);
+      return parts.join('+');
+    }
+    function setVolumePct(v) {
+      state.volume = Math.min(1, Math.max(0, v));
+      audio.volume = state.volume;
+      $('#pVol').value = Math.round(state.volume * 100);
+      clearTimeout(hkVolTimer);
+      hkVolTimer = setTimeout(() => window.api.setVolume(state.volume), 300);
+    }
+    async function favCurrent() {
+      const song = currentSong();
+      if (!song) { toast('没有正在播放的歌曲'); return; }
+      state.favorites = await window.api.toggleFavorite(song.id, song.online ? song : undefined);
+      $('#countFav').textContent = state.favorites.length;
+      renderList();
+      toast(isFav(song.id) ? '已收藏「' + song.title + '」' : '已取消收藏');
+    }
+    function hkAction(id) {
+      if (id === 'toggle') togglePlay();
+      else if (id === 'prev') nextOrPrev(playPrev);
+      else if (id === 'next') nextOrPrev(playNext);
+      else if (id === 'volUp') setVolumePct(state.volume + 0.05);
+      else if (id === 'volDown') setVolumePct(state.volume - 0.05);
+      else if (id === 'mute') {
+        if (state.volume > 0) { hkMutePrev = state.volume; setVolumePct(0); toast('已静音'); }
+        else { setVolumePct(hkMutePrev || 0.8); toast('已取消静音'); }
+      }
+      else if (id === 'seekFwd' || id === 'seekBack') {
+        if (audio.duration) {
+          audio.currentTime = Math.min(audio.duration - 0.2, Math.max(0, audio.currentTime + (id === 'seekFwd' ? 5 : -5)));
+          updateLyricHighlight();
+          window.api.sendLyricPlayState({ playing: !audio.paused, audioTime: audio.currentTime, duration: audio.duration || 0 });
+        }
+      }
+      else if (id === 'playMode') cycleMode();
+      else if (id === 'fav') favCurrent();
+      else if (id === 'lyric' || id === 'lyricLock') {
+        window.api.hotkeyRun(id).then(() => window.api.getLyricWin().then((c) => { const el2 = $('#stLyric'); if (el2 && c) el2.checked = !!c.enabled; }));
+      }
+    }
+    let hkLocalMap = {}; // accel → id
+    async function hkRefreshLocal() {
+      const hk = await window.api.getHotkeys();
+      if (!hk) return;
+      hkLocalMap = {};
+      for (const [id, b] of Object.entries(hk.binds || {})) if (b && b.local) hkLocalMap[b.local] = id;
+    }
+    hkRefreshLocal();
+    // 应用内快捷键：输入类控件聚焦时不拦截（打字优先）
+    window.addEventListener('keydown', (e) => {
+      if (hkCapturing) return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      const acc = hkAccelFromEvent(e);
+      if (!acc) return;
+      const id = hkLocalMap[acc];
+      if (id) { e.preventDefault(); hkAction(id); }
+    });
+
+    // —— 设置 → 快捷键：列表构建 + 组合键录入 ——
+    function hkBindCapturer(inp, id, layer) {
+      inp.addEventListener('focus', () => { hkCapturing = inp; inp.dataset.old = inp.value; inp.value = ''; inp.placeholder = '按下组合键…'; });
+      inp.addEventListener('blur', () => { hkCapturing = null; inp.value = (hkBinds[id] && hkBinds[id][layer]) || ''; inp.placeholder = '未设置'; });
+      inp.addEventListener('keydown', async (e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (e.key === 'Escape') { inp.blur(); return; }
+        let acc;
+        if (e.key === 'Backspace' || e.key === 'Delete') acc = '';
+        else { acc = hkAccelFromEvent(e); if (!acc) return; } // 只按修饰键不动作
+        const r = await window.api.setHotkey({ id, layer, value: acc });
+        if (!r || !r.ok) {
+          const msg = r && r.reason === 'taken' ? '注册失败：该组合键可能被其他程序占用'
+            : r && r.reason === 'dup' ? '与「' + (r.dup || '') + '」的绑定重复'
+            : r && r.reason === 'format' ? '无效的组合键' : '设置失败';
+          toast(msg);
+        } else {
+          hkBinds[id][layer] = acc;
+          if (layer === 'local') hkRefreshLocal();
+        }
+        inp.blur();
+      });
+    }
+    async function hkRenderList() {
+      const hk = await window.api.getHotkeys();
+      if (!hk) return;
+      hkBinds = hk.binds;
+      $('#stHkGlobal').checked = !!hk.enabled;
+      const list = $('#stHkList');
+      list.innerHTML = '';
+      for (const d of hk.defs) {
+        const row = el('div', 'st-row hk-row');
+        const lab = el('span', 'st-label', d.name);
+        const caps = el('div', 'hk-caps');
+        const mk = (layer) => {
+          const i = el('input', 'hk-cap');
+          i.type = 'text'; i.readOnly = true; i.dataset.layer = layer;
+          i.value = (hkBinds[d.id] && hkBinds[d.id][layer]) || '';
+          i.placeholder = '未设置';
+          i.title = layer === 'local' ? '应用内生效（点击录入，支持单键；Esc 取消，Backspace 清除）' : '全局生效（窗口未聚焦也可用；同上录入）';
+          hkBindCapturer(i, d.id, layer);
+          return i;
+        };
+        const gi = mk('global');
+        gi.disabled = !hk.enabled;
+        caps.append(mk('local'), gi);
+        row.append(lab, caps);
+        list.appendChild(row);
+      }
+    }
+    hkRenderList();
+    $('#stHkGlobal').addEventListener('change', async (e) => {
+      const r = await window.api.setHotkey({ enabled: e.target.checked });
+      if (r && r.ok) document.querySelectorAll('#stHkList .hk-cap[data-layer=global]').forEach((i) => { i.disabled = !e.target.checked; });
+    });
+
+    // —— 设置 → 账号管理 → B站（登录走统一登录弹窗；会员档随登录态自动生效）——
+    function syncBiliAcc(loggedIn, uname) {
+      const acc = $('#accBiliState');
+      if (acc) acc.textContent = loggedIn ? (uname || '已登录') : '未登录';
+      $('#accBiliLogin').classList.toggle('hidden', !!loggedIn);
+      $('#accBiliLogout').classList.toggle('hidden', !loggedIn);
+    }
+    window.api.getBiliAccount().then((a) => syncBiliAcc(!!(a && a.loggedIn), a && a.uname)).catch(() => syncBiliAcc(false));
+    window.api.onBiliLoginStatus((st) => {
+      const img = $('#loginQrImg');
+      const tip = $('#loginQrTip');
+      if (st.qr && loginPlat === 'bilibili' && img) {
+        // B站二维码直接渲染进统一登录弹窗的扫码位
+        img.innerHTML = '';
+        const im = el('img');
+        im.src = st.qr.startsWith('data:') ? st.qr : 'data:image/png;base64,' + st.qr;
+        im.alt = '扫码登录';
+        img.appendChild(im);
+      }
+      if (st.status === 'success') {
+        if (loginPlat === 'bilibili') closeLoginDialog();
+        syncBiliAcc(true, st.uname);
+        window.__syncAccTop && window.__syncAccTop();
+        toast('B站账号登录成功' + (st.uname ? '：' + st.uname : ''));
+      } else if (st.status === 'profile') { // 旧凭据后台补取到昵称，仅刷新名字
+        syncBiliAcc(true, st.uname);
+      } else if (st.status === 'error') {
+        if (loginPlat === 'bilibili') {
+          if (tip) tip.textContent = '登录失败，请点击「二维码过期，刷新」重试';
+          const rb = $('#loginQrRefresh');
+          if (rb) rb.classList.remove('hidden');
+        }
+        toast('B站登录失败：' + (st.msg || '未知错误'));
+      } else if (st.msg && tip && loginPlat === 'bilibili' && st.msg.length < 30) {
+        tip.textContent = st.msg; // 长消息（含扫码 URL 的原始报文）不顶掉界面提示
+      }
+    });
+    $('#accBiliLogout').addEventListener('click', async () => {
+      const r = await window.api.biliLogout().catch(() => null);
+      if (r && r.ok) { syncBiliAcc(false); toast('已退出 B 站账号'); }
+    });
+    // 账号一键导入（网易云/B站；酷狗置灰）
+    $('#accNetImport') && ($('#accNetImport').onclick = () => openAccImport('netease'));
+    $('#accKgImport') && ($('#accKgImport').onclick = () => openAccImport('kugou'));
+    $('#accBiliImport') && ($('#accBiliImport').onclick = () => openAccImport('bilibili'));
+    $('#accImportClose') && ($('#accImportClose').onclick = () => $('#accImportOverlay').classList.add('hidden'));
+    $('#accImportOverlay') && ($('#accImportOverlay').addEventListener('click', (e) => { if (e.target === $('#accImportOverlay')) $('#accImportOverlay').classList.add('hidden'); }));
+    $('#accImportGo') && ($('#accImportGo').onclick = runAccImport);
+    $('#accImportAll') && ($('#accImportAll').onchange = () => {
+      const on = $('#accImportAll').checked;
+      document.querySelectorAll('#accImportList input[type=checkbox]').forEach((c) => { c.checked = on; });
+      updateAccImportCount();
+    });
+    // 恢复默认：全部动作回到出厂键位（主进程重载全局注册，前端重渲染 + 刷新应用内映射）
+    $('#stHkReset').addEventListener('click', async () => {
+      const r = await window.api.setHotkey({ reset: true });
+      if (r && r.ok) { await hkRenderList(); await hkRefreshLocal(); toast('已恢复默认快捷键'); }
+      else toast('恢复失败');
     });
 
     // 歌单内拖拽排序（酷狗式；仅歌单视图）

@@ -341,4 +341,26 @@ async function captchaLogin(mobile, code) {
   return { ok: false, reason: (r.json && (r.json.error_msg || r.json.msg)) || '登录失败（验证码错误或已过期）', code: r.json && r.json.error_code, raw: (r.raw || '').slice(0, 120) };
 }
 
-module.exports = { setState, getState, kgMid, kgGuidV4, signAndroid, signKey, signParamsKey, qrCreate, qrCheck, recommendSongs, recommendPlaylists, captchaSend, captchaLogin };
+// 用户自建歌单列表（cloudlist /v7/get_all_list；android 签名，需登录态 userid+token；MakcRe user_playlist 同构）
+async function myPlaylists(page = 1, pagesize = 100) {
+  const s = loginState;
+  if (!(s.token && s.userid)) return { ok: false, reason: '未登录' };
+  const body = { userid: Number(s.userid), token: s.token, total_ver: 979, type: 2, page, pagesize };
+  const params = defaultParams({ plat: 1, userid: Number(s.userid), token: s.token });
+  const r = await kugouPost(X_ROUTER.cloudlist, '/v7/get_all_list', params, body);
+  const j = r.json;
+  const d = j && (j.data || j);
+  const list = d && (d.list || d.info || d.lists || d.special);
+  if (!Array.isArray(list)) return { ok: false, reason: '歌单列表获取失败' + (j && j.error_code ? '（' + j.error_code + '）' : '') };
+  return {
+    ok: true,
+    playlists: list.map((p) => ({
+      id: String(p.gcid || p.global_collection_id || p.specialid || p.id || ''),
+      name: p.name || p.list_name || '',
+      picUrl: p.imgurl || p.img || p.pic || '',
+      trackCount: Number(p.count || p.music_count || p.track_count || 0),
+      creator: ''
+    })).filter((x) => x.id)
+  };
+}
+module.exports = { setState, getState, kgMid, kgGuidV4, signAndroid, signKey, signParamsKey, qrCreate, qrCheck, recommendSongs, recommendPlaylists, myPlaylists, captchaSend, captchaLogin };

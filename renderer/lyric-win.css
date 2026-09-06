@@ -25,9 +25,10 @@ body[data-font="xinwei"] { font-family: "STXinwei", "华文新魏", "KaiTi", "�
   overflow: hidden;
   transition: background .2s;
 }
-/* 解锁后整个歌词窗变为浅色半透明迷你小窗（毛玻璃透出桌面）——鼠标进入才显形，移出恢复透明（只留歌词文字） */
+/* 解锁后整个歌词窗变为浅色半透明迷你小窗（毛玻璃透出桌面）——鼠标进入才显形，移出恢复透明（只留歌词文字）
+   内容起点与锁定态对齐：inset 5px + border 1px = 内容 6px（与锁定 inset 6px 相同，歌词文字零位移） */
 body:not(.locked).hover #stage {
-  inset: 8px; border-radius: 16px;
+  inset: 5px; border-radius: 16px;
   background: linear-gradient(160deg, rgba(255, 255, 255, .55), rgba(240, 244, 252, .6));
   border: 1px solid rgba(120, 140, 180, .2);
   box-shadow: 0 12px 36px rgba(30, 50, 90, .16);
@@ -59,7 +60,6 @@ body:not(.locked).hover #stage {
   max-width: 100%;
   padding-left: 14px;
 }
-#linePrev { display: none; }
 /* 桌面歌词翻译：当前句下方，小号柔色常显（不参与卡拉OK逐字，纯译文行） */
 #lineTrans {
   max-width: 94%;
@@ -79,17 +79,18 @@ body.stroke #lineTrans {
 }
 body.taskbar #lineTrans { font-size: 12px; }
 #lineNext {
-  position: absolute; right: 20px; bottom: 12px;
+  /* 随内容流排布（原 absolute 锚窗口底边：锁定/解锁切换瞬间锚点先变、窗口高度后到 → 下一句跳 46px 再弹回）。
+     跟在当前句/译文之后流内排布，右对齐；margin-top 14 + flex gap 4 ≈ 原视觉间距（矩形间距 ~18px），
+     与窗口高度/锁定状态完全解耦 —— 两态零位移的根治方案 */
+  align-self: flex-end;
+  margin-top: 11px; margin-right: 20px;
   max-width: 94%;
   --p2: 0%; /* 永远未唱 → 与当前句未唱部分完全同色（绿底） */
   white-space: nowrap;
   /* 同上：不加 overflow:hidden，避免吞掉右对齐时左边溢出的字形墨迹 */
   text-align: right;
-  transition: bottom .25s ease; /* 锁定(贴底12px)↔解锁(避让控制条46px)切换时平滑滑动，不再跳变 */
 }
 body.single #lineNext { display: none; }
-/* 解锁模式：底部有控制条，下一句上移避免被遮挡（锁定模式贴底） */
-body:not(.locked) #lineNext { bottom: 46px; }
 /* 超长句：单句 + 允许换行（不截断、无省略号）；90% 行宽（28 字内单行放得下，>30 字才提前断行） */
 body.single #text { white-space: normal; max-width: 90%; }
 /* 描边/阴影开关：body.stroke 时给 #text 兜底深描边（.sweep 内清零不生效，仅防无 span 场景）；
@@ -230,9 +231,13 @@ body.hover #lockbar { display: block; }
   background: transparent; border-radius: 10px; padding: 4px 9px;
   color: #3a4256;
   opacity: 0; pointer-events: none;
-  transition: opacity .2s ease;
+  /* 无过渡 = 锁定/移出立即原地消失：锁定瞬间窗口高度回收 46px，渐隐会被高度变化拽着上跳（用户实测） */
 }
-body:not(.locked).hover #ctrlbar { opacity: 1; pointer-events: auto; }
+body:not(.locked).hover #ctrlbar {
+  opacity: 1; pointer-events: auto;
+  /* 淡入延迟 0.12s：等窗口向下加高 46px 落地后再出现，避免控制条从旧底边滑到新底边 */
+  transition: opacity .18s ease .12s;
+}
 /* 歌词文字两态统一：同字号、同位置、同卡拉OK双色（锁定=透明无框+穿透，解锁=白框+控制条） */
 #cCur, #cDur { font-size: 12px; color: #7a8398; font-variant-numeric: tabular-nums; min-width: 28px; }
 #cCur { text-align: right; }

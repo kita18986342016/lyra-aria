@@ -48,7 +48,6 @@
     const line = lrcLines[idx];
     if (!line) {
       $('#text').textContent = '';
-      $('#linePrev').textContent = '';
       $('#lineTrans').textContent = '';
       $('#lineNext').textContent = '';
       document.body.classList.remove('single');
@@ -61,7 +60,6 @@
     // 动态阈值：按当前字号算单行能容纳的字数（840 宽 - 边距）→ "短句"必定放得下，不会裁出半个字
     const perLine = Math.max(14, Math.floor(760 / cfg.fontSize));
     const longLine = text.length > perLine || nextText.length > perLine;
-    $('#linePrev').textContent = '';
     $('#lineNext').textContent = longLine ? '' : nextText;
     $('#lineTrans').textContent = transFor(idx);
     document.body.classList.toggle('single', longLine);
@@ -109,17 +107,17 @@
     });
     syncWinHeight();
   }
-  // 自适应窗口高度：内容（当前句+下一句）多高窗口就多高，顶部贴齐（taskbar 模式不调整）
+  // 自适应窗口高度：内容（当前句+译文+下一句，均已流内排布）多高窗口就多高，顶部贴齐（taskbar 模式不调整）
+  // 高度构成：顶部 inset 6 + 内容流(scrollHeight 已含译文/下一句及其间距) + 底部 inset 6 + 底距 12 = 内容 + 24
+  // （下一句改为流内排布后与窗口高度解耦：锁定/解锁切换零跳动的根治，见 lyric-win.css #lineNext 注释）
   let winHTimer = null;
   function syncWinHeight() {
     if (cfg.mode === 'taskbar') return;
     clearTimeout(winHTimer);
     winHTimer = setTimeout(() => {
       const textH = ($('#lyricWrap') ? $('#lyricWrap').scrollHeight : 0);
-      const nextH = $('#lineNext') && $('#lineNext').textContent ? Math.ceil(cfg.fontSize * 1.5) : 0;
-      const transH = $('#lineTrans') && $('#lineTrans').textContent ? Math.ceil(cfg.fontSize * 1.35) : 0;
-      // 顶部 inset 6 + 内容 + 下一句(底部 12) + 译文行 + 底部边距 6 + 解锁工具条预留 34
-      const h = Math.max(108, Math.ceil(textH) + 12 + nextH + transH + 40);
+      const CTRL_SPACE = 46; // 解锁态：底部控制条（高约 38 + 底距 8），整窗向下加高容纳
+      const h = Math.max(92, Math.ceil(textH) + 24 + (cfg.locked ? 0 : CTRL_SPACE));
       if (window.api && window.api.setLyricWinHeight) window.api.setLyricWinHeight(Math.min(h, 900));
     }, 40);
   }
@@ -222,7 +220,6 @@
       syncWinHeight();
     } else if (payload && payload.title) {
       $('#text').textContent = `♪ ${payload.title}${payload.artist ? ' - ' + payload.artist : ''}`;
-      $('#linePrev').textContent = '';
       $('#lineTrans').textContent = '';
       $('#lineNext').textContent = '';
       curWord = null;
@@ -248,7 +245,6 @@
       } else {
         lineT = 0; dur = 3;
         $('#text').textContent = '';
-        $('#linePrev').textContent = '';
         $('#lineTrans').textContent = '';
         $('#lineNext').textContent = '';
         syncWinHeight();
@@ -335,9 +331,13 @@
   window.api.onLyricPlayState((s) => onPlayState(s));
 
   // 悬停 → 显示工具条（锁定时）；移开隐藏
-  // 穿透状态由主进程轮询判定（仅解锁按钮附近解除穿透），renderer 只负责工具条显示
+  // 悬停双通道分工：锁定态=鼠标穿透（窗口收不到可靠的鼠标事件）→ 由主进程光标轮询发 hoverui；
+  // 解锁态=窗口可交互 → 本文件 mousemove/mouseleave 自行维护 hover。两处勿混改。
   window.api.onLyricWinHoverUI((on) => document.body.classList.toggle('hover', !!on));
-  document.addEventListener('mousemove', () => document.body.classList.add('hover'));
+  document.addEventListener('mousemove', () => {
+    if (document.body.classList.contains('locked')) return; // 锁定态悬停由主进程轮询判定，此处不参与
+    document.body.classList.add('hover');
+  });
   document.addEventListener('mouseleave', () => document.body.classList.remove('hover'));
 
   // 解锁后手动拖动（实体感）：实时夹回，窗口被屏幕边缘挡住、不能出屏

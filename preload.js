@@ -84,6 +84,23 @@ contextBridge.exposeInMainWorld('api', {
   getLyricWin: () => ipcRenderer.invoke('lyricwin:get'),
   setLyricWin: (patch) => ipcRenderer.invoke('lyricwin:set', patch),
   setLyricWinHeight: (h) => ipcRenderer.send('lyricwin:resize', h),
+
+  // 快捷键（应用内 + 全局双层，可自定义）
+  getHotkeys: () => ipcRenderer.invoke('hotkeys:get'),
+  setHotkey: (patch) => ipcRenderer.invoke('hotkeys:set', patch),
+  hotkeyRun: (id) => ipcRenderer.invoke('hotkey:run', id),
+
+  // B 站收藏夹导入 + 播放解析
+  biliFavlist: (ref) => ipcRenderer.invoke('bili:favlist', ref),
+  biliResolve: (bvid) => ipcRenderer.invoke('bili:resolve', bvid),
+  biliLoginStart: () => ipcRenderer.invoke('bili:loginStart'),
+  getBiliAccount: () => ipcRenderer.invoke('bili:account'),
+  biliLogout: () => ipcRenderer.invoke('bili:logout'),
+  onBiliLoginStatus: (cb) => ipcRenderer.on('bili:loginStatus', (_e, s) => cb(s)),
+  biliWarm: (bvid) => ipcRenderer.send('bili:warm', bvid),
+  biliSmsSend: (phone) => ipcRenderer.invoke('bili:sms-send', phone),
+  biliSmsLogin: (phone, code) => ipcRenderer.invoke('bili:sms-login', phone, code),
+  biliMyfav: () => ipcRenderer.invoke('bili:myfav'),
   sendLyricLine: (payload) => ipcRenderer.send('lyricwin:line', payload),
   sendLyricPlayState: (st) => ipcRenderer.send('lyricwin:play', st),
   sendLyricLrc: (data) => ipcRenderer.send('lyricwin:lrc', data),
@@ -122,11 +139,8 @@ contextBridge.exposeInMainWorld('api', {
   winMaxToggle: () => ipcRenderer.send('win:max-toggle'),
   winClose: () => ipcRenderer.send('win:close'),
   onWinMaxChange: (cb) => ipcRenderer.on('win:max-changed', (_e, v) => cb && cb(v)),
-  rmbSave: (plat, user, pass) => ipcRenderer.invoke('acc:rmb-save', plat, user, pass),
-  rmbLoad: (plat) => ipcRenderer.invoke('acc:rmb-load', plat),
   // 账号登录 + 推荐（网易云/酷狗官方接口；凭据只存主进程，渲染层仅拿登录态摘要）
   accStatus: () => ipcRenderer.invoke('acc:status'),
-  accLogin: (platform, username, password) => ipcRenderer.invoke('acc:net-login', username, password),
   accLogout: (platform) => ipcRenderer.invoke('acc:logout', platform),
   accQr: (platform) => ipcRenderer.invoke(platform === 'kugou' ? 'acc:kg-qr' : 'acc:net-qr'),
   accPoll: (platform, key) => ipcRenderer.invoke(platform === 'kugou' ? 'acc:kg-poll' : 'acc:net-poll', key),

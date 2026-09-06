@@ -294,6 +294,7 @@ html[data-theme="dark"] #nav:hover::-webkit-scrollbar-thumb:hover { background: 
 .acc-menu-plat { width: 9px; height: 9px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1px rgba(255,255,255,.35); }
 .acc-menu-plat.netease { background: #ec4141; }
 .acc-menu-plat.kugou { background: #2fb6ff; }
+.acc-menu-plat.bilibili { background: #fb7299; }
 .acc-menu-name { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acc-menu-state { font-size: 11px; color: var(--muted); flex: none; }
 .acc-menu-btn { border: none; font-size: 11.5px; font-weight: 600; padding: 5px 14px; border-radius: 999px; cursor: pointer; flex: none; transition: all .14s; }
@@ -504,6 +505,8 @@ html[data-theme="dark"] .song-tag.quality.lossless { color: #f2dc9a; background:
 html[data-theme="dark"] .song-tag.src[data-src="netease"] { color: #ff6b60; background: rgba(212, 60, 51, .16); border-color: rgba(255, 107, 96, .42); }
 .song-tag.src[data-src="kugou"] { color: #1f8fd6; background: rgba(31, 143, 214, .10); border-color: rgba(31, 143, 214, .34); }
 html[data-theme="dark"] .song-tag.src[data-src="kugou"] { color: #55b8f2; background: rgba(31, 143, 214, .16); border-color: rgba(85, 184, 242, .42); }
+.song-tag.src[data-src="bilibili"] { color: #e05a85; background: rgba(251, 114, 153, .10); border-color: rgba(251, 114, 153, .34); }
+html[data-theme="dark"] .song-tag.src[data-src="bilibili"] { color: #ff8fb3; background: rgba(251, 114, 153, .16); border-color: rgba(255, 143, 179, .42); }
 .song-tag.src[data-src="qq"] { color: #22a866; background: rgba(34, 168, 102, .10); border-color: rgba(34, 168, 102, .34); }
 html[data-theme="dark"] .song-tag.src[data-src="qq"] { color: #45d68f; background: rgba(34, 168, 102, .16); border-color: rgba(69, 214, 143, .42); }
 /* 我的歌单里在线歌单的下载状态标记：小圆徽标（✓=已下载 / 未=未下载），不挤占歌单名 */
@@ -2439,6 +2442,7 @@ html[data-theme="light"] .rec-hero { background: linear-gradient(120deg, #4b3a8a
 .login-side { flex: none; width: 250px; background: linear-gradient(160deg, #ec4141, #c2372f 60%, #9a2b24); color: #fff; display: flex; align-items: flex-end; padding: 26px 24px; position: relative; overflow: hidden; transition: background .3s; }
 #loginPanel[data-plat="kugou"] .login-side { background: linear-gradient(160deg, #2fb6ff, #1d8fd8 60%, #1463a8); }
 #loginPanel[data-plat="local"] .login-side { background: linear-gradient(160deg, #7c8494, #5b6270 60%, #3d434f); }
+#loginPanel[data-plat="bilibili"] .login-side { background: linear-gradient(160deg, #fb7299, #e05a85 60%, #b23e6a); }
 .login-side::before { content: '♪'; position: absolute; right: -14px; top: -30px; font-size: 130px; opacity: .14; line-height: 1; pointer-events: none; }
 .login-side-brand { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 8px; }
 .login-side-brand .login-plat-logo { width: 42px; height: 42px; border-radius: 12px; display: flex; align-items: center; justify-content: center; color: #fff; box-shadow: 0 6px 18px rgba(0,0,0,.25); background: rgba(255,255,255,.22); }
@@ -2561,13 +2565,14 @@ body[data-font="xinwei"] { font-family: "STXinwei", "华文新魏", "KaiTi", "�
 .lgp-dot.netease { background: #ec4141; }
 .lgp-dot.kugou { background: #2fb6ff; }
 .lgp-dot.local { background: #9aa0a6; }
+.lgp-dot.bili { background: #fb7299; }
 button:not(.active) .lgp-dot { opacity: .6; }
 
 /* ========== v1.4 设置-账号管理 ========== */
 .acc-row { display: flex; align-items: center; gap: 10px; padding: 10px 2px; border-bottom: 1px solid var(--line); }
 .acc-row:last-child { border-bottom: none; }
-.acc-plat { flex: 1; font-size: 13px; color: var(--text); font-weight: 600; }
-.acc-state { font-size: 12px; color: var(--accent); background: var(--accent-soft); padding: 2px 10px; border-radius: 12px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acc-plat { flex: none; width: 66px; font-size: 13px; color: var(--text); font-weight: 600; }
+.acc-state { margin-left: auto; font-size: 12px; color: var(--accent); background: var(--accent-soft); padding: 2px 10px; border-radius: 12px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acc-row .st-action { flex: none; }
 /* 设置-账号管理：本地账号卡片（置顶总账号，参考主流音乐软件） */
 .acc-local-card {
@@ -2608,3 +2613,44 @@ button:not(.active) .lgp-dot { opacity: .6; }
 .local-acc-btns { display: flex; gap: 8px; margin-top: 2px; }
 .local-acc-btns .tag-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 
+
+/* 设置 → 快捷键：动作行 + 组合键录入框（左=应用内，右=全局） */
+#settingsPanel .hk-row { gap: 10px; }
+#settingsPanel .hk-caps { display: flex; gap: 6px; margin-left: auto; }
+#settingsPanel .hk-cap {
+  width: 118px; text-align: center; font-size: 12px; padding: 5px 6px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  color: var(--text, inherit); cursor: pointer; transition: border-color .15s;
+}
+#settingsPanel .hk-cap:focus { outline: none; border-color: var(--accent); }
+#settingsPanel .hk-cap:disabled { opacity: .38; cursor: default; }
+
+/* B站扫码登录浮层 */
+#biliQrOverlay { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; background: rgba(10, 14, 24, .55); }
+#biliQrOverlay.hidden { display: none; }
+#biliQrPanel { background: var(--panel, #fff); border: 1px solid var(--line); border-radius: 16px; padding: 20px 26px; text-align: center; max-width: 320px; box-shadow: 0 18px 50px rgba(0, 0, 0, .25); }
+#biliQrPanel .st-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; margin-bottom: 10px; }
+#biliQrPanel .st-head button { background: none; border: none; cursor: pointer; color: inherit; display: flex; }
+#biliQrImg { width: 200px; height: 200px; object-fit: contain; border-radius: 10px; background: #fff; }
+#biliQrTip { margin-top: 10px; font-size: 13px; font-weight: 600; }
+.bili-qr-sub { margin-top: 4px; font-size: 11.5px; color: var(--muted-2, #98a); }
+
+/* 账号一键导入弹窗（列出登录账号歌单，勾选批量导入） */
+#accImportOverlay { position: fixed; inset: 0; background: rgba(10, 12, 18, .55); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 500; }
+#accImportOverlay.hidden { display: none; }
+#accImportPanel { width: 480px; max-width: calc(100vw - 48px); max-height: 74vh; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 80px rgba(0,0,0,.32); display: flex; flex-direction: column; padding: 16px 20px 14px; }
+#accImportPanel .st-head { display: flex; align-items: center; justify-content: space-between; }
+#accImportPanel .st-head button { border: none; background: transparent; color: var(--muted); cursor: pointer; width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+#accImportPanel .st-head button:hover { background: var(--panel-2); color: var(--text); }
+.acc-import-tip { margin: 4px 0 6px; color: var(--muted); font-size: 12px; }
+#accImportList { flex: 1; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.acc-import-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; cursor: pointer; }
+.acc-import-row:hover { background: var(--panel-2); }
+.acc-import-cb { flex: none; }
+.acc-import-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+.acc-import-n { flex: none; color: var(--muted); font-size: 12px; }
+.acc-import-loading { color: var(--muted); font-size: 13px; text-align: center; padding: 28px 0; }
+.acc-import-foot { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.acc-import-all { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.acc-import-count { flex: 1; text-align: right; color: var(--muted); font-size: 12px; }
+#accImportGo { min-width: 96px; }
