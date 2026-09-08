@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('api', {
   removeSongs: (ids) => ipcRenderer.invoke('lib:removeSongs', ids),
   dlDir: (dir) => ipcRenderer.invoke('dl:dir', dir),
   pickDlDir: () => ipcRenderer.invoke('dl:pickDir'),
+  cacheDir: (dir) => ipcRenderer.invoke('cache:dir', dir),
+  pickCacheDir: () => ipcRenderer.invoke('cache:pickDir'),
   dlOverwrite: (v) => ipcRenderer.invoke('dl:overwrite', v),
   autoSrcUpgrade: (v) => ipcRenderer.invoke('autoSrcUpgrade', v),
   dlStart: (song, level) => ipcRenderer.invoke('dl:start', song, level),

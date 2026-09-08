@@ -611,6 +611,14 @@
       // 下载目录（config.downloadsDir 持久化；未设置时默认 音乐目录\Downloads）
       const dlDir = await window.api.dlDir();
       if (dlDir) $('#stDlDir').value = dlDir;
+      // 缓存目录（config.cacheDir）：自定义时回显完整路径，默认时留空、占位符提示默认位置
+      try {
+        const cr = await window.api.cacheDir();
+        if (cr && cr.dir) {
+          $('#stCacheDir').value = cr.custom ? cr.dir : '';
+          $('#stCacheDir').placeholder = '留空 = ' + cr.dir;
+        }
+      } catch { /* 忽略 */ }
       // 同名覆盖开关（config.downloadOverwrite）
       const dlOv = await window.api.dlOverwrite();
       if (dlOv != null) $('#stDlOverwrite').checked = !!dlOv;
@@ -6306,9 +6314,9 @@
       }
     }
     hkRenderList();
-    $('#stHkGlobal').addEventListener('change', async (e) => {
-      const r = await window.api.setHotkey({ enabled: e.target.checked });
-      if (r && r.ok) document.querySelectorAll('#stHkList .hk-cap[data-layer=global]').forEach((i) => { i.disabled = !e.target.checked; });
+    $('#stHkGlobal').addEventListener('change', async (e) => {
+      const r = await window.api.setHotkey({ enabled: e.target.checked });
+      if (r && r.ok) document.querySelectorAll('#stHkList .hk-cap[data-layer=global]').forEach((i) => { i.disabled = !e.target.checked; });
     });
 
     // —— 设置 → 账号管理 → B站（登录走统一登录弹窗；会员档随登录态自动生效）——
@@ -6708,6 +6716,39 @@
       try { const r = await window.api.clearCache(); toast(r && r.ok ? '缓存已清除' : '缓存清除失败'); }
       catch { toast('缓存清除失败'); }
     });
+    // 缓存目录（设置-常规）：手动输入回车/失焦保存，浏览选择，或恢复默认；封面缓存即时生效，会话缓存重启生效
+    const cacheDirEcho = (r) => {
+      if (!r || !r.dir) return;
+      const inp = $('#stCacheDir');
+      if (inp) { inp.value = r.custom ? r.dir : ''; inp.placeholder = '留空 = ' + r.dir; }
+    };
+    const saveCacheDir = async (v) => {
+      if (typeof window.api.cacheDir !== 'function') { toast('缓存目录功能暂不可用'); return; }
+      try {
+        const r = await window.api.cacheDir(v);
+        if (!r) return;
+        if (r.error) { toast('缓存目录不可用：' + r.error); return; }
+        cacheDirEcho(r);
+        toast(r.changed ? '缓存目录已更新，重启应用后完全生效' : '缓存目录未变化');
+      } catch { toast('缓存目录保存失败'); }
+    };
+    const scd = $('#stCacheDir');
+    if (scd) {
+      scd.addEventListener('change', () => saveCacheDir(scd.value));
+      scd.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveCacheDir(scd.value); } });
+    }
+    const scdp = $('#stCacheDirPick');
+    if (scdp) scdp.addEventListener('click', async () => {
+      if (typeof window.api.pickCacheDir !== 'function') { toast('缓存目录功能暂不可用'); return; }
+      try {
+        const r = await window.api.pickCacheDir();
+        if (!r) return; // 取消选择
+        cacheDirEcho(r);
+        toast(r.changed ? '缓存目录已更新，重启应用后完全生效' : '缓存目录未变化');
+      } catch { toast('缓存目录保存失败'); }
+    });
+    const scdr = $('#stCacheDirReset');
+    if (scdr) scdr.addEventListener('click', () => saveCacheDir(''));
     const sn = $('#stSearchNetease');
     if (sn) sn.addEventListener('change', () => { const c = readSearchConf(); c.netease = Math.max(5, Math.min(100, Math.round(Number(sn.value) || 30))); sn.value = c.netease; writeSearchConf({ netease: c.netease }); toast(`每源条数已更新（网易云 ${c.netease}）`); });
     const sk = $('#stSearchKugou');

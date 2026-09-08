@@ -1757,7 +1757,7 @@ html[data-theme="dark"] .dl-fab-ico { background: var(--panel-2); color: #7fb2ff
 #settingsPanel #stDlDir:focus { outline: none; border-color: var(--accent); }
 /* 下载目录行：输入框 + 浏览按钮 */
 #settingsPanel .st-dldir { flex: 1; display: flex; gap: 8px; min-width: 0; }
-#settingsPanel .st-dldir #stDlDir { flex: 1; min-width: 0; }
+#settingsPanel .st-dldir #stDlDir, #settingsPanel .st-dldir #stCacheDir { flex: 1; min-width: 0; }
 #settingsPanel .st-dldir .st-action { flex: none; }
 /* 开关 */
 .st-switch { position: relative; display: inline-block; width: 40px; height: 22px; flex: none; }

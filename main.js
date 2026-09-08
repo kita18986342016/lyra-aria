@@ -44,6 +44,19 @@ if (DATA_ROOT) {
   // 与旧版一致：Electron/Chromium 运行时缓存（Cache/GPUCache/Local Storage 等）也放 D 盘（须在 app ready 前）
   app.setPath('userData', path.join(DATA_ROOT, 'userdata'));
 }
+// 自定义缓存目录（设置-常规「缓存目录」，config.cacheDir）：ready 前把 Chromium 会话磁盘缓存
+// （HTTP Cache）指过去。只动 disk-cache-dir、不动 userData/sessionData —— Local Storage（渲染层
+// 设置）始终留在数据目录，切缓存目录不会丢设置。改目录后此项需重启生效（封面缓存则即时生效）
+const PRE_CACHE_DIR = (() => {
+  try {
+    const dir = DATA_ROOT || app.getPath('userData');
+    const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
+    const cd = cfg && typeof cfg.cacheDir === 'string' ? cfg.cacheDir.trim() : '';
+    if (cd) { try { fs.mkdirSync(cd, { recursive: true }); } catch { return null; } }
+    return cd || null;
+  } catch { return null; }
+})();
+if (PRE_CACHE_DIR) app.commandLine.appendSwitch('disk-cache-dir', PRE_CACHE_DIR);
 // 数据根（模块级引用）：main() 里 store.setDataDir() 之后即为最终数据目录（D 盘或 %APPDATA%）
 function dataRoot() {
   return store.getDataDir() || app.getPath('userData');
@@ -1375,6 +1388,11 @@ function main() {
     function dlAll() {
       return dlHistory.slice().reverse().concat(dlQueue, dlBusy ? [dlBusy] : []);
     }
+    // 缓存根目录（设置-常规「缓存目录」）：config.cacheDir 非空=自定义，留空=跟随数据目录
+    function cacheRoot() {
+      const cd = (typeof config.cacheDir === 'string' ? config.cacheDir.trim() : '');
+      return cd || dataRoot();
+    }
     function dlDir() {
       let dir = config.downloadsDir;
       if (typeof dir !== 'string' || !dir.trim()) dir = path.join(app.getPath('music'), 'Downloads');
@@ -1623,6 +1641,39 @@ function main() {
       dlPump();
       return task.taskId;
     }
+    // 缓存目录（设置-常规「缓存目录」）：封面磁盘缓存即时改写位置；Chromium 会话缓存由
+    // ready 前的 disk-cache-dir 开关决定 → 改动需重启才完全生效。dir 省略=查询；''=恢复默认
+    function cacheDirState(changed, error) {
+      return { dir: cacheRoot(), custom: !!(typeof config.cacheDir === 'string' && config.cacheDir.trim()), changed: !!changed, error: error || null };
+    }
+    ipcMain.handle('cache:dir', (e, dir) => {
+      if (!isTrusted(e)) return cacheDirState(false);
+      if (dir === undefined || typeof dir !== 'string') return cacheDirState(false);
+      const v = dir.trim();
+      if (!v) {
+        const had = !!config.cacheDir;
+        delete config.cacheDir;
+        if (had) store.save('config.json', config);
+        return cacheDirState(had);
+      }
+      try { fs.mkdirSync(v, { recursive: true }); } catch (err) { return cacheDirState(false, (err && err.message) || String(err)); }
+      const changed = config.cacheDir !== v;
+      config.cacheDir = v;
+      if (changed) store.save('config.json', config);
+      return cacheDirState(changed);
+    });
+    // 缓存目录：原生文件夹选择框（设置里的「浏览…」）
+    ipcMain.handle('cache:pickDir', async (e) => {
+      if (!isTrusted(e)) return null;
+      const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: '选择缓存目录' });
+      if (r.canceled || !r.filePaths.length) return null;
+      const dir = r.filePaths[0];
+      try { fs.mkdirSync(dir, { recursive: true }); } catch { /* 忽略 */ }
+      const changed = config.cacheDir !== dir;
+      config.cacheDir = dir;
+      if (changed) store.save('config.json', config);
+      return cacheDirState(changed);
+    });
     ipcMain.handle('dl:dir', (e, dir) => {
       if (!isTrusted(e)) return dlDir();
       if (typeof dir === 'string' && dir.trim()) {
@@ -3220,8 +3271,9 @@ function main() {
       } catch { return null; } finally { clearTimeout(timer); }
     }
     // 在线封面磁盘缓存：cover-remote/<url哈希>.txt 存 dataURL；命中直接读，未命中联网抓取并落盘
+    // 目录跟随「缓存目录」设置（cacheRoot()：自定义目录或数据目录），换目录后新缓存即时写到新位置
     function remoteCoverFile(url) {
-      return path.join(dataRoot(), 'cover-remote', crypto.createHash('sha256').update(url).digest('hex').slice(0, 32) + '.txt');
+      return path.join(cacheRoot(), 'cover-remote', crypto.createHash('sha256').update(url).digest('hex').slice(0, 32) + '.txt');
     }
     ipcMain.handle('cover:getOrFetch', async (e, url) => {
       if (!isTrusted(e) || typeof url !== 'string' || !/^https?:\/\//i.test(url)) return { ok: false };
