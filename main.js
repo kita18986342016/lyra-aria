@@ -3288,7 +3288,7 @@ function main() {
       if (syncApproving) return { ok: false, status: 429, reason: '电脑端正有待确认的同步请求' };
       const dev = ({ mobile: '手机端', pc: '电脑端' })[incomingBundle.device] || '设备';
       const c = { pls: (incomingBundle.onlinePlaylists || []).length, favs: (incomingBundle.favorites || []).length, recent: (incomingBundle.recent || []).length };
-      const detail = `${dev}${meta && meta.ip ? '（' + meta.ip + '）' : ''} 请求同步：歌单 ${c.pls} · 收藏 ${c.favs} · 最近 ${c.recent}`;
+      const detail = `${dev}${meta && meta.ip ? '（' + meta.ip + '）' : ''} 收到来自手机端的同步请求，将合并以下数据（两端都新的为准，不会覆盖电脑上更新的修改）——歌单 ${c.pls} · 收藏 ${c.favs} · 最近 ${c.recent}`;
       syncApproving = true;
       try {
         const box = { type: 'question', buttons: ['允许同步', '拒绝'], defaultId: 0, cancelId: 1, noLink: true, title: '局域网同步请求', message: '收到同步请求', detail };
