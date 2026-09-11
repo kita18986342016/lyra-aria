@@ -1400,6 +1400,15 @@ html[data-theme="dark"] #diagOutput:hover { border-color: var(--accent); }
 /* 辅助文字 */
 #settingsPanel .st-tip { font-size: 11.5px; color: var(--muted-2); line-height: 1.5; }
 #settingsPanel .st-tip-sleep { margin: 4px 0 2px 106px; }
+#accMgrList { display: flex; flex-direction: column; gap: 2px; margin: 6px 0; }
+#accMgrList .acc-mgr-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 10px; cursor: pointer; }
+#accMgrList .acc-mgr-item:hover { background: var(--hover); }
+#accMgrList .acc-mgr-item.cur { background: var(--accent-soft); }
+#accMgrList .acc-mgr-nm { flex: 1; min-width: 0; font-size: 14px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#accMgrList .acc-mgr-ck { color: var(--accent); font-weight: 700; }
+#accMgrList .acc-mgr-del { border: none; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; padding: 3px 8px; border-radius: 8px; }
+#accMgrList .acc-mgr-del:hover { color: #ff5a6e; }
+#accMgrList .acc-mgr-del.warn { color: #ff5a6e; font-weight: 600; }
 /* 开关行：开关靠右与滑块数值对齐 */
 #settingsPanel .st-row-sw .st-switch { margin-left: auto; }
 /* 分段控件：浅底 + 选中块 */
@@ -2654,3 +2663,21 @@ button:not(.active) .lgp-dot { opacity: .6; }
 .acc-import-all { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
 .acc-import-count { flex: 1; text-align: right; color: var(--muted); font-size: 12px; }
 #accImportGo { min-width: 96px; }
+
+/* 猜你喜欢（推荐页，常听歌手生成） */
+.rec-guess { margin-top: 20px; }
+.rec-guess-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 10px; }
+.rec-guess-title { margin: 0; font-size: 17px; font-weight: 800; letter-spacing: .5px; }
+.rec-guess-sub { color: var(--muted); font-size: 12px; margin-left: 10px; }
+.guess-list { max-height: 480px; overflow-y: auto; border: 1px solid var(--line); border-radius: 14px; padding: 6px; }
+.guess-row { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; cursor: default; }
+.guess-row:hover { background: var(--panel-2); }
+.guess-row .g-idx { color: var(--muted); font-size: 12px; text-align: center; }
+.guess-row .g-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.guess-row .g-title { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guess-row .g-artist { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guess-row .g-dur { color: var(--muted); font-size: 12px; }
+
+.st-group-sub { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
+#btnFavBar.on { color: #ff4d6d; }
+#btnFavBar.on svg { fill: #ff4d6d; stroke: #ff4d6d; }

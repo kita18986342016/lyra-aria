@@ -48,6 +48,11 @@ if (DATA_ROOT) {
 function dataRoot() {
   return store.getDataDir() || app.getPath('userData');
 }
+// 账号级文件路径：有当前账号时归入 accounts/<id>/ 子目录（与 store 的账号作用域一致）
+function accScopedPath(name) {
+  const a = store.getAccount();
+  return path.join(dataRoot(), a ? ('accounts/' + a) : '', name);
+}
 // AppUserModelID：与 SMTC 会话/任务栏图标关联（Win11 媒体浮出需应用身份匹配）
 app.setAppUserModelId('com.lyraaria.musicplayer');
 // 启用 Chromium 系统媒体会话集成：Win11 任务栏全局媒体浮出（Edge 同款机制）依赖
@@ -553,6 +558,38 @@ function main() {
   // 数据根：D 盘可用 → D:\MusicPlayerData（用户偏好，旧数据原位可用）；否则系统用户数据目录
   store.setDataDir(DATA_ROOT || app.getPath('userData'));
   migrateLegacyData(); // D 盘不可用且旧数据残留时兜底迁移
+  // ===== 本地多账号：数据按 accounts/<id>/ 隔离；设置/外观(config)为设备级 =====
+  const ACC_REG_FILE = () => path.join(dataRoot(), 'accounts-registry.json');
+  const ACC_CUR_FILE = () => path.join(dataRoot(), 'current-account.json');
+  const ACC_SCOPED_FILES = ['online-playlists.json', 'favorites.json', 'history.json', 'playlists.json', 'pl-order.json', 'local-account.json', 'accounts.json', 'sync.json', 'sync-tomb.json', 'sync-devices.json', 'bili-credentials.json', 'bili-credentials.backup.json'];
+  function accReadReg() { try { return JSON.parse(fs.readFileSync(ACC_REG_FILE(), 'utf8')); } catch { return []; } }
+  function accWriteReg(l) { try { fs.mkdirSync(path.dirname(ACC_REG_FILE()), { recursive: true }); fs.writeFileSync(ACC_REG_FILE(), JSON.stringify(l, null, 2)); } catch (e) {} }
+  function accReadCur() { try { return JSON.parse(fs.readFileSync(ACC_CUR_FILE(), 'utf8')); } catch { return null; } }
+  function accWriteCur(id) { try { fs.writeFileSync(ACC_CUR_FILE(), JSON.stringify(id)); } catch (e) {} }
+  function accNewId() { return 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+  function accBoot() {
+    let reg = accReadReg(); let cur = accReadCur();
+    if (!reg.length) {
+      const id = accNewId();
+      let legacyName = ''; try { const la = JSON.parse(fs.readFileSync(path.join(dataRoot(), 'local-account.json'), 'utf8')); legacyName = la.name || ''; } catch (e) {}
+      fs.mkdirSync(path.join(dataRoot(), 'accounts', id), { recursive: true });
+      for (const f of ACC_SCOPED_FILES) { const src = path.join(dataRoot(), f); if (fs.existsSync(src)) { try { fs.renameSync(src, path.join(dataRoot(), 'accounts', id, f)); } catch (e) {} } const b = src + '.bak'; if (fs.existsSync(b)) { try { fs.renameSync(b, path.join(dataRoot(), 'accounts', id, f + '.bak')); } catch (e) {} } }
+      reg = [{ id, name: legacyName || '我的账号', avatar: '', createdAt: Date.now() }]; cur = id;
+      accWriteReg(reg); accWriteCur(cur);
+    }
+    if (!cur || !reg.some((a) => a.id === cur)) { cur = reg[0].id; accWriteCur(cur); }
+    store.setAccount(cur);
+  }
+  accBoot();
+  function accNotify() { try { if (win && !win.isDestroyed()) win.webContents.send('account:changed'); } catch (e) {} }
+  function accFlushCurrent() { const reg = accReadReg(); const cur = accReadCur(); const a = reg.find((x) => x.id === cur); if (!a) return; try { const la = localAccRead(); a.name = la.name || a.name; a.avatar = la.avatar || a.avatar; accWriteReg(reg); } catch (e) {} }
+  function accSwitch(id) { const reg = accReadReg(); if (!reg.some((a) => a.id === id)) return { ok: false }; accFlushCurrent(); store.setAccount(id); accWriteCur(id); try { loadAccounts(); } catch (e) {} try { biliClient = null; } catch (e) {} try { syncReloadForAccount(); } catch (e) {} accNotify(); return { ok: true }; }
+  function accCreate(name) { const reg = accReadReg(); accFlushCurrent(); const id = accNewId(); reg.push({ id, name: String(name || '').trim().slice(0, 24) || ('账号' + (reg.length + 1)), avatar: '', createdAt: Date.now() }); accWriteReg(reg); try { fs.mkdirSync(path.join(dataRoot(), 'accounts', id), { recursive: true }); } catch (e) {} store.setAccount(id); accWriteCur(id); try { loadAccounts(); } catch (e) {} try { biliClient = null; } catch (e) {} accNotify(); return { ok: true, id }; }
+  function accDelete(id) { let reg = accReadReg(); if (reg.length <= 1) return { ok: false, reason: '至少保留一个账号' }; const wasCur = accReadCur() === id; reg = reg.filter((a) => a.id !== id); accWriteReg(reg); try { fs.rmSync(path.join(dataRoot(), 'accounts', id), { recursive: true, force: true }); } catch (e) {} if (wasCur) { store.setAccount(reg[0].id); accWriteCur(reg[0].id); try { loadAccounts(); } catch (e) {} try { biliClient = null; } catch (e) {} } accNotify(); return { ok: true }; }
+  ipcMain.handle('accounts:list', (e) => { if (!isTrusted(e)) return { ok: false }; return { ok: true, accounts: accReadReg(), current: accReadCur() }; });
+  ipcMain.handle('accounts:switch', (e, id) => { if (!isTrusted(e)) return { ok: false }; return accSwitch(id); });
+  ipcMain.handle('accounts:create', (e, name) => { if (!isTrusted(e)) return { ok: false }; return accCreate(name); });
+  ipcMain.handle('accounts:delete', (e, id) => { if (!isTrusted(e)) return { ok: false }; return accDelete(id); });
 
   // 默认不预置任何曲库目录：首次启动由用户自行添加自己的音乐文件夹（曲库为空时界面有引导）
   const DEFAULT_DIRS = [];
@@ -1739,6 +1776,9 @@ function main() {
           return cur;
         }
       }
+      // 同步时间基准：新建盖 createdAt、每次保存盖 updatedAt（缺它则合并/墓碑全判错方向）
+      const __now = Date.now();
+      for (const p of filtered) { if (!p.createdAt) p.createdAt = __now; p.updatedAt = __now; }
       store.save('online-playlists.json', filtered);
       return pls;
     });
@@ -1766,6 +1806,7 @@ function main() {
       }
     });
 
+    function pcTombstone(key) { if (!key) return; try { const l = store.load('sync-tomb.json', []) || []; const m = new Map(); for (const t of l) if (t && t.key) m.set(t.key, t.at || 0); m.set(key, Date.now()); store.save('sync-tomb.json', [...m].map(([k, at]) => ({ key: k, at }))); } catch (e) {} }
     ipcMain.handle('favorites:get', (e) => {
       if (!isTrusted(e)) return [];
       return store.load('favorites.json', []);
@@ -1775,10 +1816,14 @@ function main() {
       let favs = store.load('favorites.json', []);
       const same = (f) => (typeof f === 'string' ? f : f && f.id) === id;
       if (favs.some(same)) {
+        const rm = favs.find(same);
+        const src = (rm && typeof rm === 'object' && rm.source) || (id.indexOf('online:') === 0 ? id.split(':')[1] : '');
+        const ref = (rm && typeof rm === 'object' && rm.ref) || (id.indexOf('online:') === 0 ? id.slice('online:'.length + (src ? src.length + 1 : 0)) : '');
+        if (src && ref) pcTombstone('fav:' + src + ':' + ref);
         favs = favs.filter((f) => !same(f));
       } else if (song && typeof song === 'object' && song.online && typeof song.id === 'string') {
         // 在线歌曲收藏：存完整歌曲对象（含 source/ref，重启后可恢复播放）
-        favs.push({ id: song.id, online: true, source: song.source, ref: song.ref, title: song.title, artist: song.artist || '', album: song.album || '', duration: song.duration || 0, picUrl: song.picUrl || '' });
+        favs.push({ id: song.id, online: true, source: song.source, ref: song.ref, title: song.title, artist: song.artist || '', album: song.album || '', duration: song.duration || 0, picUrl: song.picUrl || '', updatedAt: Date.now() });
       } else {
         favs.push(id);
       }
@@ -1999,12 +2044,18 @@ function main() {
     // ref: 网易云=song id；酷狗=分享链接或 hash（url/hash/id 三选一，推荐 url）
     ipcMain.handle('leiz:resolve', async (e, source, ref, level) => {
       if (!isTrusted(e) || !['netease', 'kugou'].includes(source) || typeof ref !== 'string' || !ref) return { ok: false, reason: '参数错误' };
-      const lv = typeof level === 'string' && level ? level : 'lossless';
+      // 档位映射：high=320k——网易对应 exhigh（higher 只有 192k），酷狗对应 higher；实测 2026-09-07
+      const lvMap = source === 'netease'
+        ? { standard: 'standard', high: 'exhigh', lossless: 'lossless' }
+        : { standard: 'standard', high: 'higher', lossless: 'lossless' };
+      const lvRaw = typeof level === 'string' && level ? level : 'lossless';
+      const lv = lvMap[lvRaw] || 'lossless';
       let p;
       if (source === 'netease') {
         p = '/netease?id=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
       } else {
-        p = /^https?:\/\//.test(ref) ? '/kugou?url=' + encodeURIComponent(ref) : '/kugou?hash=' + encodeURIComponent(ref);
+        // 酷狗此前漏传 level → 永远 128k；不传 url 时才带 hash（url 解析由上游决定音质）
+        p = /^https?:\/\//.test(ref) ? '/kugou?url=' + encodeURIComponent(ref) : '/kugou?hash=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
       }
       const r = await leizGet(p);
       return r.ok ? { ok: true, data: r.data } : { ok: false, reason: r.message || ('HTTP ' + r.status) };
@@ -2112,8 +2163,8 @@ function main() {
     let biliClient = null;
     let biliLoginBusy = false;
     let biliLastQr = ''; // 最近一张扫码二维码（弹窗关了会话还在，重开弹窗时补发）
-    const biliCredPath = () => path.join(dataRoot(), 'bili-credentials.json');
-    const biliCredBackupPath = () => path.join(dataRoot(), 'bili-credentials.backup.json');
+    const biliCredPath = () => accScopedPath('bili-credentials.json');
+    const biliCredBackupPath = () => accScopedPath('bili-credentials.backup.json');
     // 凭据健康检查：cookie+refreshToken 都非空才算有效（库里刷新失败会把主文件覆写成空串）
     function biliCredHasData(p) {
       try {
@@ -2280,6 +2331,7 @@ function main() {
       biliLastQr = '';
       biliCache.clear();
       biliWarmPending = [];
+      pcTombstone('acc:bilibili');
       return { ok: true };
     });
     // —— B站验证码（短信）登录：先过官方人机验证（弹窗滑块），再发短信、用验证码换登录 Cookie ——
@@ -2446,6 +2498,127 @@ function main() {
       if (c && Date.now() - c.ts < BILI_CACHE_TTL) return;
       if (!biliWarmPending.includes(bvid)) { biliWarmPending.push(bvid); biliWarmKick(); }
     });
+    // —— 猜你喜欢：按常听歌手生成（熟歌池=网易云搜歌手热门；尝新池=登录用网易每日推荐，未登录用酷狗推荐歌单抽歌）——
+    // 熟歌过滤非原版标记（含「变速」——用户反馈 QQ 歌单导入常混变速版，这里同步拦）
+    const GUESS_NON_ORIG = ['变速', '加速', '减速', 'slowed', 'sped up', 'pitch', 'remix', 'cover', '翻唱', '伴奏', '铃声', '现场', 'live版', 'dj版'];
+    ipcMain.handle('rec:guess', async (e, seeds, ratio) => {
+      if (!isTrusted(e)) return { ok: false, reason: '拒绝访问' };
+      const artists = (Array.isArray(seeds) ? seeds : []).filter((a) => a && typeof a.name === 'string' && a.name.trim()).slice(0, 6);
+      const rn = Number(ratio);
+      const R = Number.isFinite(rn) ? Math.min(0.5, Math.max(0, rn)) : 0.3;
+      const isNonOrig = (t) => GUESS_NON_ORIG.some((w) => t.includes(w));
+      // 熟歌池
+      const fam = [];
+      for (const a of artists) {
+        try {
+          const s = await leizGet('/netease/search?q=' + encodeURIComponent(a.name.trim()) + '&limit=12');
+          if (!s.ok || !Array.isArray(s.data)) continue;
+          const raw = s.data.filter((it) => it && it.id);
+          const okv = raw.filter((it) => !isNonOrig((String(it.name || '') + String(it.artists || '')).toLowerCase()));
+          for (const it of (okv.length ? okv : raw).slice(0, 8)) {
+            fam.push({ id: 'online:netease:' + it.id, online: true, source: 'netease', ref: String(it.id), title: it.name || '', artist: it.artists || '', album: it.album || '', duration: Math.round((it.duration || 0) / 1000), picUrl: it.picUrl || '' });
+          }
+        } catch { /* 单歌手失败继续 */ }
+      }
+      // 尝新池
+      let fresh = [];
+      let freshSrc = 'hot';
+      try {
+        const n = neteaseAcc.getState();
+        if (n.cookie && /MUSIC_U=/.test(n.cookie)) {
+          const d = await neteaseAcc.recommendSongs();
+          if (d.ok && d.songs.length) {
+            freshSrc = 'daily';
+            fresh = d.songs.map((x) => ({ id: 'online:netease:' + x.id, online: true, source: 'netease', ref: x.id, title: x.name, artist: x.artist, album: x.album || '', duration: Math.round((x.duration || 0) / 1000), picUrl: x.picUrl || '' }));
+          }
+        }
+      } catch { /* 忽略 */ }
+      if (!fresh.length) {
+        try {
+          const pr = await kugouAcc.recommendPlaylists(0, 1, 12);
+          const pls = (pr.playlists || []).filter((x) => x.gcid).sort(() => Math.random() - 0.5).slice(0, 2);
+          for (const pl of pls) {
+            const full = await fetchKugouCollectAll(pl.gcid);
+            if (full.ok) fresh.push(...full.songs);
+          }
+        } catch { /* 忽略 */ }
+      }
+      // 合成 50：nNew = round(50×R)，其余熟歌；各自洗牌去重
+      const shuffle = (arr) => { const a = arr.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+      const TOTAL = 50;
+      const seen = new Set();
+      const pick = (pool, n) => { const out = []; for (const x of shuffle(pool)) { if (out.length >= n) break; if (seen.has(x.id) || !x.title) continue; seen.add(x.id); out.push(x); } return out; };
+      const newPart = pick(shuffle(fresh), Math.round(TOTAL * R));
+      const famPart = pick(shuffle(fam), TOTAL - newPart.length);
+      const songs = shuffle(newPart.concat(famPart)).slice(0, TOTAL);
+      return { ok: songs.length > 0, songs, mix: { familiar: famPart.length, fresh: newPart.length, freshSource: freshSrc } };
+    });
+    // —— 导入自动适配最佳：标题带非原版标记（变速/DJ/翻唱等）的歌，跨源搜「干净标题+歌手匹配」的原版替换 ——
+    const NON_ORIG_RES = [/变速/, /加速/, /减速/, /slowed/i, /sped\s?up/i, /pitch/i, /remix/i, /dj版/, /\bdj\b/i, /cover/i, /翻唱/, /伴奏/, /铃声/, /现场/, /live版/i, /纯音乐/, /串烧/, /慢摇/, /钢琴版/, /吉他版/, /变奏/, /治愈版/, /伤感版/, /抖音版/, /热歌版/, /女声版/, /男生版/, /慢速版/, /快速版/, /8d/i];
+    function isNonOrigTitle(t) { const x = String(t || '').toLowerCase(); return NON_ORIG_RES.some((re) => re.test(x)); }
+    function cleanTitleForSearch(t) {
+      let x = String(t || '');
+      x = x.replace(/[\(（\[【].*?[\)）\]】]/g, ' ');
+      for (const w of ['变速', '加速', '减速', 'slowed', 'sped up', 'pitch', 'remix', 'cover', '翻唱', '伴奏', '铃声', '现场', 'live版', 'dj版', '纯音乐', '串烧', '慢摇', '钢琴版', '吉他版', '变奏']) x = x.split(w).join(' ');
+      return x.replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+    // 歌单导入后处理：给 acc:playlist 与渲染层链接导入共用；bilibili/qq 不动（qq 自带换源）
+    // 候选打分：标题干净相等 4 / 互含 2；歌手任一命中必填 +2；专辑匹配（跨平台强证据）+3；首歌手精确 +2；
+    // 两源全扫取最高分，≥6 才换——纯「互含+歌手」(4) 不再够格，避免换到同名单曲页/非原版
+    const normSoft = (x) => String(x || '').toLowerCase().replace(/[\s（）()\[\]]+/g, '');
+    const albumEq = (a, b) => { const x = normSoft(a), y = normSoft(b); return !!x && !!y && (x === y || (x.includes(y) || y.includes(x)) && Math.min(x.length, y.length) >= 2); };
+    const firstTok = (ar) => (String(ar || '').split(/[、,/]/)[0] || '').trim().toLowerCase().replace(/[.。\s]+$/, '');
+    async function adaptImportSongs(payload) {
+      const songs = (payload && payload.songs) || [];
+      const targets = songs.filter((x) => x && x.title && x.source !== 'bilibili' && x.source !== 'qq' && isNonOrigTitle(x.title + ' ' + (x.artist || '')));
+      let replaced = 0, idx = 0;
+      async function worker() {
+        while (idx < targets.length) {
+          const tg = targets[idx++];
+          const clean = cleanTitleForSearch(tg.title);
+          if (!clean) continue;
+          const wantArts = String(tg.artist || '').toLowerCase().split(/[、,/]/).map((x) => x.trim()).filter(Boolean);
+          const wFirst = firstTok(tg.artist);
+          let best = null, bestScore = -1, bestSrc = '';
+          for (const src of ['netease', 'kugou']) {
+            try {
+              const r = await leizGet('/' + src + '/search?q=' + encodeURIComponent(clean) + '&limit=10');
+              if (!r.ok || !Array.isArray(r.data)) continue;
+              for (const it of r.data) {
+                if (!it || !it.id) continue;
+                const tn = String(it.name || '').toLowerCase();
+                const ar = String(it.artists || '').toLowerCase();
+                if (!tn || isNonOrigTitle(tn + ' ' + ar)) continue;
+                const tc = cleanTitleForSearch(tn);
+                let sc = 0;
+                if (tc === clean) sc += 4;
+                else if ((tc.includes(clean) || clean.includes(tc)) && Math.min(tc.length, clean.length) >= 2) sc += 2;
+                else continue;
+                const artistOk = !tg.artist || wantArts.some((a) => a && ar.includes(a));
+                if (!artistOk) continue; // 歌手任一命中仍是硬条件（翻唱署名不含原唱即拒）
+                if (tg.album && it.album && albumEq(tg.album, it.album)) sc += 3; // 专辑对上：跨平台最强证据
+                if (wFirst && firstTok(it.artists) === wFirst) sc += 2; // 首歌手精确（翻唱常挂原唱名在后面凑匹配）
+                if (sc > bestScore) { bestScore = sc; best = it; bestSrc = src; }
+              }
+            } catch { /* 单源失败继续 */ }
+          }
+          if (best && bestScore >= 6) {
+            const i = songs.indexOf(tg);
+            if (i >= 0) {
+              songs[i] = Object.assign({}, tg, { source: bestSrc, ref: String(best.id), id: 'online:' + bestSrc + ':' + best.id, title: best.name || tg.title, artist: best.artists || tg.artist, album: best.album || tg.album || '', picUrl: best.picUrl || tg.picUrl || '', duration: Math.round((best.duration || 0) / 1000) || tg.duration, level: undefined });
+              replaced++;
+            }
+          }
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(4, Math.max(1, targets.length)) }, worker));
+      return Object.assign({}, payload, { songs, adaptedReplaced: replaced, adaptedChecked: targets.length });
+    }
+    ipcMain.handle('import:adapt', async (e, songs) => {
+      if (!isTrusted(e) || !Array.isArray(songs)) return { ok: false, reason: '参数错误' };
+      const r = await adaptImportSongs({ songs });
+      return { ok: true, songs: r.songs, replaced: r.adaptedReplaced, checked: r.adaptedChecked };
+    });
     // ---------- QQ 音乐官方接口（2026-08 起弃用第三方 API：官方搜索/歌单/歌词 + vkey 直链，只播免费歌）----------
     // 登录态（y.qq.com Cookie）只存主进程 accounts.json；搜索/歌单/歌词匿名可用，播放直链需 Cookie
     ipcMain.handle('qq:status', (e) => {
@@ -2603,6 +2776,24 @@ function main() {
           }
           if (!hit) hit = keep;
         }
+        // 波点命中但版本不对（命中标题带 变速/DJ/翻唱 等标记而歌单原名单是干净名）→ 严格换源找原版；
+        // 找不到原版才保留波点命中（宁可用变速版也不给失败）
+        if (hit && hit.source === 'qq' && !(hit.payplay && config.autoSrcUpgrade) && isNonOrigTitle(String(hit.title || '') + ' ' + String(hit.artist || '')) && !isNonOrigTitle(String(s.name || ''))) {
+          let orig = null;
+          if (qFull) {
+            try {
+              const kg = await leizGet('/kugou/search?q=' + encodeURIComponent(qFull) + '&limit=8');
+              if (kg.ok && Array.isArray(kg.data)) orig = pickFallback(kg.data, s.name, s.artists, 'kugou', true);
+            } catch { /* 忽略 */ }
+          }
+          if (!orig && qFull) {
+            try {
+              const ne = await leizGet('/netease/search?q=' + encodeURIComponent(qFull) + '&limit=8');
+              if (ne.ok && Array.isArray(ne.data)) orig = pickFallback(ne.data, s.name, s.artists, 'netease', true);
+            } catch { /* 忽略 */ }
+          }
+          if (orig) { hit = orig; }
+        }
         // 波点 miss → 严格换源（酷狗/网易云，歌名+歌手严格相等才换，避免换错版本）
         if (!hit && qFull) {
           try {
@@ -2711,7 +2902,7 @@ function main() {
     const BUILTIN_BODIAN = { uid: '74016982', token: '25442042d67a4e01b2b8fa36ec1964f1', devId: '64927edd3d271abc292a31f853e105b1' };
     // 凭据持久化（主进程私有：cookie/token 不出主进程，渲染层只拿登录态摘要；D 盘数据根）
     // v2 格式：safeStorage 加密（DPAPI，绑定当前 Windows 用户）；v1 明文自动迁移
-    const ACC_FILE = () => path.join(store.getDataDir(), 'accounts.json');
+    const ACC_FILE = () => accScopedPath('accounts.json');
     function accEncryptAvailable() { try { return !!(safeStorage && safeStorage.isEncryptionAvailable && safeStorage.isEncryptionAvailable()); } catch { return false; } }
     function loadAccounts() {
       try {
@@ -2806,6 +2997,7 @@ function main() {
       if (platform === 'netease') neteaseAcc.setState({ cookie: '', csrf: '', account: null });
       else kugouAcc.setState({ token: '', userid: '', mid: kugouAcc.getState().mid, dfid: '', vipType: '', vipToken: '', dev: kugouAcc.getState().dev });
       saveAccounts();
+      pcTombstone('acc:' + platform);
       return { ok: true, status: accStatus() };
     });
     // 登录态查询（渲染层启动/推荐页刷新用）
@@ -2924,20 +3116,21 @@ function main() {
       if (source === 'netease') {
         const r = await neteaseAcc.playlistSongsAll(ref, null);
         if (!r.ok || !r.songs.length) return { ok: false, reason: r.reason || '歌单为空或获取失败' };
-        return {
-          ok: true, name: r.name || '', desc: r.desc || '',
+        // 非原版标题自动跨源换原版；total 供渲染层做掉歌透明提示（本源无版权歌 detail 接口会静默剔除）
+        return await adaptImportSongs({
+          ok: true, name: r.name || '', desc: r.desc || '', total: r.total || 0,
           songs: r.songs.map((s) => ({
             id: 'online:netease:' + s.id, online: true, source: 'netease', ref: s.id,
             title: s.name, artist: s.artist, album: s.album, picUrl: s.picUrl, duration: Math.round((s.duration || 0) / 1000)
           }))
-        };
+        });
       }
       const full = await fetchKugouCollectAll(ref);
-      return full.ok ? { ok: true, name: '酷狗推荐歌单', desc: '', songs: full.songs } : { ok: false, reason: '歌单获取失败' };
+      return full.ok ? await adaptImportSongs({ ok: true, name: '酷狗推荐歌单', desc: '', songs: full.songs }) : { ok: false, reason: '歌单获取失败' };
     });
     // ---------- 本地账号（名字+头像；数据可序列化，为 1.3.8 云端账号同步铺路）----------
     // 存储：dataRoot()/local-account.json（含 avatar 本地路径）；头像复制到 dataRoot()/avatars/local.<ext>
-    const LOCAL_ACC_FILE = () => path.join(dataRoot(), 'local-account.json');
+    const LOCAL_ACC_FILE = () => accScopedPath('local-account.json');
     function localAccRead() {
       try {
         if (fs.existsSync(LOCAL_ACC_FILE())) return JSON.parse(fs.readFileSync(LOCAL_ACC_FILE(), 'utf8'));
@@ -3001,6 +3194,120 @@ function main() {
       try { fs.writeFileSync(r.filePath, JSON.stringify(acc, null, 2), 'utf8'); return { ok: true, path: r.filePath }; }
       catch (err) { return { ok: false, reason: '导出失败：' + (err.message || err) }; }
     });
+    // ===== 局域网同步（PC 当服务器，手机连同一 WiFi 同步）=====
+    const syncBundle = require('./core/sync-bundle.js');
+    const syncServer = require('./core/sync-server.js');
+    const syncState = { enabled: false, port: 8790, code: '', identity: '' };
+    try { const j = store.load('sync.json', null); if (j && typeof j === 'object') { syncState.port = j.port || 8790; syncState.code = j.code || ''; syncState.enabled = !!j.enabled; syncState.identity = j.identity || ''; } } catch (e) {}
+    function syncSaveCfg() { try { store.save('sync.json', { enabled: syncState.enabled, port: syncState.port, code: syncState.code, identity: syncState.identity }); } catch (e) {} }
+    function syncGenCode() { return String(Math.floor(100000 + Math.random() * 900000)); }
+    // —— 设备绑定：账号唯一 identity（随 sync.json 走账号作用域）+ 首次授权签发 deviceToken ——
+    if (!syncState.identity) { syncState.identity = crypto.randomBytes(8).toString('hex'); syncSaveCfg(); }
+    function syncDevices() { try { return store.load('sync-devices.json', {}) || {}; } catch (e) { return {}; } }
+    function syncSaveDevices(d) { try { store.save('sync-devices.json', d); } catch (e) {} }
+    function syncIssueToken(label) { const tk = crypto.randomBytes(16).toString('hex'); const d = syncDevices(); d[tk] = { label: String(label || '').slice(0, 24), createdAt: Date.now(), lastSeen: Date.now() }; syncSaveDevices(d); return tk; }
+    function syncVerifyToken(tk) { const d = syncDevices(); if (!d[tk]) return false; d[tk].lastSeen = Date.now(); syncSaveDevices(d); return true; }
+    function syncReloadForAccount() { // 本地账号切换：identity/码/设备表随账号作用域重载，服务在跑则重启
+      try { const j = store.load('sync.json', null) || {}; syncState.port = j.port || 8790; syncState.code = j.code || ''; syncState.enabled = !!j.enabled; syncState.identity = j.identity || ''; } catch (e) {}
+      if (!syncState.identity) syncState.identity = crypto.randomBytes(8).toString('hex');
+      if (syncServer.running()) syncStart(); else syncSaveCfg();
+    }
+    function syncFileToDataURL(p) { try { if (!p || !fs.existsSync(p)) return ''; let ext = (path.extname(p) || '.png').toLowerCase().replace(/^\./, ''); if (ext === 'jpg') ext = 'jpeg'; return 'data:image/' + ext + ';base64,' + fs.readFileSync(p).toString('base64'); } catch (e) { return ''; } }
+    function syncDataURLToFile(dataURL) { try { const m = /^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/.exec(dataURL || ''); if (!m) return ''; const ext = m[1] === 'jpeg' ? 'jpg' : m[1]; const dir = path.join(dataRoot(), 'avatars'); fs.mkdirSync(dir, { recursive: true }); const dest = path.join(dir, 'local.' + ext); fs.writeFileSync(dest, Buffer.from(m[2], 'base64')); return dest; } catch (e) { return ''; } }
+    function syncExportBundle() {
+      const opls = store.load('online-playlists.json', []) || [];
+      const playlists = store.load('playlists.json', []) || [];
+      const favs = store.load('favorites.json', []) || [];
+      const hist = store.load('history.json', []) || [];
+      const combined = opls.slice();
+      for (const ml of playlists) {
+        if (!ml || ml.system) continue;
+        const songs = (ml.songIds || []).filter((x) => x && typeof x === 'object' && x.online && x.ref)
+          .map((x) => ({ online: true, source: x.source, ref: x.ref, title: x.title || '', artist: x.artist || '', album: x.album || '', duration: x.duration || 0, picUrl: x.picUrl || '' }));
+        if (songs.length) combined.push({ id: ml.id, name: ml.name, source: 'local-pl', cover: '', songs });
+      }
+      const recent = hist.filter((h) => h && typeof h.id === 'string' && h.id.indexOf('online:') === 0).map((h) => { const parts = h.id.split(':'); return { online: true, source: parts[1], ref: parts.slice(2).join(':'), at: h.at || 0 }; });
+      const acc = localAccRead();
+      let bili = null; try { bili = JSON.parse(fs.readFileSync(biliCredPath(), 'utf8')); } catch (e) {}
+      return syncBundle.exportBundle({
+        onlinePlaylists: combined, favorites: favs, recent,
+        profile: { nickname: acc.name || '', avatar: syncFileToDataURL(acc.avatar) },
+        accounts: { netease: neteaseAcc.getState(), kugou: kugouAcc.getState(), bilibili: bili ? { cookie: bili.cookie, refreshToken: bili.refreshToken, mid: bili.mid, uname: bili.uname } : null },
+        tombstones: store.load('sync-tomb.json', []) || []
+      }, 'pc');
+    }
+    function syncApplyMerged(merged) {
+      const r = syncBundle.importBundle(merged);
+      if (!r.ok) return r;
+      const tom = r.tombstones || [];
+      const tomAt = (k) => { const t = tom.find((x) => x.key === k); return t ? (t.at || 0) : 0; };
+      const cur = store.load('online-playlists.json', []) || [];
+      const map = new Map(); for (const p of cur) if (p && p.id) map.set(p.id, p);
+      for (const p of r.onlinePlaylists) { const old = map.get(p.id) || {}; map.set(p.id, Object.assign({}, old, { id: p.id, name: p.name, source: p.source, cover: p.cover || old.cover || '', songs: p.songs, fav: true, updatedAt: p.updatedAt || old.updatedAt || Date.now() })); }
+      const keptOpls = [...map.values()].filter((p) => !(tomAt('pl:' + p.id) > (p.updatedAt || 0)));
+      store.save('online-playlists.json', keptOpls);
+      const favs = store.load('favorites.json', []) || [];
+      const fmap = new Map(); for (const x of favs) { const id = (typeof x === 'string' ? x : (x && x.id)); if (id) fmap.set(id, x); }
+      for (const f of r.favorites) {
+        const ex = fmap.get(f.id);
+        if (!ex) { favs.push(f); fmap.set(f.id, f); }
+        else if (ex && typeof ex === 'object') { if (f.picUrl && !ex.picUrl) ex.picUrl = f.picUrl; if (f.title && !ex.title) ex.title = f.title; if (f.artist && !ex.artist) ex.artist = f.artist; }
+      }
+      const keptFavs = favs.filter((x) => { if (!x || typeof x !== 'object' || !x.source || !x.ref) return true; return !(tomAt('fav:' + x.source + ':' + x.ref) > (x.updatedAt || 0)); });
+      store.save('favorites.json', keptFavs);
+      const hist = store.load('history.json', []) || [];
+      const hset = new Set(hist.map((h) => h && h.id));
+      for (const rc of r.recent) { const id = 'online:' + rc.source + ':' + rc.ref; if (!hset.has(id)) { hist.push({ id, at: rc.at || Date.now() }); hset.add(id); } }
+      hist.sort((a, b) => (b.at || 0) - (a.at || 0));
+      store.save('history.json', hist.slice(0, 200));
+      if (r.profile && (r.profile.nickname || r.profile.avatar)) {
+        const acc = localAccRead();
+        if (r.profile.nickname) acc.name = String(r.profile.nickname).slice(0, 24);
+        if (r.profile.avatar) { const p = syncDataURLToFile(r.profile.avatar); if (p) acc.avatar = p; }
+        acc.updatedAt = new Date().toISOString(); localAccWrite(acc);
+      }
+      const a = r.accounts || {};
+      try { if (a.netease && a.netease.cookie && !neteaseAcc.getState().cookie) neteaseAcc.setState(a.netease); } catch (e) {}
+      try { if (a.kugou && a.kugou.token && !kugouAcc.getState().token) kugouAcc.setState(a.kugou); } catch (e) {}
+      try { if (a.bilibili && a.bilibili.cookie) { let curB = null; try { curB = JSON.parse(fs.readFileSync(biliCredPath(), 'utf8')); } catch (e) {} if (!curB || !curB.cookie) { fs.writeFileSync(biliCredPath(), JSON.stringify(a.bilibili, null, 2), 'utf8'); biliClient = null; } } } catch (e) {}
+      try { saveAccounts(); } catch (e) {}
+      try { const m = new Map(); for (const t of (store.load('sync-tomb.json', []) || [])) if (t && t.key) m.set(t.key, t.at || 0); for (const t of tom) { if (!t || !t.key) continue; m.set(t.key, Math.max(m.get(t.key) || 0, t.at || 0)); } store.save('sync-tomb.json', [...m].map(([key, at]) => ({ key, at }))); } catch (e) {}
+      try { if (win && !win.isDestroyed()) win.webContents.send('sync:event', { type: 'applied' }); } catch (e) {}
+      return { ok: true };
+    }
+    function syncOnServerIncoming(incomingBundle) {
+      const mine = syncExportBundle();
+      const merged = syncBundle.mergeBundles(mine, incomingBundle);
+      syncApplyMerged(merged);
+      return merged;
+    }
+    // 一键允许：无有效配对码时弹窗，由用户确认后才合并回传（替代 6 位配对码）
+    let syncApproving = false;
+    async function syncOnServerRequest(incomingBundle, meta) {
+      if (!incomingBundle || typeof incomingBundle !== 'object') return { ok: false, status: 400, reason: '无效的同步包' };
+      if (syncApproving) return { ok: false, status: 429, reason: '电脑端正有待确认的同步请求' };
+      const dev = ({ mobile: '手机端', pc: '电脑端' })[incomingBundle.device] || '设备';
+      const c = { pls: (incomingBundle.onlinePlaylists || []).length, favs: (incomingBundle.favorites || []).length, recent: (incomingBundle.recent || []).length };
+      const detail = `${dev}${meta && meta.ip ? '（' + meta.ip + '）' : ''} 请求同步：歌单 ${c.pls} · 收藏 ${c.favs} · 最近 ${c.recent}`;
+      syncApproving = true;
+      try {
+        const box = { type: 'question', buttons: ['允许同步', '拒绝'], defaultId: 0, cancelId: 1, noLink: true, title: '局域网同步请求', message: '收到同步请求', detail };
+        const r = (win && !win.isDestroyed()) ? await dialog.showMessageBox(win, box) : await dialog.showMessageBox(box);
+        if (r && r.response === 0) {
+          try { const merged = syncOnServerIncoming(incomingBundle); return { ok: true, bundle: merged }; }
+          catch (e) { return { ok: false, status: 500, reason: '合并失败：' + String((e && e.message) || e) }; }
+        }
+        return { ok: false, status: 403, reason: '电脑端已拒绝' };
+      } finally { syncApproving = false; }
+    }
+    function syncStart() { if (!syncState.code) syncState.code = syncGenCode(); syncServer.start({ port: syncState.port, code: syncState.code, identity: syncState.identity, handlers: { onSync: syncOnServerIncoming, onRequest: syncOnServerRequest, verifyToken: syncVerifyToken, issueToken: syncIssueToken } }); syncState.enabled = true; syncSaveCfg(); }
+    function syncStop() { syncServer.stop(); syncState.enabled = false; syncSaveCfg(); }
+    if (syncState.enabled) syncStart();
+    ipcMain.handle('sync:info', (e) => { if (!isTrusted(e)) return { ok: false }; const ip = syncServer.lanIPv4(); const dv = syncDevices(); return { ok: true, running: syncServer.running(), ip, port: syncState.port, code: syncState.code, identity: syncState.identity, devices: Object.keys(dv).map((k) => dv[k].label || '设备'), url: ip ? ('http://' + ip + ':' + syncState.port) : '' }; });
+    ipcMain.handle('sync:revoke', (e) => { if (!isTrusted(e)) return { ok: false }; syncSaveDevices({}); return { ok: true }; });
+    ipcMain.handle('sync:setEnabled', (e, on) => { if (!isTrusted(e)) return { ok: false }; if (on) syncStart(); else syncStop(); return { ok: true, running: syncServer.running(), code: syncState.code }; });
+    ipcMain.handle('sync:tomb', (e, key) => { if (!isTrusted(e) || typeof key !== 'string' || !key || key.length > 200) return { ok: false }; pcTombstone(key); return { ok: true }; });
+    ipcMain.handle('sync:regenCode', (e) => { if (!isTrusted(e)) return { ok: false }; syncState.code = syncGenCode(); if (syncState.enabled) syncStart(); else syncSaveCfg(); return { ok: true, code: syncState.code }; });
     // 方案升级：先跟随重定向拿最终分享页 URL → 优先走 LeiZ 歌单接口（可返回全量，
     // 实测收藏合集分享页只内嵌 100 首，LeiZ 解析完整 zlist.html URL 返回 trackCount 全量 201 首）；
     // LeiZ 失败才兜底抓分享页 dataFromSmarty（最多 100 首）。
@@ -3471,6 +3778,15 @@ function main() {
   // ---------- 自动更新（electron-updater，GitHub Release 源）----------
   // 更新公告表：版本号 → 更新内容列表（新版本首次启动展示；设置-软件更新页侧栏按历代版本浏览，须随发版同步维护）
   const CHANGELOG = {
+    '1.4.0': [
+      '**重磅：手机电脑双端互通**——深空折韵安卓端正式发布！同一 WiFi 下，手机与电脑自动同步歌单、收藏、最近播放与账号登录态：首次配对后设备绑定，之后无需任何操作，听歌记录两端无缝衔接',
+      '安卓端下载：github.com/kita18986342016/lyra-aria-mobile/releases（下载 APK 安装；开启同步入口：手机端设置 → 局域网同步，电脑端：设置-账号管理-局域网同步）',
+      '**全新「猜你喜欢」**：推荐页按你常听的歌手生成 50 首混合队列，整批听完自动换新一批；尝新比例可调（默认 30%）',
+      '**导入自动适配原版**：歌单导入自动识别变速 / DJ / 翻唱等版本并跨平台替换为原版，找不到原版才保留；导入结果透明提示本源缺失歌曲数',
+      '**播放不中断**：无版权 / 下架歌曲自动尝试其他音源同歌续播，全部无资源则自动跳下一首，不再停在原地',
+      '**音质全面升级**：酷狗支持高品 320k 与无损 FLAC（此前固定 128k）；网易云高品档修正为真 320k；播放按当前音质设置实时请求',
+      '**界面优化**：设置-账号管理合并本地账号与同步入口；播放条新增收藏按钮（倍速左侧）；B站主题色统一粉色'
+    ],
     '1.3.9': [
       '**B站音源**：收藏夹一键导入（粘贴链接，或登录后勾选账号内收藏夹批量导入）；大会员登录自动获得高音质（高清 192k / Hi-Res 无损）；纯音频播放秒开，封面与歌词详情齐备',
       '**账号歌单一键导入**：设置-账号管理点击「一键导入」，列出账号内歌单/收藏夹，勾选批量导入（支持网易云 / 酷狗 / B站）',
