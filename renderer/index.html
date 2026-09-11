@@ -89,6 +89,8 @@
             <div class="st-row"><span class="st-label">默认音量</span><input type="range" id="stVolRange" min="0" max="100" step="1"><span id="stVolVal" class="st-val"></span></div>
             <div class="st-row st-row-sw"><span class="st-label">启动恢复</span><label class="st-switch"><input type="checkbox" id="stResume" checked><span class="st-slider"></span></label></div>
             <div class="st-row st-row-sw"><span class="st-label">开机自启</span><label class="st-switch"><input type="checkbox" id="stAutoLaunch"><span class="st-slider"></span></label></div>
+            <div class="st-row"><span class="st-label">猜你喜欢·尝新比例</span><div class="st-modes" id="stGuessRatio"><button class="st-mode" data-r="0">关</button><button class="st-mode" data-r="0.1">10%</button><button class="st-mode" data-r="0.3">30%</button><button class="st-mode" data-r="0.5">50%</button></div></div>
+            <div class="st-row st-sub"><span class="st-tip">「猜你喜欢」按常听歌手生成；尝新比例决定掺入未听过新歌的份额（选「关」则只推熟歌）</span></div>
             <div class="st-row"><span class="st-label">关闭窗口时</span><div class="st-modes" id="stCloseModes"><button class="st-mode" data-close="tray">最小化到托盘</button><button class="st-mode" data-close="exit">退出程序</button></div></div>
             <div class="st-row"><span class="st-label">清除缓存</span><button id="stCacheClear" class="st-action">清除缓存…</button></div>
             <div class="st-row st-sub"><span class="st-tip">清除封面缩略图等临时缓存数据（不影响曲库与收藏）</span></div>
@@ -182,6 +184,17 @@
             <div class="st-row st-sub"><span class="st-tip">登录后可在推荐页获取「每日推荐」歌曲，并可一键导入账号内的歌单</span></div>
             <div class="acc-row"><span class="acc-plat">哔哩哔哩</span><button id="accBiliImport" class="st-action">一键导入</button><span id="accBiliState" class="acc-state">未登录</span><button id="accBiliLogin" class="st-action">登录</button><button id="accBiliLogout" class="st-action hidden">退出</button></div>
             <div class="st-row st-sub"><span class="st-tip">登录后B站歌曲按你的账号档位自动选高音质（高清 192k / 大会员 Hi-Res 无损），收藏夹一键导入；凭据只保存在本机</span></div>
+            <div class="st-group st-group-sub">局域网同步</div>
+              <div class="st-row st-sub"><span class="st-tip">开启后，手机与电脑连同一 WiFi，在手机「设置 → 数据与维护 → 局域网同步」点「扫描电脑」或填地址，再点「开始同步」——<b>电脑端会弹窗请求你确认（一键允许）</b>后才同步歌单/收藏/最近/账号/第三方登录态。下面的配对码为可选的免确认方式：手机填对则不再弹窗。仅在本机局域网内传输。</span></div>
+              <div class="st-row st-row-sw"><span class="st-label">开启同步服务</span><label class="st-switch"><input type="checkbox" id="syncEnable"><span class="st-slider"></span></label></div>
+              <div class="st-row"><span class="st-label">地址</span><span id="syncUrl" class="st-val">未开启</span></div>
+              <div class="st-row"><span class="st-label">配对码</span><span style="display:flex;align-items:center;gap:8px"><span id="syncCode" class="st-val" style="font-size:18px;letter-spacing:3px">—</span><button id="syncRegen" class="st-action">重新生成</button></span></div>
+              <div class="st-row"><span class="st-label">已配对设备</span><span id="syncDevices" class="st-val">无</span><button id="syncRevoke" class="st-action">清除全部</button></div>
+              <div class="st-row st-sub"><span id="syncStatus" class="st-tip"></span></div>
+            <div class="st-group st-group-sub">本机多账号</div>
+              <div class="st-row st-sub"><span class="st-tip">本机可创建多个互相隔离的本地账号（各自的歌单/收藏/登录态）。当前账号的昵称头像在「账号管理」里改。</span></div>
+              <div id="accMgrList" class="acc-mgr-list"></div>
+              <div class="st-row"><button id="accMgrCreate" class="st-action">新建账号</button></div>
           </div>
           <div class="st-section" data-sec="timer">
             <div class="st-group">定时</div>
@@ -231,6 +244,22 @@
             <div class="st-help-sec"><b>歌单与批量</b>
               <p>左侧「我的歌单」支持新建/导入/重命名/右键管理；拖拽可排序。</p>
               <p>列表顶部「批量」进入批量模式，可一次播放/收藏/下载/删除/加入歌单。</p>
+            </div>
+            <div class="st-help-sec"><b>账号与登录</b>
+              <p>设置-账号管理统一管理三个平台：网易云音乐、酷狗音乐、哔哩哔哩，均支持扫码登录与手机验证码登录；网易云/酷狗在登录弹窗顶部切换平台，哔哩哔哩在账号管理行点「登录」。</p>
+              <p>登录收益：网易云/酷狗解锁推荐页「每日推荐」并支持一键导入账号内歌单；B站按你的账号档位自动获得高音质（高清 192k / 大会员无损）。登录网易云/酷狗/B站后，对应行的「一键导入」可列出账号内歌单，勾选批量导入。</p>
+            </div>
+            <div class="st-help-sec"><b>一键导入与原版适配</b>
+              <p>设置右上「导入歌单」支持粘贴链接：网易云/酷狗歌单链接或纯数字 id、QQ 歌单链接、B站收藏夹链接。</p>
+              <p>导入时自动适配原版：标题带「变速 / DJ / 翻唱 / 伴奏」等标记的歌会自动去其他平台找原版替换（比对专辑与歌手，找不到才保留）；本源无版权而缺失的歌会提示数量，播放到它们时也会自动尝试其他音源续播，全部无资源则自动跳下一首，不会停在原地。</p>
+            </div>
+            <div class="st-help-sec"><b>猜你喜欢</b>
+              <p>推荐页下方「猜你喜欢」按你常听的歌手自动生成 50 首混合队列：大部分来自你听得最多的歌手，另按「尝新比例」掺入没听过的新歌（设置-常规可调 0~50%，默认 30%）。</p>
+              <p>双击任意一首即按整批播放；一整批听完会自动生成新一批接着播，也可以点「换一批」手动刷新。不感兴趣可直接双击跳听。</p>
+            </div>
+            <div class="st-help-sec"><b>音质说明</b>
+              <p>设置-音源与音质的「在线播放音质」对网易云/酷狗/QQ 全部生效：标准 128k / 高品 320k / 无损 FLAC，播放时按当前设置向音源请求，实际拿到的档位以歌曲行与底栏标签为准（诚实标注）。</p>
+              <p>B站歌曲登录后自动跟随账号档位（高清 192k / 大会员 Hi-Res 无损）；个别歌曲音源本身只有低档位时会如实标注，不会虚标。</p>
             </div>
             <div class="st-help-sec"><b>外观</b>
               <p>设置内的主题、强调色、背景氛围与背景强度可实时预览。</p>
@@ -312,7 +341,7 @@
     <div id="oplImportPanel">
       <div class="st-head"><span>导入歌单</span><span class="opl-head-right"><button id="oplHelpBtn" class="st-help-btn" title="导入帮助">?</button><button id="oplImportClose"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></span></div>
       <div class="opl-body">
-        <div class="opl-tip">支持 网易云 / 酷狗 / QQ 歌单链接或 ID 导入：</div>
+        <div class="opl-tip">支持 网易云 / 酷狗 / QQ / B站 歌单链接或 ID 导入：</div>
         <input id="oplImportInput" type="text" placeholder="粘贴歌单链接、分享短链或 ID…" spellcheck="false">
         <div id="oplBodianList" class="hidden"></div>
       </div>
@@ -490,6 +519,14 @@
           </div>
         </div>
         <div id="recSections"></div>
+        <!-- 猜你喜欢：按常听歌手生成（熟歌为主 + 尝新掺新），整批听完自动换新一批 -->
+        <div class="rec-guess" id="recGuessSec">
+          <div class="rec-guess-head">
+            <div><h2 class="rec-guess-title">猜你喜欢</h2><span class="rec-guess-sub">按你常听的歌手生成 · 听完自动换新一批</span></div>
+            <button id="guessBtn" class="rec-btn rec-btn-ghost">生成</button>
+          </div>
+          <div id="guessList" class="guess-list"></div>
+        </div>
       </div>
     </section>
 
@@ -633,6 +670,7 @@
       <span id="pDur">0:00</span>
     </div>
     <div id="pRight">
+      <button id="btnFavBar" title="收藏当前歌曲"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button>
       <button id="btnRate" title="播放速度">1.0x</button>
       <button id="btnMode" title="播放模式"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
       <button id="btnQueue" title="播放队列"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg><span id="queueBadge" class="hidden"></span></button>

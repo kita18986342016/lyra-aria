@@ -101,6 +101,8 @@ contextBridge.exposeInMainWorld('api', {
   biliSmsSend: (phone) => ipcRenderer.invoke('bili:sms-send', phone),
   biliSmsLogin: (phone, code) => ipcRenderer.invoke('bili:sms-login', phone, code),
   biliMyfav: () => ipcRenderer.invoke('bili:myfav'),
+  recGuess: (seeds, ratio) => ipcRenderer.invoke('rec:guess', seeds, ratio),
+  importAdapt: (songs) => ipcRenderer.invoke('import:adapt', songs),
   sendLyricLine: (payload) => ipcRenderer.send('lyricwin:line', payload),
   sendLyricPlayState: (st) => ipcRenderer.send('lyricwin:play', st),
   sendLyricLrc: (data) => ipcRenderer.send('lyricwin:lrc', data),
@@ -170,5 +172,20 @@ contextBridge.exposeInMainWorld('api', {
   onPlayerControl: (cb) => ipcRenderer.on('player:control', (_e, action) => cb(action)),
 
   // 托盘 / 全局快捷键
-  onMedia: (cb) => ipcRenderer.on('media:action', (_e, action) => cb(action))
+  onMedia: (cb) => ipcRenderer.on('media:action', (_e, action) => cb(action)),
+
+  // 局域网同步
+  syncInfo: () => ipcRenderer.invoke('sync:info'),
+  syncSetEnabled: (on) => ipcRenderer.invoke('sync:setEnabled', on),
+  syncRegenCode: () => ipcRenderer.invoke('sync:regenCode'),
+  syncTomb: (key) => ipcRenderer.invoke('sync:tomb', key),
+  syncRevoke: () => ipcRenderer.invoke('sync:revoke'),
+  onSyncEvent: (cb) => ipcRenderer.on('sync:event', (_e, d) => cb(d)),
+
+  // 本地多账号
+  accountsList: () => ipcRenderer.invoke('accounts:list'),
+  accountsSwitch: (id) => ipcRenderer.invoke('accounts:switch', id),
+  accountsCreate: (name) => ipcRenderer.invoke('accounts:create', name),
+  accountsDelete: (id) => ipcRenderer.invoke('accounts:delete', id),
+  onAccountChanged: (cb) => ipcRenderer.on('account:changed', () => cb())
 });

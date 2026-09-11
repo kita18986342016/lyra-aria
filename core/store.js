@@ -1,12 +1,21 @@
 // 轻量 JSON 持久化存储（曲库索引/歌单/收藏/历史）
 // v2：目录自建、损坏回退 .bak、保存失败容错
-// v5：数据目录可配置（普适化）——启动时由 main.js 注入 app.getPath('userData')，
-//     每台机器/每个系统用户各自独立（歌单/歌曲/下载完全私有）；旧版本（v1.2.8 以前写死
-//     D:\MusicPlayerData）由 main.js 的 migrateLegacyData() 一次性迁移到新位置
+// v5：数据目录可配置（普适化）——启动时由 main.js 注入 app.getPath('userData')
+// v6：本地多账号——账号级文件（歌单/收藏/历史/凭据/同步）写入 accounts/<id>/ 子目录；
+//     设备级文件（accounts-registry.json / current-account.json / library / config / covers）留在根目录。
 const fs = require('fs');
 const path = require('path');
 
 let DATA_DIR = null; // 未设置时 load/save 直接返回 fallback/数据（极端兜底）
+let ACCOUNT_ID = null; // 当前本地账号 id；设置后账号级文件重定向到 accounts/<id>/
+const ACCOUNT_FILES = new Set([
+  'online-playlists.json', 'favorites.json', 'history.json', 'playlists.json', 'pl-order.json',
+  'local-account.json', 'accounts.json', 'sync.json', 'sync-tomb.json', 'sync-devices.json',
+  'bili-credentials.json', 'bili-credentials.backup.json'
+]);
+function setAccount(id) { ACCOUNT_ID = id || null; }
+function getAccount() { return ACCOUNT_ID; }
+function resolve(name) { return (ACCOUNT_ID && ACCOUNT_FILES.has(name)) ? ('accounts/' + ACCOUNT_ID + '/' + name) : name; }
 
 function ensureDir() {
   if (!DATA_DIR) return;
@@ -26,11 +35,10 @@ function getDataDir() {
 
 function load(name, fallback) {
   if (!DATA_DIR) return fallback;
-  const file = path.join(DATA_DIR, name);
+  const file = path.join(DATA_DIR, resolve(name));
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {
-    // 主文件损坏时回退 .bak
     try {
       return JSON.parse(fs.readFileSync(file + '.bak', 'utf8'));
     } catch {
@@ -41,10 +49,9 @@ function load(name, fallback) {
 
 function save(name, data) {
   if (!DATA_DIR) return data;
-  ensureDir();
-  const file = path.join(DATA_DIR, name);
+  const file = path.join(DATA_DIR, resolve(name));
   try {
-    // 备份前校验主文件可解析：损坏的主文件不再覆盖好备份（否则双份丢失）
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     if (fs.existsSync(file)) {
       let good = false;
       try { JSON.parse(fs.readFileSync(file, 'utf8')); good = true; } catch { /* 坏档 */ }
@@ -59,4 +66,4 @@ function save(name, data) {
   return data;
 }
 
-module.exports = { load, save, getDataDir, setDataDir, ensureDir };
+module.exports = { load, save, getDataDir, setDataDir, ensureDir, setAccount, getAccount };

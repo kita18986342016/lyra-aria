@@ -10,7 +10,8 @@
     get lastLyricIdx() { return lastLyricIdx; },
     get rafId() { return rafId; },
     get qualityForSong() { return qualityForSong; },
-    get coverCache() { return coverCache; }
+    get coverCache() { return coverCache; },
+    startSong, playList, // 自动化验证直调入口
   };
 
   const state = {
@@ -162,7 +163,7 @@
   // ---------- 外观（主题/强调色/背景/进度条样式）----------
   // 在线歌曲音质 level 映射（item 18，三档：standard / high / lossless）
   const LEVEL_MAP = {
-    netease: { standard: 'standard', high: 'higher', lossless: 'lossless' },
+    netease: { standard: 'standard', high: 'exhigh', lossless: 'lossless' }, // exhigh=320k；higher 只有 192k
     kugou: { standard: '128', high: '320', lossless: 'lossless' }
   };
   // 兼容旧值：'higher' → 'high'（v1.3.6 之前只有二档）
@@ -1298,6 +1299,8 @@
     recCache = { at: Date.now(), data };
     if (window.__mp) window.__mp.recCache = recCache; // 调试/探针可见
     renderRecSections(data.data || {});
+    const gl = $('#guessList');
+    if (gl && !gl.children.length) generateGuess();
   }
   // 刷新推荐（登录/登出后调用：不重建登录卡，只重拉各分区）
   function refreshRecommend(force) {
@@ -1305,6 +1308,116 @@
     loadRecommend(force || false);
   }
 
+  // —— 播放失败换源兜底：本源解析不了 → 其他源找同歌（干净标题+歌手匹配），找到换源续播 ——
+  function cleanTitleLoose(t) {
+    let x = String(t || '');
+    x = x.replace(/[\(（\[【].*?[\)）\]】]/g, ' ');
+    for (const w of ['变速', '加速', '减速', 'slowed', 'sped up', 'pitch', 'remix', 'cover', '翻唱', '伴奏', '铃声', '现场', 'live版', 'dj版', '纯音乐', '串烧', '慢摇', '钢琴版', '吉他版', '变奏']) x = x.split(w).join(' ');
+    return x.replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+  async function findAltSource(song) {
+    const bare = cleanTitleLoose(song.title);
+    if (!bare) return null;
+    const artists = String(song.artist || '').split(/[、,/]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+    const wFirst = (String(song.artist || '').split(/[、,/]/)[0] || '').trim().toLowerCase().replace(/[.。\s]+$/, '');
+    const normSoft = (x) => String(x || '').toLowerCase().replace(/[\s（）()\[\]]+/g, '');
+    const albumEq = (a, b) => { const x = normSoft(a), y = normSoft(b); return !!x && !!y && (x === y || (x.includes(y) || y.includes(x)) && Math.min(x.length, y.length) >= 2); };
+    let best = null, bestScore = -1, bestSrc = '';
+    for (const src of ['kugou', 'netease', 'qq']) {
+      if (src === song.source) continue;
+      try {
+        let items = null;
+        if (src === 'qq') {
+          const r = await window.api.qqSearch(bare, 10).catch(() => null);
+          items = r && r.ok ? r.data : null;
+        } else {
+          const r = await window.api.leizSearch(src, bare, 10).catch(() => null);
+          items = r && r.ok ? r.data : null;
+        }
+        if (!Array.isArray(items)) continue;
+        for (const it of items) {
+          if (!it) continue;
+          const t = String(it.name || it.title || '').toLowerCase();
+          const ar = String(it.artists || it.artist || '').toLowerCase();
+          if (!t || /变速|加速|减速|slowed|sped|pitch|remix|dj版|\bdj\b|cover|翻唱|伴奏|铃声|现场|live版|纯音乐|串烧|治愈版|伤感版|女声版|男生版/i.test(t + ' ' + ar)) continue;
+          const tc = cleanTitleLoose(t);
+          let sc = 0;
+          if (tc === bare) sc += 4;
+          else if ((tc.includes(bare) || bare.includes(tc)) && Math.min(tc.length, bare.length) >= 2) sc += 2;
+          else continue;
+          const artistOk = !artists.length || artists.some((a) => a && ar.includes(a));
+          if (!artistOk) continue;
+          if (song.album && it.album && albumEq(song.album, it.album)) sc += 3;
+          const cFirst = (String(it.artists || it.artist || '').split(/[、,/]/)[0] || '').trim().toLowerCase().replace(/[.。\s]+$/, '');
+          if (wFirst && cFirst === wFirst) sc += 2;
+          if (sc > bestScore) { bestScore = sc; best = it; bestSrc = src; }
+        }
+      } catch { /* 单源失败继续 */ }
+    }
+    // 兜底场景宁缺毋滥放宽到 4（解析失败时换到能播的同名歌优先于放弃）；.album 兜底字段可能缺失
+    if (best && bestScore >= 4) return buildOnlineSong(bestSrc, best, store.get('mp_online_quality', 'lossless'));
+    return null;
+  }
+  // —— 猜你喜欢：按常听歌手生成（熟歌为主 + 尝新掺新），整批听完自动换新一批 ——
+  let guessSongs = [];
+  function guessRatioGet() {
+    const n = Number(store.get('mp_guess_ratio', '0.3'));
+    return Number.isFinite(n) ? Math.min(0.5, Math.max(0, n)) : 0.3;
+  }
+  function buildSeedArtists() {
+    const known = new Map();
+    const addSong = (x) => { if (x && x.id && x.artist) known.set(x.id, x); };
+    (state.favorites || []).forEach(addSong);
+    (state.playlists || []).forEach((pl) => (pl.songs || []).forEach(addSong));
+    (state.onlinePlaylists || []).forEach((pl) => (pl.songs || []).forEach(addSong));
+    (state.queue || []).forEach(addSong);
+    const freq = new Map();
+    (state.history || []).forEach((h) => {
+      const sg = known.get(h.id);
+      if (!sg) return;
+      String(sg.artist).split(/[、,/]/).forEach((ar) => {
+        const n = ar.trim();
+        if (n && n.length <= 30) freq.set(n, (freq.get(n) || 0) + 1);
+      });
+    });
+    return [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([name, weight]) => ({ name, weight }));
+  }
+  async function generateGuess(autoplay) {
+    const list = $('#guessList');
+    if (!list) return;
+    const btn = $('#guessBtn');
+    list.innerHTML = '<div class="rec-hint">正在按你的常听歌手生成…</div>';
+    if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+    let r = null;
+    try { r = await window.api.recGuess(buildSeedArtists(), guessRatioGet()); } catch { r = null; }
+    if (btn) { btn.disabled = false; btn.textContent = '换一批'; }
+    if (!r || !r.ok || !r.songs || !r.songs.length) {
+      list.innerHTML = '<div class="rec-hint">生成失败：' + ((r && r.reason) || '常听数据不足或网络异常') + '</div>';
+      return;
+    }
+    renderGuess(r.songs, autoplay);
+  }
+  function renderGuess(songs, autoplay) {
+    const list = $('#guessList');
+    if (!list) return;
+    guessSongs = songs;
+    state.guessBatch = songs;
+    list.innerHTML = '';
+    songs.forEach((sg, i) => {
+      const row = el('div', 'guess-row');
+      row.innerHTML = '<span class="g-idx">' + (i + 1) + '</span><span class="g-main"><span class="g-title"></span><span class="g-artist"></span></span><span class="g-dur">' + fmtTime(sg.duration) + '</span>';
+      row.querySelector('.g-title').textContent = sg.title || '未知';
+      row.querySelector('.g-artist').textContent = sg.artist || '';
+      row.title = (sg.title || '') + ' - ' + (sg.artist || '');
+      row.addEventListener('dblclick', () => {
+        playList(guessSongs, i, 0, true, true, true);
+        state.queueSource = 'guess';
+        toast('猜你喜欢 ' + guessSongs.length + ' 首：整批听完自动换新一批');
+      });
+      list.appendChild(row);
+    });
+    if (autoplay && songs.length) { playList(songs, 0, 0, true, true, true); state.queueSource = 'guess'; }
+  }
   // 账号状态同步：设置-账号管理区 + 顶栏账号按钮（推荐页登录卡已移除，登录入口 = 顶栏菜单 / 设置）
   function updateRecAccountBar() {
     window.api.accStatus().then((st) => {
@@ -1735,7 +1848,7 @@
     if (!sel.length) return;
     const go = $('#accImportGo');
     go.disabled = true;
-    let done = 0, failed = 0, totalSongs = 0, lastPl = null;
+    let done = 0, failed = 0, totalSongs = 0, lastPl = null, accAdapted = 0, accDropped = 0;
     for (const it of sel) {
       go.textContent = `导入中 ${done + failed + 1}/${sel.length}…`;
       let songs = [], name = it.name || '在线歌单', cover = '', desc = '';
@@ -1750,11 +1863,13 @@
           }
         }
       } else {
-        // 网易云/酷狗：acc:playlist 已返回映射好的歌曲（ref/title/artist/album/picUrl/duration）
+        // 网易云/酷狗：acc:playlist 已返回映射好的歌曲（含非原版自动换原版 r.adaptedReplaced；网易 r.total=原单数）
         const r = await window.api.accPlaylist(accImportPlat, it.ref).catch(() => null);
         if (r && r.ok && Array.isArray(r.songs)) {
           if (accImportPlat !== 'kugou') name = r.name || name; // 酷狗分支的 r.name 是硬编码兜底名，保留列表真实名
           desc = r.desc || '';
+          accAdapted += r.adaptedReplaced || 0;
+          if (r.total && r.total > r.songs.length) accDropped += r.total - r.songs.length;
           for (const t of r.songs) {
             if (!t || !t.ref) continue;
             songs.push(Object.assign({}, t, { id: 'online:' + accImportPlat + ':' + t.ref, online: true, source: accImportPlat, ref: String(t.ref), level: t.level || qualityToLevel(accImportPlat, store.get('mp_online_quality', 'lossless')) }));
@@ -1772,7 +1887,7 @@
     go.disabled = false;
     ov.classList.add('hidden');
     if (lastPl) setView('opl:' + lastPl.id);
-    toast(`已导入 ${done} 张歌单（共 ${totalSongs} 首）` + (failed ? `，${failed} 张失败或为空` : ''));
+    toast(`已导入 ${done} 张歌单（共 ${totalSongs} 首）` + (accAdapted ? `，${accAdapted} 首已自动换为原版` : '') + (accDropped ? `；本源缺 ${accDropped} 首无版权歌曲` : '') + (failed ? `，${failed} 张失败或为空` : ''));
   }
   // 手机验证码登录（网易云/酷狗按平台分发）
   let capTimer = null;
@@ -2726,6 +2841,12 @@
       toast('歌单为空或解析失败');
       return;
     }
+    // 导入自动适配最佳：非原版标题跨源换原版（bilibili/qq 除外——qq 主进程自带换源）
+    let adaptedReplaced = 0;
+    if (source === 'netease' || source === 'kugou') {
+      const ad = await window.api.importAdapt(songs).catch(() => null);
+      if (ad && Array.isArray(ad.songs)) { songs.length = 0; songs.push(...ad.songs); adaptedReplaced = ad.replaced || 0; }
+    }
     // item 16：按 id/url 导入 → 名 = 原名（缺省「在线歌单」）
     const pl = {
       id: (source === 'netease' ? 'n' : source === 'kugou' ? 'k' : source === 'bilibili' ? 'b' : 'q') + ':' + (source === 'netease' ? ref : source === 'kugou' ? (ref.match(/gcid_(\w+)/) || [null, ref])[1] : ref),
@@ -2736,7 +2857,8 @@
     state.onlinePlaylists.unshift(pl); // 未收藏 → 仅会话内，重启清除；点星收藏后才落盘
     closeOplImport();
     const note = (source === 'qq' && (r.replaced || r.failed)) ? `（${r.replaced || 0} 首已换为其他音源版本${r.failed ? `，${r.failed} 首未找到可用版本已跳过` : ''}）` : '';
-    toast(`歌单导入成功：${pl.name}（${songs.length} 首）${note}`);
+    const anote = adaptedReplaced ? `，${adaptedReplaced} 首已自动换为原版` : '';
+    toast(`歌单导入成功：${pl.name}（${songs.length} 首）${anote}${note}`);
     setView('opl:' + pl.id); // setView 会绑定一键下载全部按钮
   }
 
@@ -3286,11 +3408,11 @@
           else r = { ok: false, reason: (rb && rb.reason) || '解析失败' };
           return _playResolved(r);
         }
-        r = await window.api.leizResolve(song.source, song.ref, song.level || 'lossless').catch(() => null);
+        r = await window.api.leizResolve(song.source, song.ref, qualityToLevel(song.source, store.get('mp_online_quality', 'lossless'))).catch(() => null); // 按当前音质设置请求（旧 song.level 只是导入时标签）
         return _playResolved(r);
       })();
       return;
-      function _playResolved(r) {
+      async function _playResolved(r) {
         if (state.playingId !== song.id) return;
         if (r && r.ok && r.data && r.data.url) {
           // 音质诚实：按实际解析结果更新歌曲音质（免费歌 flac=无损 / 320=高品 / 付费兜底 128=标准），列表与底栏同步
@@ -3323,7 +3445,21 @@
           }
         } else {
           toast(`在线歌曲解析失败：${(r && r.reason) || '网络异常'}`);
-          if (autoPlay) state.errStreak++;
+          if (autoPlay && song.online) {
+            // 换源兜底：本源没有这首歌（如网易无版权下架）→ 其他源找同歌换源续播；都没有 → 跳下一首
+            const alt = await findAltSource(song).catch(() => null);
+            if (state.playingId !== song.id) return; // 用户已切歌，放弃
+            if (alt && alt.ref) {
+              Object.assign(song, alt, { id: alt.id });
+              toast(`「${song.title}」已自动换源`);
+              renderList();
+              startSong(song, seekTo, autoPlay, true);
+              return;
+            }
+            state.errStreak++;
+            if (state.errStreak >= 6 || state.errStreak >= Math.max(1, state.queue.length)) { state.errStreak = 0; toast('连续播放失败，已停止'); }
+            else playNext();
+          }
         }
       }
     }
@@ -3539,6 +3675,16 @@
       }
       if (n === undefined) n = state.queueIndex >= 0 ? state.queueIndex : 0; // 极端兜底
       playList(state.queue, n, 0, true, false, true);
+      return;
+    }
+    if (state.queueIndex >= state.queue.length - 1 && state.guessBatch && state.queue.length === state.guessBatch.length && state.queue[0] && state.guessBatch[0].id === state.queue[0].id) {
+      // 猜你喜欢整批听完 → 自动换新一批接着播（生成失败则循环本批）
+      (async () => {
+        let r = null;
+        try { r = await window.api.recGuess(buildSeedArtists(), guessRatioGet()); } catch { r = null; }
+        if (r && r.ok && r.songs && r.songs.length) { renderGuess(r.songs, true); toast('猜你喜欢已换新一批'); }
+        else playList(state.queue, 0, 0, true, false, true);
+      })();
       return;
     }
     const next = (state.queueIndex + 1) % state.queue.length;
@@ -4683,12 +4829,14 @@
     if (kind === 'opl') {
       items.push({ sep: true });
       items.push({ label: pl.fav ? '取消收藏' : '收藏歌单', fn: () => {
+        if (pl.fav) { try { window.api.syncTomb('pl:' + pl.id); } catch (e) {} } // 取消收藏=同步删除
         pl.fav = !pl.fav;
         saveOpls();
         renderNav();
       } });
       items.push({ sep: true });
       items.push({ label: '移除歌单', fn: () => {
+        try { window.api.syncTomb('pl:' + pl.id); } catch (e) {} // 移除=同步删除
         state.onlinePlaylists = state.onlinePlaylists.filter((x) => x.id !== pl.id);
         saveOpls();
         renderNav();
@@ -5566,6 +5714,7 @@
       stSideBtns.forEach((b) => b.classList.toggle('active', b.dataset.sec === sec));
       stSections.forEach((s) => s.classList.toggle('active', s.dataset.sec === sec));
       if (sec === 'library') renderStDirList();
+      if (sec === 'account') { renderSyncSection(); renderAccMgr(); }
       try { localStorage.setItem('mp_set_sec', sec); } catch { /* 忽略 */ }
     };
     const toggleSettings = (show) => {
@@ -5589,6 +5738,70 @@
     stSideBtns.forEach((b) => b.addEventListener('click', () => showSettingsSection(b.dataset.sec)));
     // 供外层（bindRecommendEvents 的账号菜单等，作用域不同访问不到本闭包）打开指定设置分区
     window.__openSettingsSection = (sec) => { toggleSettings(true); showSettingsSection(sec); };
+    // ===== 局域网同步 UI =====
+    async function renderSyncSection() {
+      try {
+        const info = await window.api.syncInfo();
+        const en = $('#syncEnable'), url = $('#syncUrl'), code = $('#syncCode');
+        if (en) en.checked = !!(info && info.running);
+        if (url) url.textContent = (info && info.running && info.url) ? info.url : '未开启';
+        if (code) code.textContent = (info && info.code) ? info.code : '—';
+        const dv = $('#syncDevices'); if (dv) dv.textContent = (info && info.devices && info.devices.length) ? info.devices.join('、') : '无';
+      } catch (e) { /* 忽略 */ }
+    }
+    if ($('#syncEnable')) $('#syncEnable').addEventListener('change', async (e) => {
+      const st = $('#syncStatus'); if (st) st.textContent = '处理中…';
+      let r = null; try { r = await window.api.syncSetEnabled(e.target.checked); } catch (err) {}
+      if (st) st.textContent = (r && r.ok) ? (e.target.checked ? '已开启，请在手机填入下方地址与配对码' : '已关闭') : '操作失败';
+      renderSyncSection();
+    });
+    if ($('#syncRegen')) $('#syncRegen').addEventListener('click', async () => { try { await window.api.syncRegenCode(); } catch (e) {} renderSyncSection(); });
+    if ($('#syncRevoke')) $('#syncRevoke').addEventListener('click', async () => { try { await window.api.syncRevoke(); toast('已清除全部配对设备，手机需重新配对/允许'); } catch (e) {} renderSyncSection(); });
+    if (window.api.onSyncEvent) window.api.onSyncEvent(async (d) => {
+      if (!d || d.type !== 'applied') return;
+      await reloadAfterSync();
+      const st = $('#syncStatus'); if (st) st.textContent = '已同步手机数据 ✓';
+    });
+    async function reloadAfterSync() {
+      try {
+        state.playlists = await window.api.getPlaylists();
+        state.favorites = await window.api.getFavorites();
+        state.history = await window.api.getHistory();
+        state.onlinePlaylists = (await window.api.getOpls().catch(() => [])).filter((p) => p && (p.fav || p.downloaded));
+        renderNav();
+        if (typeof renderList === 'function') renderList();
+        if (typeof loadLocalAccUI === 'function') loadLocalAccUI();
+        if (typeof updateRecAccountBar === 'function') updateRecAccountBar();
+      } catch (e) { /* 忽略 */ }
+    }
+    // ===== 本地多账号管理 =====
+    async function renderAccMgr() {
+      const box = $('#accMgrList'); if (!box) return;
+      let res = null; try { res = await window.api.accountsList(); } catch (e) { return; }
+      if (!res || !res.ok) return;
+      box.innerHTML = '';
+      (res.accounts || []).forEach((a) => {
+        const row = document.createElement('div'); row.className = 'acc-mgr-item' + (a.id === res.current ? ' cur' : '');
+        const nm = document.createElement('span'); nm.className = 'acc-mgr-nm'; nm.textContent = a.name || '未命名账号';
+        row.appendChild(nm);
+        if (a.id === res.current) { const ck = document.createElement('span'); ck.className = 'acc-mgr-ck'; ck.textContent = '✓'; row.appendChild(ck); }
+        else {
+          const del = document.createElement('button'); del.className = 'acc-mgr-del'; del.textContent = '删除'; let armed = false;
+          del.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if ((res.accounts || []).length <= 1) return;
+            if (!armed) { armed = true; del.textContent = '确认删除?'; del.classList.add('warn'); setTimeout(() => { if (armed) { armed = false; del.textContent = '删除'; del.classList.remove('warn'); } }, 3000); return; }
+            try { await window.api.accountsDelete(a.id); } catch (err) {}
+            renderAccMgr();
+          });
+          row.appendChild(del);
+        }
+        row.addEventListener('click', async () => { if (a.id === res.current) return; try { await window.api.accountsSwitch(a.id); } catch (e) {} });
+        box.appendChild(row);
+      });
+    }
+    if ($('#accMgrCreate')) $('#accMgrCreate').addEventListener('click', async () => { try { await window.api.accountsCreate(''); } catch (e) {} renderAccMgr(); });
+    if (window.api.onAccountChanged) window.api.onAccountChanged(async () => { await reloadAfterSync(); renderAccMgr(); });
     // v1.4 更新日志独立弹窗：设置-软件更新 → 「历版本公告」按钮开窗（渲染延迟到首次打开）
     const updLogOverlay = $('#updLogOverlay');
     const openUpdLog = () => {
@@ -6016,7 +6229,7 @@
           renderList();
         }
         state.errStreak++;
-        if (state.errStreak >= 3 || state.errStreak >= Math.max(1, state.queue.length)) {
+        if (state.errStreak >= 6 || state.errStreak >= Math.max(1, state.queue.length)) {
           state.errStreak = 0;
           toast('连续播放失败，已停止');
           return;
@@ -6306,9 +6519,9 @@
       }
     }
     hkRenderList();
-    $('#stHkGlobal').addEventListener('change', async (e) => {
-      const r = await window.api.setHotkey({ enabled: e.target.checked });
-      if (r && r.ok) document.querySelectorAll('#stHkList .hk-cap[data-layer=global]').forEach((i) => { i.disabled = !e.target.checked; });
+    $('#stHkGlobal').addEventListener('change', async (e) => {
+      const r = await window.api.setHotkey({ enabled: e.target.checked });
+      if (r && r.ok) document.querySelectorAll('#stHkList .hk-cap[data-layer=global]').forEach((i) => { i.disabled = !e.target.checked; });
     });
 
     // —— 设置 → 账号管理 → B站（登录走统一登录弹窗；会员档随登录态自动生效）——
@@ -6347,6 +6560,16 @@
       } else if (st.msg && tip && loginPlat === 'bilibili' && st.msg.length < 30) {
         tip.textContent = st.msg; // 长消息（含扫码 URL 的原始报文）不顶掉界面提示
       }
+    });
+    // 猜你喜欢：生成/换一批 + 设置-常规 尝新比例
+    $('#guessBtn') && ($('#guessBtn').onclick = () => generateGuess(false));
+    document.querySelectorAll('#stGuessRatio .st-mode').forEach((b) => {
+      b.classList.toggle('active', Number(b.dataset.r) === guessRatioGet());
+      b.addEventListener('click', () => {
+        store.set('mp_guess_ratio', b.dataset.r);
+        document.querySelectorAll('#stGuessRatio .st-mode').forEach((x) => x.classList.toggle('active', x === b));
+        toast('猜你喜欢尝新比例：' + Math.round(Number(b.dataset.r) * 100) + '%');
+      });
     });
     $('#accBiliLogout').addEventListener('click', async () => {
       const r = await window.api.biliLogout().catch(() => null);
@@ -6997,12 +7220,26 @@
         toast(isFav(s.id) ? '已收藏' : '已取消收藏');
       }
     });
+    // 底栏倍速左侧收藏按钮：与封面角标同一逻辑
+    const btnFavBar = $('#btnFavBar');
+    if (btnFavBar) btnFavBar.addEventListener('click', async () => {
+      const s = currentSong();
+      if (!s) { toast('没有正在播放的歌曲'); return; }
+      if (s.online || (typeof s.id === 'string' && state.songs.find((x) => x.id === s.id))) {
+        state.favorites = await window.api.toggleFavorite(s.id, s.online ? s : undefined);
+        updatePlayerMeta();
+        renderList();
+        toast(isFav(s.id) ? '已收藏' : '已取消收藏');
+      }
+    });
   }
   // 更新底栏 收藏高亮/来源/音质
   function updatePlayerMeta() {
     const s = currentSong();
     const pf = $('#pFav');
     if (pf) pf.classList.toggle('on', !!(s && isFav(s.id)));
+    const fb = $('#btnFavBar');
+    if (fb) fb.classList.toggle('on', !!(s && isFav(s.id)));
     const srcSpan = $('#pSource');
     if (srcSpan) {
       if (s && (s.online || (typeof s.id === 'string' && state.songs.find((x) => x.id === s.id)))) {
