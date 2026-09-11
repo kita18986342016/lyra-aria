@@ -372,7 +372,7 @@ html[data-theme="dark"] #searchClear:hover { background: var(--panel-2); color: 
 #filterWrap { position: relative; flex: none; }
 #filterBtn {
   flex: none; width: 34px; height: 34px;
-  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  border: none; border-radius: 10px; background: transparent;
   color: var(--muted); cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
   transition: background .12s, color .12s;
@@ -977,7 +977,7 @@ html[data-skin] .fav-btn { opacity: .62; color: var(--text); } /* 皮肤下未�
 #pControls { display: flex; gap: 8px; }
 #pControls button, #pRight button {
   width: 38px; height: 38px; border: none; border-radius: 50%;
-  background: var(--hover); cursor: pointer; color: var(--text);
+  background: transparent; cursor: pointer; color: var(--text);
   transition: background .12s, color .12s, transform .12s, box-shadow .12s;
   display: inline-flex; align-items: center; justify-content: center;
 }
@@ -1165,7 +1165,7 @@ body.detail-open #nav { display: none; }
 /* ========== 播放条：倍速 / 睡眠定时（设置面板控制，右下角仅显示剩余） ========== */
 #btnRate {
   width: 34px; height: 34px; min-width: 0; padding: 0;
-  border-radius: 50%; border: 1px solid var(--line); background: var(--hover);
+  border-radius: 50%; border: 1px solid transparent; background: transparent;
   font-size: 11.5px; font-weight: 700; color: var(--accent); line-height: 1;
 }
 #btnRate:hover { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
@@ -1520,11 +1520,11 @@ html[data-theme="dark"] #diagOutput:hover { border-color: var(--accent); }
 .tag-btn.primary:hover { filter: brightness(1.06); }
 /* 设置面板操作按钮 */
 #settingsPanel .st-action {
-  border: 1px solid var(--line); background: var(--panel); color: var(--accent);
+  border: none; background: var(--accent-soft); color: var(--accent);
   font-size: 12.5px; font-weight: 600; padding: 6px 14px; border-radius: 9px; cursor: pointer;
   transition: all .15s;
 }
-#settingsPanel .st-action:hover { background: var(--accent-soft); border-color: var(--accent); }
+#settingsPanel .st-action:hover { filter: brightness(1.06); }
 #settingsPanel .st-action.primary { background: linear-gradient(135deg, #4a7dff, #6a5cff); border-color: transparent; color: #fff; }
 #settingsPanel .st-action.primary:hover { filter: brightness(1.07); }
 #settingsPanel .st-action:disabled { opacity: .55; cursor: default; }
