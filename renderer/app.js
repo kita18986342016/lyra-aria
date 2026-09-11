@@ -5746,7 +5746,26 @@
         if (en) en.checked = !!(info && info.running);
         if (url) url.textContent = (info && info.running && info.url) ? info.url : '未开启';
         if (code) code.textContent = (info && info.code) ? info.code : '—';
-        const dv = $('#syncDevices'); if (dv) dv.textContent = (info && info.devices && info.devices.length) ? info.devices.join('、') : '无';
+        const dv = $('#syncDevices');
+        if (dv) {
+          dv.innerHTML = '';
+          const list = (info && info.devices) || [];
+          if (!list.length) { dv.textContent = '无'; } else {
+            list.forEach((d) => {
+              const item = document.createElement('span');
+              item.style.cssText = 'display:inline-flex;align-items:center;gap:6px;margin-right:10px';
+              const nm = document.createElement('span'); nm.textContent = d.label;
+              const rm = document.createElement('button'); rm.className = 'st-action'; rm.textContent = '移除'; rm.title = '移除此设备（其需重新配对）';
+              rm.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const rr = await window.api.syncRevokeOne(d.id).catch(() => null);
+                if (rr && rr.ok) { toast('已移除设备「' + d.label + '」'); renderSyncSection(); } else toast((rr && rr.reason) || '移除失败');
+              });
+              item.append(nm, rm);
+              dv.appendChild(item);
+            });
+          }
+        }
       } catch (e) { /* 忽略 */ }
     }
     if ($('#syncEnable')) $('#syncEnable').addEventListener('change', async (e) => {
@@ -5757,6 +5776,7 @@
     });
     if ($('#syncRegen')) $('#syncRegen').addEventListener('click', async () => { try { await window.api.syncRegenCode(); } catch (e) {} renderSyncSection(); });
     if ($('#syncRevoke')) $('#syncRevoke').addEventListener('click', async () => { try { await window.api.syncRevoke(); toast('已清除全部配对设备，手机需重新配对/允许'); } catch (e) {} renderSyncSection(); });
+    const sfx = $('#syncFirewallFix'); if (sfx) sfx.addEventListener('click', async () => { sfx.disabled = true; sfx.textContent = '请在 UAC 弹窗点「是」…'; const r = await window.api.syncRepairFirewall().catch(() => null); sfx.disabled = false; sfx.textContent = '防火墙放行（手机连不上时点此）'; toast((r && r.ok) ? '防火墙已放行 8790/41230 端口' : ((r && r.reason) || '执行失败')); });
     if (window.api.onSyncEvent) window.api.onSyncEvent(async (d) => {
       if (!d || d.type !== 'applied') return;
       await reloadAfterSync();

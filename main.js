@@ -3306,7 +3306,20 @@ function main() {
     function syncStart() { if (!syncState.code) syncState.code = syncGenCode(); syncServer.start({ port: syncState.port, code: syncState.code, identity: syncState.identity, handlers: { onSync: syncOnServerIncoming, onRequest: syncOnServerRequest, verifyToken: syncVerifyToken, issueToken: syncIssueToken } }); syncState.enabled = true; syncSaveCfg(); }
     function syncStop() { syncServer.stop(); syncState.enabled = false; syncSaveCfg(); }
     if (syncState.enabled) syncStart();
-    ipcMain.handle('sync:info', (e) => { if (!isTrusted(e)) return { ok: false }; const ip = syncServer.lanIPv4(); const dv = syncDevices(); return { ok: true, running: syncServer.running(), ip, port: syncState.port, code: syncState.code, identity: syncState.identity, devices: Object.keys(dv).map((k) => dv[k].label || '设备'), url: ip ? ('http://' + ip + ':' + syncState.port) : '' }; });
+    ipcMain.handle('sync:info', (e) => { if (!isTrusted(e)) return { ok: false }; const ip = syncServer.lanIPv4(); const dv = syncDevices(); return { ok: true, running: syncServer.running(), ip, port: syncState.port, code: syncState.code, identity: syncState.identity, devices: Object.keys(dv).map((k) => ({ id: k.slice(0, 8), label: dv[k].label || '设备', lastSeen: dv[k].lastSeen || 0 })), url: ip ? ('http://' + ip + ':' + syncState.port) : '' }; });
+    ipcMain.handle('sync:revokeOne', (e, id8) => { if (!isTrusted(e) || typeof id8 !== 'string' || !id8) return { ok: false }; const d = syncDevices(); const tk = Object.keys(d).find((k) => k.startsWith(id8)); if (!tk) return { ok: false, reason: '设备不存在' }; delete d[tk]; syncSaveDevices(d); return { ok: true }; });
+    ipcMain.handle('sync:repairFirewall', async (e) => {
+      if (!isTrusted(e)) return { ok: false };
+      try {
+        const ps = 'New-NetFirewallRule -DisplayName LyraAria-Sync -Direction Inbound -Protocol TCP -LocalPort 8790 -Action Allow -Profile Any | Out-Null; New-NetFirewallRule -DisplayName LyraAria-Discover -Direction Inbound -Protocol UDP -LocalPort 41230 -Action Allow -Profile Any | Out-Null';
+        await new Promise((resolve) => { try { require('child_process').exec('powershell -NoProfile -Command "Start-Process powershell -Verb RunAs -ArgumentList \'-NoProfile,-Command,' + ps.replace(/'/g, '') + '\'"', { timeout: 120000 }, () => resolve()); } catch (e2) { resolve(); } });
+      } catch (e3) { /* 用户取消 UAC 等 */ }
+      // 验证：查询规则是否存在（提权成功才有）
+      let ok1 = false, ok2 = false;
+      try { ok1 = /LyraAria-Sync/.test(require('child_process').execSync('netsh advfirewall firewall show rule name=LyraAria-Sync', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); } catch { }
+      try { ok2 = /LyraAria-Discover/.test(require('child_process').execSync('netsh advfirewall firewall show rule name=LyraAria-Discover', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); } catch { }
+      return { ok: ok1 && ok2, reason: (ok1 && ok2) ? '' : 'UAC 未批准或执行失败，可手动以管理员运行 netsh 命令' };
+    });
     ipcMain.handle('sync:revoke', (e) => { if (!isTrusted(e)) return { ok: false }; syncSaveDevices({}); return { ok: true }; });
     ipcMain.handle('sync:setEnabled', (e, on) => { if (!isTrusted(e)) return { ok: false }; if (on) syncStart(); else syncStop(); return { ok: true, running: syncServer.running(), code: syncState.code }; });
     ipcMain.handle('sync:tomb', (e, key) => { if (!isTrusted(e) || typeof key !== 'string' || !key || key.length > 200) return { ok: false }; pcTombstone(key); return { ok: true }; });
@@ -3781,7 +3794,12 @@ function main() {
   // ---------- 自动更新（electron-updater，GitHub Release 源）----------
   // 更新公告表：版本号 → 更新内容列表（新版本首次启动展示；设置-软件更新页侧栏按历代版本浏览，须随发版同步维护）
   const CHANGELOG = {
-    '1.4.0': [
+    '1.4.1': [
+      '**设备管理**：已配对设备支持按台移除（不再只能清除全部）；同步弹窗、设备标签显示真实设备名（如 Xiaomi 14 / iPad）',
+      '**连接修复**：设置-局域网同步新增「防火墙放行」按钮——手机连不上/扫描不到电脑时一键放行端口（换网络后连不上的常见原因）',
+      '**酷狗歌单修复**：推荐歌单/收藏导入时歌手名错位（挤在歌曲名前、歌手栏为空）已修复',
+      '**同步弹窗文案**：明确数字为手机端待合并条目、合并不会覆盖电脑上更新的修改',
+    ],    '1.4.0': [
       '**重磅：手机电脑双端互通**——深空折韵安卓端正式发布！同一 WiFi 下，手机与电脑自动同步歌单、收藏、最近播放与账号登录态：首次配对后设备绑定，之后无需任何操作，听歌记录两端无缝衔接',
       '安卓端下载：github.com/kita18986342016/lyra-aria-mobile/releases（下载 APK 安装；开启同步入口：手机端设置 → 局域网同步，电脑端：设置-账号管理-局域网同步）',
       '**全新「猜你喜欢」**：推荐页按你常听的歌手生成 50 首混合队列，整批听完自动换新一批；尝新比例可调（默认 30%）',

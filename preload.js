@@ -180,6 +180,8 @@ contextBridge.exposeInMainWorld('api', {
   syncRegenCode: () => ipcRenderer.invoke('sync:regenCode'),
   syncTomb: (key) => ipcRenderer.invoke('sync:tomb', key),
   syncRevoke: () => ipcRenderer.invoke('sync:revoke'),
+  syncRevokeOne: (id) => ipcRenderer.invoke('sync:revokeOne', id),
+  syncRepairFirewall: () => ipcRenderer.invoke('sync:repairFirewall'),
   onSyncEvent: (cb) => ipcRenderer.on('sync:event', (_e, d) => cb(d)),
 
   // 本地多账号
