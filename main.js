@@ -3286,7 +3286,10 @@ function main() {
     async function syncOnServerRequest(incomingBundle, meta) {
       if (!incomingBundle || typeof incomingBundle !== 'object') return { ok: false, status: 400, reason: '无效的同步包' };
       if (syncApproving) return { ok: false, status: 429, reason: '电脑端正有待确认的同步请求' };
-      const dev = ({ mobile: '手机端', pc: '电脑端' })[incomingBundle.device] || '设备';
+      const devName = incomingBundle.device && incomingBundle.device !== 'mobile' && incomingBundle.device !== 'pc' ? String(incomingBundle.device).slice(0, 24) : '';
+      const pnick = incomingBundle.profile && incomingBundle.profile.nickname ? String(incomingBundle.profile.nickname).slice(0, 24) : '';
+      const typeDev = ({ mobile: '手机端', pc: '电脑端' })[incomingBundle.device] || '设备';
+      const dev = devName || pnick || typeDev;
       const c = { pls: (incomingBundle.onlinePlaylists || []).length, favs: (incomingBundle.favorites || []).length, recent: (incomingBundle.recent || []).length };
       const detail = `${dev}${meta && meta.ip ? '（' + meta.ip + '）' : ''} 收到来自手机端的同步请求，将合并以下数据（两端都新的为准，不会覆盖电脑上更新的修改）——歌单 ${c.pls} · 收藏 ${c.favs} · 最近 ${c.recent}`;
       syncApproving = true;
