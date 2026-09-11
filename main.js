@@ -3303,7 +3303,13 @@ function main() {
     function syncStart() { if (!syncState.code) syncState.code = syncGenCode(); syncServer.start({ port: syncState.port, code: syncState.code, identity: syncState.identity, handlers: { onSync: syncOnServerIncoming, onRequest: syncOnServerRequest, verifyToken: syncVerifyToken, issueToken: syncIssueToken } }); syncState.enabled = true; syncSaveCfg(); }
     function syncStop() { syncServer.stop(); syncState.enabled = false; syncSaveCfg(); }
     if (syncState.enabled) syncStart();
-    ipcMain.handle('sync:info', (e) => { if (!isTrusted(e)) return { ok: false }; const ip = syncServer.lanIPv4(); const dv = syncDevices(); return { ok: true, running: syncServer.running(), ip, port: syncState.port, code: syncState.code, identity: syncState.identity, devices: Object.keys(dv).map((k) => dv[k].label || '设备'), url: ip ? ('http://' + ip + ':' + syncState.port) : '' }; });
+    // sync:info 改为探测默认路由出口 IP（≤500ms）：虚拟网卡（Radmin/VMware）在前也不会把 26.x 展示给用户
+    ipcMain.handle('sync:info', async (e) => {
+      if (!isTrusted(e)) return { ok: false };
+      const dv = syncDevices();
+      const ip = await new Promise((res) => syncServer.bestIPv4('8.8.8.8', res));
+      return { ok: true, running: syncServer.running(), ip, port: syncState.port, code: syncState.code, identity: syncState.identity, devices: Object.keys(dv).map((k) => dv[k].label || '设备'), url: ip ? ('http://' + ip + ':' + syncState.port) : '' };
+    });
     ipcMain.handle('sync:revoke', (e) => { if (!isTrusted(e)) return { ok: false }; syncSaveDevices({}); return { ok: true }; });
     ipcMain.handle('sync:setEnabled', (e, on) => { if (!isTrusted(e)) return { ok: false }; if (on) syncStart(); else syncStop(); return { ok: true, running: syncServer.running(), code: syncState.code }; });
     ipcMain.handle('sync:tomb', (e, key) => { if (!isTrusted(e) || typeof key !== 'string' || !key || key.length > 200) return { ok: false }; pcTombstone(key); return { ok: true }; });

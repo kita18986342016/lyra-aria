@@ -11,6 +11,20 @@ let discSock = null;
 let srv = null;
 const cfg = { port: 8790, code: '', identity: '', handlers: null };
 
+// 首选网卡探测：UDP connect 只做路由查询不发包，connect 后 address() 即系统访问 target 时
+// 会用的本机出口 IP。直接取 os.networkInterfaces() 第一个，在装了 Radmin VPN/Hamachi/VMware
+// 等虚拟网卡的机器上会命中虚拟网段（如 Radmin 26.x），手机在真实 WiFi 上连不到 → 必须探测
+let primaryIP = '';
+function probeIP(target, cb) {
+  const s = dgram.createSocket('udp4');
+  let done = false;
+  const finish = (ip) => { if (done) return; done = true; try { s.close(); } catch (e) {} cb(ip || ''); };
+  try {
+    s.on('error', () => finish(''));
+    s.connect(target || '8.8.8.8', 53, () => { try { const a = s.address(); finish((a && a.address) || ''); } catch (e) { finish(''); } });
+    setTimeout(() => finish(''), 500);
+  } catch (e) { finish(''); }
+}
 function lanIPv4() {
   try {
     const ifs = os.networkInterfaces();
@@ -18,8 +32,18 @@ function lanIPv4() {
     for (const name of Object.keys(ifs)) for (const it of (ifs[name] || [])) {
       if ((it.family === 'IPv4' || it.family === 4) && !it.internal) out.push(it.address);
     }
-    return out[0] || '';
-  } catch { return ''; }
+    if (!out.length) return primaryIP || '';
+    // 枚举兜底排序：优先 RFC1918 私网段（10.x/192.168.x/172.16-31.x）；Radmin 26.x、Hamachi 25.x 等虚拟段排后
+    const score = (ip) => (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) ? 0 : 1);
+    out.sort((a, b) => score(a) - score(b));
+    return (primaryIP && out.indexOf(primaryIP) >= 0) ? primaryIP : out[0];
+  } catch { return primaryIP || ''; }
+}
+// 异步首选地址：先探测默认路由出口，失败退回枚举；target 传客户端 IP 可精确算出「到该客户端走哪块网卡」
+function bestIPv4(target, cb) {
+  probeIP(target || '8.8.8.8', (ip) => {
+    if (ip) { primaryIP = ip; cb(ip); } else cb(lanIPv4());
+  });
 }
 
 function readBody(req, cb) {
@@ -87,6 +111,7 @@ function start({ port = 8790, code = '', identity = '', handlers } = {}) {
   srv.on('error', () => { srv = null; });
   srv.listen(cfg.port, '0.0.0.0');
   startDiscovery();
+  bestIPv4('8.8.8.8', () => {}); // 预热首选网卡探测（UI 展示与发现应答兜底用）
   return true;
 }
 
@@ -95,11 +120,15 @@ function startDiscovery() {
     stopDiscovery();
     discSock = dgram.createSocket('udp4');
     discSock.on('message', (msg, rinfo) => {
-      try {
-        if (String(msg).indexOf('DSH_SYNC_PING') < 0) return;
-        const reply = Buffer.from(JSON.stringify({ name: '深空折韵', ip: lanIPv4(), port: cfg.port, identity: cfg.identity }));
-        discSock.send(reply, rinfo.port, rinfo.address);
-      } catch (e) { /* 忽略 */ }
+      if (String(msg).indexOf('DSH_SYNC_PING') < 0) return;
+      // 应答 IP 按「到该客户端的出口网卡」精确选择：WiFi 上的手机得到 WiFi IP，
+      // Radmin 网络里的设备得到 Radmin IP——多网卡机器两端都能扫到
+      bestIPv4(rinfo.address, (ip) => {
+        try {
+          const reply = Buffer.from(JSON.stringify({ name: '深空折韵', ip: ip || lanIPv4(), port: cfg.port, identity: cfg.identity }));
+          discSock.send(reply, rinfo.port, rinfo.address);
+        } catch (e) { /* 忽略 */ }
+      });
     });
     discSock.on('error', () => { discSock = null; });
     discSock.bind(DISC_PORT, '0.0.0.0');
@@ -110,4 +139,4 @@ function stopDiscovery() { try { if (discSock) discSock.close(); } catch (e) {} 
 function stop() { try { if (srv) srv.close(); } catch (e) {} srv = null; stopDiscovery(); }
 function running() { return !!srv; }
 
-module.exports = { start, stop, running, lanIPv4, DISC_PORT };
+module.exports = { start, stop, running, lanIPv4, bestIPv4, DISC_PORT };
