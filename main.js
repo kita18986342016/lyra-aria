@@ -561,7 +561,7 @@ function main() {
   // ===== 本地多账号：数据按 accounts/<id>/ 隔离；设置/外观(config)为设备级 =====
   const ACC_REG_FILE = () => path.join(dataRoot(), 'accounts-registry.json');
   const ACC_CUR_FILE = () => path.join(dataRoot(), 'current-account.json');
-  const ACC_SCOPED_FILES = ['online-playlists.json', 'favorites.json', 'history.json', 'playlists.json', 'pl-order.json', 'local-account.json', 'accounts.json', 'sync.json', 'sync-tomb.json', 'sync-devices.json', 'bili-credentials.json', 'bili-credentials.backup.json'];
+  const ACC_SCOPED_FILES = ['online-playlists.json', 'favorites.json', 'history.json', 'playlists.json', 'pl-order.json', 'local-account.json', 'accounts.json', 'sync.json', 'sync-tomb.json', 'sync-devices.json', 'recent-pls.json', 'bili-credentials.json', 'bili-credentials.backup.json'];
   function accReadReg() { try { return JSON.parse(fs.readFileSync(ACC_REG_FILE(), 'utf8')); } catch { return []; } }
   function accWriteReg(l) { try { fs.mkdirSync(path.dirname(ACC_REG_FILE()), { recursive: true }); fs.writeFileSync(ACC_REG_FILE(), JSON.stringify(l, null, 2)); } catch (e) {} }
   function accReadCur() { try { return JSON.parse(fs.readFileSync(ACC_CUR_FILE(), 'utf8')); } catch { return null; } }
@@ -1783,6 +1783,20 @@ function main() {
       return pls;
     });
 
+    // 最近听过歌单（推荐页横排；打开在线/本地歌单时记录，上限 10）
+    ipcMain.handle('recPls:get', (e) => {
+      if (!isTrusted(e)) return [];
+      return store.load('recent-pls.json', []);
+    });
+    ipcMain.handle('recPls:record', (e, item) => {
+      if (!isTrusted(e) || !item || typeof item.id !== 'string') return [];
+      let l = store.load('recent-pls.json', []) || [];
+      l = l.filter((x) => x && x.id !== item.id);
+      l.unshift({ id: item.id, name: String(item.name || '').slice(0, 60), source: String(item.source || ''), cover: String(item.cover || '').slice(0, 500), at: Date.now() });
+      l = l.slice(0, 10);
+      store.save('recent-pls.json', l);
+      return l;
+    });
     // 我的歌单显示顺序（长按拖拽排序）：['playlist:<id>' | 'opl:<id>', ...]；未列入的按自然顺序追加
     ipcMain.handle('plOrder:get', (e) => {
       if (!isTrusted(e)) return [];
@@ -3082,15 +3096,15 @@ function main() {
         const n = neteaseAcc.getState();
         let daily = { ok: false, songs: [] }, pls = { ok: false, playlists: [] };
         if (n.cookie && /MUSIC_U=/.test(n.cookie)) daily = await neteaseAcc.recommendSongs();
-        else daily = { ok: false, needLogin: true, songs: [] };
+        else daily = await neteaseAcc.guestDaily(); // 游客态：明文端点通用推荐
         pls = await neteaseAcc.personalizedPlaylists(30);
         out.netease = {
           loggedIn: !!(n.cookie && /MUSIC_U=/.test(n.cookie)),
           daily: daily.songs.map((s) => ({
             id: 'online:netease:' + s.id, online: true, source: 'netease', ref: s.id,
-            title: s.name, artist: s.artist, album: s.album, picUrl: s.picUrl, duration: Math.round((s.duration || 0) / 1000)
+            title: s.name, artist: s.artist, album: s.album, picUrl: s.picUrl, duration: Math.round((s.duration || 0) / 1000), reason: s.reason || ''
           })),
-          dailyOk: daily.ok, dailyNeedLogin: !!daily.needLogin,
+          dailyOk: daily.ok, dailyNeedLogin: !!daily.needLogin, dailyGuest: !(n.cookie && /MUSIC_U=/.test(n.cookie)),
           playlists: (pls.playlists || []).map((p) => ({
             id: 'online:netease:' + p.id, source: 'netease', ref: String(p.id), name: p.name,
             picUrl: p.picUrl, desc: p.copywriter, playCount: p.playCount, creator: p.creator
@@ -3795,10 +3809,13 @@ function main() {
   // 更新公告表：版本号 → 更新内容列表（新版本首次启动展示；设置-软件更新页侧栏按历代版本浏览，须随发版同步维护）
   const CHANGELOG = {
     '1.4.1': [
-      '**设备管理**：已配对设备支持按台移除（不再只能清除全部）；同步弹窗、设备标签显示真实设备名（如 Xiaomi 14 / iPad）',
-      '**连接修复**：设置-局域网同步新增「防火墙放行」按钮——手机连不上/扫描不到电脑时一键放行端口（换网络后连不上的常见原因）',
-      '**酷狗歌单修复**：推荐歌单/收藏导入时歌手名错位（挤在歌曲名前、歌手栏为空）已修复',
-      '**同步弹窗文案**：明确数字为手机端待合并条目、合并不会覆盖电脑上更新的修改',
+      '**手机电脑双端互通**——同一 WiFi 下，手机与电脑自动同步歌单、收藏、最近播放与账号登录态；首次配对后设备绑定，之后无感同步（设置-账号管理-局域网同步）',
+      '**游客也能用每日推荐**：无需登录即享网易云每日推荐 30+ 首（含推荐理由），登录自动升级个性化',
+      '**推荐页可定制**：每日推荐/推荐歌单/猜你喜欢等区块可在设置-外观自由开关',
+      '**猜你喜欢增强**：整批听完自动续播可开关；推荐页新增「最近听过」歌单横排',
+      '**设备管理**：已配对设备按台移除；同步弹窗显示真实设备名；手机连不上时「防火墙放行」一键修复',
+      '**修复**：酷狗推荐歌单歌手名错位；导入歌单封面丢失；酷狗音质解锁 320k/无损；网易云高品档修正为真 320k',
+      '**界面**：按钮去框化更简洁；播放条新增收藏按钮；B站主题色统一粉色'
     ],    '1.4.0': [
       '**重磅：手机电脑双端互通**——深空折韵安卓端正式发布！同一 WiFi 下，手机与电脑自动同步歌单、收藏、最近播放与账号登录态：首次配对后设备绑定，之后无需任何操作，听歌记录两端无缝衔接',
       '安卓端下载：github.com/kita18986342016/lyra-aria-mobile/releases（下载 APK 安装；开启同步入口：手机端设置 → 局域网同步，电脑端：设置-账号管理-局域网同步）',

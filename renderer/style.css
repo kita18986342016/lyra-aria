@@ -2681,3 +2681,10 @@ button:not(.active) .lgp-dot { opacity: .6; }
 .st-group-sub { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
 #btnFavBar.on { color: #ff4d6d; }
 #btnFavBar.on svg { fill: #ff4d6d; stroke: #ff4d6d; }
+/* 推荐页「最近听过」横排 */
+.rec-recent-row { display: flex; gap: 10px; overflow-x: auto; padding: 4px 2px 8px; }
+.rec-recent-chip { flex: none; width: 92px; cursor: pointer; }
+.rec-recent-chip img, .rec-recent-chip .rr-ph { width: 92px; height: 92px; border-radius: 10px; object-fit: cover; display: block; }
+.rec-recent-chip .rr-ph { background: var(--panel-2); color: var(--muted); display: flex; align-items: center; justify-content: center; font-size: 26px; }
+.rec-recent-chip .rr-name { display: block; margin-top: 6px; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-recent-chip:hover img { filter: brightness(1.08); }

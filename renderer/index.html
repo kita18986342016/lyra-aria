@@ -91,6 +91,8 @@
             <div class="st-row st-row-sw"><span class="st-label">开机自启</span><label class="st-switch"><input type="checkbox" id="stAutoLaunch"><span class="st-slider"></span></label></div>
             <div class="st-row"><span class="st-label">猜你喜欢·尝新比例</span><div class="st-modes" id="stGuessRatio"><button class="st-mode" data-r="0">关</button><button class="st-mode" data-r="0.1">10%</button><button class="st-mode" data-r="0.3">30%</button><button class="st-mode" data-r="0.5">50%</button></div></div>
             <div class="st-row st-sub"><span class="st-tip">「猜你喜欢」按常听歌手生成；尝新比例决定掺入未听过新歌的份额（选「关」则只推熟歌）</span></div>
+            <div class="st-row st-row-sw"><span class="st-label">自动续播</span><label class="st-switch"><input type="checkbox" id="stGuessAuto" checked><span class="st-slider"></span></label></div>
+            <div class="st-row st-sub"><span class="st-tip">整批听完自动换新一批继续播放；关闭则听完停止</span></div>
             <div class="st-row"><span class="st-label">关闭窗口时</span><div class="st-modes" id="stCloseModes"><button class="st-mode" data-close="tray">最小化到托盘</button><button class="st-mode" data-close="exit">退出程序</button></div></div>
             <div class="st-row"><span class="st-label">清除缓存</span><button id="stCacheClear" class="st-action">清除缓存…</button></div>
             <div class="st-row st-sub"><span class="st-tip">清除封面缩略图等临时缓存数据（不影响曲库与收藏）</span></div>
@@ -116,6 +118,9 @@
                 <button class="st-mode st-more-btn" id="stUiFontMore" title="更多字体…">⋯</button>
               </div>
             </div>
+            <div class="st-group">推荐页区块</div>
+            <div class="st-row"><span class="st-label">显示区块</span><div class="st-modes" id="stRecSections"><button class="st-mode" data-rcsec="daily">每日推荐</button><button class="st-mode" data-rcsec="recPls">推荐歌单</button><button class="st-mode" data-rcsec="guess">猜你喜欢</button></div></div>
+            <div class="st-row st-sub"><span class="st-tip">点击开关推荐页对应区块的显示（至少保留一个）</span></div>
             <div class="st-group">播放器</div>
             <div class="st-row"><span class="st-label">封面旋转</span><div class="st-modes" id="stCoverSpin"><button class="st-mode" data-spin="1">开启</button><button class="st-mode" data-spin="0">关闭</button></div></div>
             <div class="st-row"><span class="st-label">进度样式</span><div class="st-modes" id="stProgressStyle"><button class="st-mode" data-progress="A">滑块式</button><button class="st-mode" data-progress="B">上边界细条</button></div></div>
@@ -514,7 +519,7 @@
           <button id="recHeroPlay" class="rec-hero-play" title="播放每日推荐"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86a1 1 0 0 0-1.5.86z"/></svg></button>
           <div class="rec-hero-text">
             <h2 class="rec-hero-title">每日推荐</h2>
-            <p class="rec-hero-sub">网易云 · 酷狗 为你精选，登录后解锁个性化</p>
+            <p class="rec-hero-sub">网易云 · 酷狗 为你精选（游客可用，登录解锁个性化）</p>
           </div>
           <div class="rec-hero-btns">
             <button id="recHeroRefresh" class="rec-btn rec-btn-ghost" title="刷新推荐"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>刷新</button>

@@ -253,6 +253,20 @@ async function accountInfo() {
 
 // ---------- 推荐 ----------
 // 每日推荐歌曲（需登录）
+// 游客态每日推荐：明文公开端点，无需登录（返回通用推荐；登录态同端点自动个性化但走 weapi 链路）
+async function guestDaily() {
+  const r = await post('/api/v3/discovery/recommend/songs', {}, { cookie: 'NMTID=00O7' });
+  const j = r.json || {};
+  const list = (j.data && j.data.dailySongs) || [];
+  return {
+    ok: j.code === 200 && list.length > 0, code: j.code, guest: true,
+    songs: list.map((s) => ({
+      id: String(s.id), name: s.name, artist: (s.ar || []).map((a) => a.name).join(' / '),
+      album: s.al && s.al.name, picUrl: s.al && s.al.picUrl, duration: s.dt,
+      reason: s.recommendReason || ''
+    }))
+  };
+}
 async function recommendSongs() {
   const r = await weapiPost('/api/v3/discovery/recommend/songs', {}, cookieFor());
   const list = (r.json && r.json.data && r.json.data.dailySongs) || [];
@@ -347,6 +361,6 @@ async function songUrl(id, level = 'lossless') {
 module.exports = {
   setState, getState,
   anonimous, qrCreate, qrCheck, loginByEmail, loginByCellphone, captchaSend, captchaLogin, accountInfo,
-  recommendSongs, recommendResources, personalizedPlaylists, myPlaylists,
+  guestDaily, recommendSongs, recommendResources, personalizedPlaylists, myPlaylists,
   playlistSongsAll, playlistDetail, songUrl
 };

@@ -322,6 +322,10 @@
     grid.querySelectorAll('.bp-card').forEach((c) => c.classList.toggle('active', c.dataset.preset === curp));
   }
   // 设置面板外观控件高亮态（stTheme/stAccent/stBgMode/stProgressStyle/stDlQuality）
+  function syncRecSectionBtns() {
+    const v = recSections();
+    document.querySelectorAll('#stRecSections .st-mode').forEach((b) => { const k = b.dataset.rcsec; b.classList.toggle('active', !!v[k]); });
+  }
   function syncAppearanceControls() {
     const setQ = (sel, key, val) => {
       const wrap = document.getElementById(sel);
@@ -335,6 +339,7 @@
     setQ('stBgMode', 'bg', store.get('mp_bg_mode', 'preset'));
     setQ('stProgressStyle', 'progress', store.get('mp_progress_style', 'B'));
     setQ('stCoverSpin', 'spin', store.get('mp_cover_spin', '1'));
+    syncRecSectionBtns();
     // 皮肤按钮文本（无皮肤 / 当前皮肤名）+ data-skin（按钮背景跟随当前皮肤款式）
     const skBtn = $('#stSkinBtn');
     if (skBtn) {
@@ -1126,6 +1131,7 @@
       const dlAllP = $('#oplDlAll');
       if (dlAllP) { dlAllP.classList.remove('hidden'); dlAllP.onclick = () => openDlDialog(list); }
     } else if (view.startsWith('opl:')) {
+      try { const __p = state.onlinePlaylists.find((x) => 'opl:' + x.id === view); if (__p) window.api.recordRecPl({ id: __p.id, name: __p.name, source: __p.source, cover: __p.cover || '' }).catch(() => {}); } catch (e) {}
       const pl = state.onlinePlaylists.find((x) => 'opl:' + x.id === view);
       if (!pl) return setView('library');
       title = pl.name;
@@ -1281,6 +1287,19 @@
 
   // 拉取推荐数据并渲染（登录态变化后调用 refreshRecommend）
   // force=true：忽略缓存强制重新拉取（顶栏刷新按钮）；默认：10 分钟缓存内直接复用上次结果
+  // 推荐页区块可见性（组件化）：{daily,recPls,guess} 1/0，至少保留一个
+  function recSections() {
+    try { const o = JSON.parse(store.get('mp_rec_sections', '{"daily":1,"recPls":1,"guess":1}')); return { daily: o.daily !== 0, recPls: o.recPls !== 0, guess: o.guess !== 0 }; }
+    catch { return { daily: true, recPls: true, guess: true }; }
+  }
+  function applyRecSections() {
+    const v = recSections();
+    const hero = document.querySelector('.rec-hero'); if (hero) hero.style.display = v.daily ? '' : 'none';
+    const grid = $('#recSections'); if (grid) grid.style.display = v.recPls ? '' : 'none';
+    const bar = document.querySelector('.rec-srcsplit'); if (bar) bar.style.display = v.recPls ? '' : 'none';
+    const guess = $('#recGuessSec'); if (guess) guess.style.display = v.guess ? '' : 'none';
+    const rr = document.getElementById('recRecentSec'); if (rr) rr.style.display = v.recPls ? '' : 'none';
+  }
   async function loadRecommend(force) {
     const sec = $('#recSections');
     if (!sec) return;
@@ -1289,6 +1308,8 @@
     if (!force && fresh) {
       sec.innerHTML = '';
       renderRecSections(recCache.data.data || {});
+      renderRecRecent();
+      applyRecSections();
       return;
     }
     sec.innerHTML = `<div class="rec-hint">${REC_LOADING}</div>`;
@@ -1300,7 +1321,9 @@
     if (window.__mp) window.__mp.recCache = recCache; // 调试/探针可见
     renderRecSections(data.data || {});
     const gl = $('#guessList');
-    if (gl && !gl.children.length) generateGuess();
+    if (gl && !gl.children.length && recSections().guess) generateGuess();
+    renderRecRecent();
+    applyRecSections();
   }
   // 刷新推荐（登录/登出后调用：不重建登录卡，只重拉各分区）
   function refreshRecommend(force) {
@@ -1454,19 +1477,19 @@
     const kg = d.kugou || {};
     // ---- 每日推荐（固定，不随平台筛选隐藏）----
     if (net.daily && net.daily.length) {
-      const blk = recBlock('每日推荐', '网易云为你精选' + (net.daily.length ? ' · ' + net.daily.length + ' 首' : ''));
+      const blk = recBlock('每日推荐', net.dailyGuest ? '通用每日推荐 · ' + net.daily.length + ' 首 · 登录解锁个性化' : '网易云为你精选' + (net.daily.length ? ' · ' + net.daily.length + ' 首' : ''));
       const chips = el('div', 'rec-chips');
       net.daily.slice(0, 10).forEach((s) => {
         const c = el('div', 'rec-chip');
         c.innerHTML = `<span class="rec-chip-t">${esc(s.title || '')}</span><span class="rec-chip-a">${esc(s.artist || '')}</span>`;
-        c.title = '播放 ' + (s.title || '');
+        c.title = '播放 ' + (s.title || '') + (s.reason ? '\n推荐理由：' + s.reason : '');
         c.addEventListener('click', () => playRecommendSong(s));
         chips.appendChild(c);
       });
       blk.appendChild(chips);
       sec.appendChild(blk);
     } else if (net.dailyNeedLogin) {
-      const blk = recBlock('每日推荐', '登录网易云账号后获取为你精选的每日推荐');
+      const blk = recBlock('每日推荐', '每日推荐获取失败，稍后重试；登录网易云账号可解锁个性化推荐');
       sec.appendChild(blk);
     }
     // ---- 平台切换条（全部 / 网易云 / 酷狗），选择持久化（mp_rec_plat_filter）----
@@ -1501,6 +1524,29 @@
   }
 
   // 分区容器：标题 + 副题
+  // 推荐页「最近听过」横排（recent-pls 持久化，点击回打开歌单；随 recPls 开关显隐）
+  async function renderRecRecent() {
+    const old = document.getElementById('recRecentSec'); if (old) old.remove();
+    if (!recSections().recPls) return;
+    let list = [];
+    try { list = await window.api.getRecPls(); } catch { return; }
+    if (!list || !list.length) return;
+    const grid = $('#recSections'); if (!grid) return;
+    const host = grid.parentElement; // 挂在 recSections 外层（推荐页容器），不随 recPls 开关隐藏
+    const blk = recBlock('最近听过', '最近打开过的歌单');
+    blk.id = 'recRecentSec';
+    const chips = el('div', 'rec-recent-row');
+    list.forEach((it) => {
+      const c = el('div', 'rec-recent-chip');
+      c.innerHTML = (it.cover ? '<img src="' + esc(it.cover) + '" alt="">' : '<span class="rr-ph">♪</span>') + '<span class="rr-name"></span>';
+      c.querySelector('.rr-name').textContent = it.name || '歌单';
+      c.title = it.name || '';
+      c.addEventListener('click', () => { const pl = state.onlinePlaylists.find((x) => x.id === it.id); if (pl) setView('opl:' + it.id); else toast('该歌单已不在在线列表中'); });
+      chips.appendChild(c);
+    });
+    blk.appendChild(chips);
+    host.appendChild(blk);
+  }
   function recBlock(title, sub) {
     const blk = el('div', 'rec-block');
     const head = el('div', 'rec-block-head');
@@ -3678,7 +3724,8 @@
       return;
     }
     if (state.queueIndex >= state.queue.length - 1 && state.guessBatch && state.queue.length === state.guessBatch.length && state.queue[0] && state.guessBatch[0].id === state.queue[0].id) {
-      // 猜你喜欢整批听完 → 自动换新一批接着播（生成失败则循环本批）
+      // 自动续播开关（mp_guess_auto 默认开）：关=循环本批不换新
+      if (store.get('mp_guess_auto', '1') === '0') { playList(state.queue, 0, 0, true, false, true); return; }
       (async () => {
         let r = null;
         try { r = await window.api.recGuess(buildSeedArtists(), guessRatioGet()); } catch { r = null; }
@@ -6591,6 +6638,12 @@
         toast('猜你喜欢尝新比例：' + Math.round(Number(b.dataset.r) * 100) + '%');
       });
     });
+    // 猜你喜欢自动续播开关
+    const gAuto = $('#stGuessAuto');
+    if (gAuto) {
+      gAuto.checked = store.get('mp_guess_auto', '1') !== '0';
+      gAuto.addEventListener('change', () => { store.set('mp_guess_auto', gAuto.checked ? '1' : '0'); toast(gAuto.checked ? '整批听完将自动换新一批' : '整批听完将停止'); });
+    }
     $('#accBiliLogout').addEventListener('click', async () => {
       const r = await window.api.biliLogout().catch(() => null);
       if (r && r.ok) { syncBiliAcc(false); toast('已退出 B 站账号'); }
@@ -7116,6 +7169,16 @@
       }));
     }
     bindGroup('stProgressStyle', 'mp_progress_style', applyAppearance);
+    // 推荐页区块开关（多选切换，至少保留一个）
+    document.querySelectorAll('#stRecSections .st-mode').forEach((b) => b.addEventListener('click', () => {
+      const k = b.dataset.rcsec; if (!k) return;
+      const cur = recSections();
+      const onCount = Object.values(cur).filter(Boolean).length;
+      if (cur[k] && onCount <= 1) { toast('至少保留一个推荐页区块'); return; }
+      cur[k] = cur[k] ? 0 : 1;
+      store.set('mp_rec_sections', JSON.stringify({ daily: cur.daily, recPls: cur.recPls, guess: cur.guess }));
+      applyRecSections(); syncRecSectionBtns();
+    }));
     // 皮肤选择（v1.3.8 #18）：收束按钮 → 弹出放大选择面板
     const skinBtn = $('#stSkinBtn');
     const skinOv = $('#skinOverlay');

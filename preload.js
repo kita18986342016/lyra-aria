@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('api', {
   savePlaylists: (pls) => ipcRenderer.invoke('playlists:save', pls),
   addSongsToPlaylist: (plId, songIds) => ipcRenderer.invoke('playlists:addSongs', plId, songIds),
   getOpls: () => ipcRenderer.invoke('opl:get'),
+  getRecPls: () => ipcRenderer.invoke('recPls:get'),
+  recordRecPl: (item) => ipcRenderer.invoke('recPls:record', item),
   saveOpls: (pls) => ipcRenderer.invoke('opl:save', pls),
   getPlOrder: () => ipcRenderer.invoke('plOrder:get'),
   savePlOrder: (arr) => ipcRenderer.invoke('plOrder:save', arr),
