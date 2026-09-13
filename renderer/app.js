@@ -1475,7 +1475,26 @@
     const net = d.netease || {};
     const kg = d.kugou || {};
     // ---- 每日推荐（固定，不随平台筛选隐藏）----
-    if (!(net.daily && net.daily.length) && net.dailyNeedLogin) {
+    if (net.daily && net.daily.length && recSections().daily) {
+      // 每日推荐：强调面板 + 编号歌曲行（双列；点击单播，双击/按钮整列播）
+      const blk = recBlock('每日推荐', net.dailyGuest ? '通用每日推荐 · ' + net.daily.length + ' 首 · 登录解锁个性化' : '网易云为你精选 · ' + net.daily.length + ' 首');
+      blk.classList.add('rec-block-daily');
+      const dailyArr = net.daily.map((s) => ({ id: s.id, online: true, source: 'netease', ref: s.ref, title: s.title, artist: s.artist, picUrl: s.picUrl, duration: s.duration }));
+      const list = el('div', 'daily-list');
+      net.daily.slice(0, 10).forEach((s, i) => {
+        const row = el('div', 'daily-row');
+        row.innerHTML = '<span class="d-idx">' + (i + 1) + '</span><span class="d-main"><span class="d-title"></span><span class="d-artist"></span></span>' + (s.reason ? '<span class="d-reason"></span>' : '');
+        row.querySelector('.d-title').textContent = s.title || '未知';
+        row.querySelector('.d-artist').textContent = s.artist || '';
+        if (s.reason) row.querySelector('.d-reason').textContent = s.reason;
+        row.title = (s.title || '') + ' - ' + (s.artist || '') + (s.reason ? '\n推荐理由：' + s.reason : '');
+        row.addEventListener('dblclick', () => playList(dailyArr, i, 0, true, true, true));
+        row.addEventListener('click', () => { const q = state.queue.slice(); if (!q.some((x) => x && x.id === s.id)) { playList(dailyArr, i, 0, true, true, true); } else { const qi = q.findIndex((x) => x && x.id === s.id); playList(q, qi, 0, true, true, true); } });
+        list.appendChild(row);
+      });
+      blk.appendChild(list);
+      sec.appendChild(blk);
+    } else if (!(net.daily && net.daily.length) && net.dailyNeedLogin) {
       const blk = recBlock('每日推荐', '每日推荐获取失败，稍后重试；登录网易云账号可解锁个性化推荐');
       sec.appendChild(blk);
     }
