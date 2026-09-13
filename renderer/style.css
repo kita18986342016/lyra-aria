@@ -2703,3 +2703,10 @@ button:not(.active) .lgp-dot { opacity: .6; }
 .rbc-mask { position: absolute; inset: 0; background: linear-gradient(to top, rgba(0,0,0,.15), transparent); }
 .rec-daily-chips { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0 10px; margin-bottom: 12px; }
 .rec-daily-chips .rec-chip { flex: none; }
+
+/* 推荐页收束：隐藏 hero 大卡和 chips（用户指令：简洁） */
+.rec-hero { display: none !important; }
+.rec-daily-chips { display: none !important; }
+.rec-cards-row { display: none !important; }
+.rec-refresh-bar { display: flex; justify-content: flex-end; padding: 4px 0 8px; }
+.rec-refresh-bar .rec-btn { font-size: 12px; padding: 4px 12px; }

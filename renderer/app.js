@@ -2003,6 +2003,7 @@
     // 推荐页 hero 刷新按钮：强制刷新推荐（清 20min 缓存重新拉取）
     const recHeroRefresh = $('#recHeroRefresh');
     if (recHeroRefresh) recHeroRefresh.addEventListener('click', () => { refreshRecommend(true); toast('推荐已刷新'); });
+    if ($('#recRefreshBtn')) $('#recRefreshBtn').addEventListener('click', () => { refreshRecommend(true); toast('推荐已刷新'); });
     // 推荐页 hero 大播放钮：播放每日推荐全部（网易云每日精选，无则先拉取）
     // 三列大卡点击：猜你喜欢开播 / 每日推荐进歌单 / 最近听过回列表
     const bindBigCard = (id, fn) => { const el2 = $(id); if (el2) el2.addEventListener('click', fn); };

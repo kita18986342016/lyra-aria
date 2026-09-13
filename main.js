@@ -2528,7 +2528,7 @@ function main() {
           const s = await leizGet('/netease/search?q=' + encodeURIComponent(a.name.trim()) + '&limit=12');
           if (!s.ok || !Array.isArray(s.data)) continue;
           const raw = s.data.filter((it) => it && it.id);
-          const okv = raw; // 非原版过滤已解除
+          const okv = raw.filter((it) => !isNonOrig((String(it.name || '') + String(it.artists || '')).toLowerCase()));
           for (const it of (okv.length ? okv : raw).slice(0, 8)) {
             fam.push({ id: 'online:netease:' + it.id, online: true, source: 'netease', ref: String(it.id), title: it.name || '', artist: it.artists || '', album: it.album || '', duration: Math.round((it.duration || 0) / 1000), picUrl: it.picUrl || '' });
           }
@@ -2569,7 +2569,7 @@ function main() {
     });
     // —— 导入自动适配最佳：标题带非原版标记（变速/DJ/翻唱等）的歌，跨源搜「干净标题+歌手匹配」的原版替换 ——
     const NON_ORIG_RES = [/变速/, /加速/, /减速/, /slowed/i, /sped\s?up/i, /pitch/i, /remix/i, /dj版/, /\bdj\b/i, /cover/i, /翻唱/, /伴奏/, /铃声/, /现场/, /live版/i, /纯音乐/, /串烧/, /慢摇/, /钢琴版/, /吉他版/, /变奏/, /治愈版/, /伤感版/, /抖音版/, /热歌版/, /女声版/, /男生版/, /慢速版/, /快速版/, /8d/i];
-    function isNonOrigTitle(t) { const x = String(t || '').toLowerCase(); return false; // 已解除
+    function isNonOrigTitle(t) { return false; }
     function cleanTitleForSearch(t) {
       let x = String(t || '');
       x = x.replace(/[\(（\[【].*?[\)）\]】]/g, ' ');
@@ -2583,6 +2583,7 @@ function main() {
     const albumEq = (a, b) => { const x = normSoft(a), y = normSoft(b); return !!x && !!y && (x === y || (x.includes(y) || y.includes(x)) && Math.min(x.length, y.length) >= 2); };
     const firstTok = (ar) => (String(ar || '').split(/[、,/]/)[0] || '').trim().toLowerCase().replace(/[.。\s]+$/, '');
     async function adaptImportSongs(payload) {
+      return payload; // 非原版替换已解除
       const songs = (payload && payload.songs) || [];
       const targets = songs.filter((x) => x && x.title && x.source !== 'bilibili' && x.source !== 'qq' && isNonOrigTitle(x.title + ' ' + (x.artist || '')));
       let replaced = 0, idx = 0;
@@ -2792,7 +2793,7 @@ function main() {
         }
         // 波点命中但版本不对（命中标题带 变速/DJ/翻唱 等标记而歌单原名单是干净名）→ 严格换源找原版；
         // 找不到原版才保留波点命中（宁可用变速版也不给失败）
-        if (false) { // 原版替换已解除
+        if (hit && hit.source === 'qq' && !(hit.payplay && config.autoSrcUpgrade) && isNonOrigTitle(String(hit.title || '') + ' ' + String(hit.artist || '')) && !isNonOrigTitle(String(s.name || ''))) {
           let orig = null;
           if (qFull) {
             try {
@@ -3097,10 +3098,7 @@ function main() {
         let daily = { ok: false, songs: [] }, pls = { ok: false, playlists: [] };
         if (n.cookie && /MUSIC_U=/.test(n.cookie)) daily = await neteaseAcc.recommendSongs();
         else daily = await neteaseAcc.guestDaily(); // 游客态：明文端点通用推荐
-        // 登录：个性化推荐歌单（每日刷新）；游客：运营位（匿名可用）
-        pls = (n.cookie && /MUSIC_U=/.test(n.cookie))
-          ? await neteaseAcc.recommendResources()
-          : await neteaseAcc.personalizedPlaylists(30);
+        pls = await neteaseAcc.personalizedPlaylists(30);
         out.netease = {
           loggedIn: !!(n.cookie && /MUSIC_U=/.test(n.cookie)),
           daily: daily.songs.map((s) => ({
@@ -3134,7 +3132,7 @@ function main() {
         const r = await neteaseAcc.playlistSongsAll(ref, null);
         if (!r.ok || !r.songs.length) return { ok: false, reason: r.reason || '歌单为空或获取失败' };
         // 非原版标题自动跨源换原版；total 供渲染层做掉歌透明提示（本源无版权歌 detail 接口会静默剔除）
-        return {
+        return await adaptImportSongs({
           ok: true, name: r.name || '', desc: r.desc || '', total: r.total || 0,
           songs: r.songs.map((s) => ({
             id: 'online:netease:' + s.id, online: true, source: 'netease', ref: s.id,
@@ -3143,7 +3141,7 @@ function main() {
         });
       }
       const full = await fetchKugouCollectAll(ref);
-      return full.ok ? { ok: true, name: '酷狗推荐歌单', desc: '', songs: full.songs } : { ok: false, reason: '歌单获取失败' };
+      return full.ok ? await adaptImportSongs({ ok: true, name: '酷狗推荐歌单', desc: '', songs: full.songs }) : { ok: false, reason: '歌单获取失败' };
     });
     // ---------- 本地账号（名字+头像；数据可序列化，为 1.3.8 云端账号同步铺路）----------
     // 存储：dataRoot()/local-account.json（含 avatar 本地路径）；头像复制到 dataRoot()/avatars/local.<ext>
