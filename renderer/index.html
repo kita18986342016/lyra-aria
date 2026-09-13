@@ -515,15 +515,23 @@
       <div id="empty" class="hidden"></div>
       <!-- 推荐页：两平台推荐歌单（网易云/酷狗）+ 每日推荐；登录入口在顶栏账号菜单 / 设置-账号管理 -->
       <div id="recommendView" class="hidden">
-        <div class="rec-hero">
-          <button id="recHeroPlay" class="rec-hero-play" title="播放每日推荐"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86a1 1 0 0 0-1.5.86z"/></svg></button>
-          <div class="rec-hero-text">
-            <h2 class="rec-hero-title">每日推荐</h2>
-            <p class="rec-hero-sub">网易云 · 酷狗 为你精选（游客可用，登录解锁个性化）</p>
+        <!-- 三列大卡（对齐手机端）：猜你喜欢 | 每日推荐 | 最近听过 -->
+        <div class="rec-cards-row">
+          <div class="rec-big-card" id="recCardGuess">
+            <div class="rbc-bg"></div><div class="rbc-mask"></div>
+            <div class="rbc-text"><div class="rbc-title">猜你喜欢</div><div class="rbc-sub">按常听歌手生成</div></div>
           </div>
-          <div class="rec-hero-btns">
-            <button id="recHeroRefresh" class="rec-btn rec-btn-ghost" title="刷新推荐"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>刷新</button>
+          <div class="rec-big-card" id="recCardDaily">
+            <div class="rbc-bg"></div><div class="rbc-mask"></div>
+            <div class="rbc-text"><div class="rbc-title">每日推荐</div><div class="rbc-sub" id="recDailySub">获取中…</div></div>
           </div>
+          <div class="rec-big-card" id="recCardRecent">
+            <div class="rbc-bg"></div><div class="rbc-mask"></div>
+            <div class="rbc-text"><div class="rbc-title">最近听过</div><div class="rbc-sub">最近打开的歌单</div></div>
+          </div>
+        </div>
+        <!-- 每日推荐歌曲 chips（紧凑） -->
+        <div id="recDailyChips" class="rec-daily-chips"></div>
         </div>
         <div id="recSections"></div>
         <!-- 猜你喜欢：按常听歌手生成（熟歌为主 + 尝新掺新），整批听完自动换新一批 -->

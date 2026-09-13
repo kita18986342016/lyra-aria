@@ -3097,7 +3097,10 @@ function main() {
         let daily = { ok: false, songs: [] }, pls = { ok: false, playlists: [] };
         if (n.cookie && /MUSIC_U=/.test(n.cookie)) daily = await neteaseAcc.recommendSongs();
         else daily = await neteaseAcc.guestDaily(); // 游客态：明文端点通用推荐
-        pls = await neteaseAcc.personalizedPlaylists(30);
+        // 登录：个性化推荐歌单（每日刷新）；游客：运营位（匿名可用）
+        pls = (n.cookie && /MUSIC_U=/.test(n.cookie))
+          ? await neteaseAcc.recommendResources()
+          : await neteaseAcc.personalizedPlaylists(30);
         out.netease = {
           loggedIn: !!(n.cookie && /MUSIC_U=/.test(n.cookie)),
           daily: daily.songs.map((s) => ({

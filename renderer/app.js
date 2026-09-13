@@ -1477,6 +1477,7 @@
     const kg = d.kugou || {};
     // ---- 每日推荐（固定，不随平台筛选隐藏）----
     if (net.daily && net.daily.length) {
+      const __dailySub = $('#recDailySub'); if (__dailySub) __dailySub.textContent = net.dailyGuest ? '通用推荐 · 登录解锁个性化' : '为你精选 ' + net.daily.length + ' 首';
       const blk = recBlock('每日推荐', net.dailyGuest ? '通用每日推荐 · ' + net.daily.length + ' 首 · 登录解锁个性化' : '网易云为你精选' + (net.daily.length ? ' · ' + net.daily.length + ' 首' : ''));
       const chips = el('div', 'rec-chips');
       net.daily.slice(0, 10).forEach((s) => {
@@ -1487,7 +1488,7 @@
         chips.appendChild(c);
       });
       blk.appendChild(chips);
-      sec.appendChild(blk);
+      $('#recDailyChips').replaceChildren(chips); // chips 挂独立容器（三列大卡下方）
     } else if (net.dailyNeedLogin) {
       const blk = recBlock('每日推荐', '每日推荐获取失败，稍后重试；登录网易云账号可解锁个性化推荐');
       sec.appendChild(blk);
@@ -2002,6 +2003,11 @@
     const recHeroRefresh = $('#recHeroRefresh');
     if (recHeroRefresh) recHeroRefresh.addEventListener('click', () => { refreshRecommend(true); toast('推荐已刷新'); });
     // 推荐页 hero 大播放钮：播放每日推荐全部（网易云每日精选，无则先拉取）
+    // 三列大卡点击：猜你喜欢开播 / 每日推荐进歌单 / 最近听过回列表
+    const bindBigCard = (id, fn) => { const el2 = $(id); if (el2) el2.addEventListener('click', fn); };
+    bindBigCard('#recCardGuess', () => { if (typeof startGuessFm === 'function') startGuessFm(); });
+    bindBigCard('#recCardDaily', () => { const d2 = (recCache.data && recCache.data.data && recCache.data.data.netease) || {}; const songs2 = d2.daily || []; if (songs2.length) { const pl2 = songs2.map((s) => ({ id: s.id, online: true, source: 'netease', ref: s.ref, title: s.title, artist: s.artist, picUrl: s.picUrl, duration: s.duration })); playList(pl2, 0, 0, true, true); } else { toast('每日推荐获取中…'); refreshRecommend(true); } });
+    bindBigCard('#recCardRecent', () => { renderRecRecent(); const sec2 = document.getElementById('recRecentSec'); if (sec2) sec2.scrollIntoView({ behavior: 'smooth' }); });
     const recHeroPlay = $('#recHeroPlay');
     if (recHeroPlay) recHeroPlay.addEventListener('click', async () => {
       const d = (recCache.data && recCache.data.data) || {};
