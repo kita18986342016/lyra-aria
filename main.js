@@ -2569,7 +2569,7 @@ function main() {
     });
     // —— 导入自动适配最佳：标题带非原版标记（变速/DJ/翻唱等）的歌，跨源搜「干净标题+歌手匹配」的原版替换 ——
     const NON_ORIG_RES = [/变速/, /加速/, /减速/, /slowed/i, /sped\s?up/i, /pitch/i, /remix/i, /dj版/, /\bdj\b/i, /cover/i, /翻唱/, /伴奏/, /铃声/, /现场/, /live版/i, /纯音乐/, /串烧/, /慢摇/, /钢琴版/, /吉他版/, /变奏/, /治愈版/, /伤感版/, /抖音版/, /热歌版/, /女声版/, /男生版/, /慢速版/, /快速版/, /8d/i];
-    function isNonOrigTitle(t) { const x = String(t || '').toLowerCase(); return NON_ORIG_RES.some((re) => re.test(x)); }
+    function isNonOrigTitle(t) { const x = String(t || '').toLowerCase(); return false; // 已解除
     function cleanTitleForSearch(t) {
       let x = String(t || '');
       x = x.replace(/[\(（\[【].*?[\)）\]】]/g, ' ');
