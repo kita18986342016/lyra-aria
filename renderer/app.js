@@ -2423,7 +2423,7 @@
         return NON_ORIG_EN.test(txt) || NON_ORIG_CN.some((w) => txt.includes(w));
       };
       const raw = r.data.map((it) => buildOnlineSong(source, it, quality)).filter(Boolean);
-      const ok = raw.filter((s) => !s.payplay && !isNonOrig(s));
+      const ok = raw.filter((s) => !s.payplay); // 非原版搜索过滤已解除
       songs = ok.length ? ok : raw;
       mergeSearchResults(songs);
     } else {
@@ -7175,6 +7175,19 @@
       }));
     }
     bindGroup('stProgressStyle', 'mp_progress_style', applyAppearance);
+    // 歌单位置：tab=底栏标签 / me=嵌入我的页
+    const applyPlLoc = () => {
+      const inMe = (window.localStorage.getItem('mp_pl_loc') || 'tab') === 'me';
+      document.querySelectorAll('.nav-item[data-view="pls"]').forEach((x) => x.style.display = inMe ? 'none' : '');
+      const meSec = document.getElementById('mePlaylists'); if (meSec) meSec.style.display = inMe ? '' : 'none';
+    };
+    applyPlLoc();
+    document.querySelectorAll('#setPlLoc .seg-item').forEach((b) => b.addEventListener('click', () => {
+      localStorage.setItem('mp_pl_loc', b.dataset.v);
+      document.querySelectorAll('#setPlLoc .seg-item').forEach((x) => x.classList.toggle('active', x === b));
+      applyPlLoc();
+    }));
+    applyPlLoc(); // 初始执行（在 DOM ready 后 bindGroup 调用时 DOM 已就绪）
     // 推荐页区块开关（多选切换，至少保留一个）
     document.querySelectorAll('#stRecSections .st-mode').forEach((b) => b.addEventListener('click', () => {
       const k = b.dataset.rcsec; if (!k) return;

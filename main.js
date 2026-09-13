@@ -2528,7 +2528,7 @@ function main() {
           const s = await leizGet('/netease/search?q=' + encodeURIComponent(a.name.trim()) + '&limit=12');
           if (!s.ok || !Array.isArray(s.data)) continue;
           const raw = s.data.filter((it) => it && it.id);
-          const okv = raw.filter((it) => !isNonOrig((String(it.name || '') + String(it.artists || '')).toLowerCase()));
+          const okv = raw; // 非原版过滤已解除
           for (const it of (okv.length ? okv : raw).slice(0, 8)) {
             fam.push({ id: 'online:netease:' + it.id, online: true, source: 'netease', ref: String(it.id), title: it.name || '', artist: it.artists || '', album: it.album || '', duration: Math.round((it.duration || 0) / 1000), picUrl: it.picUrl || '' });
           }
@@ -2792,7 +2792,7 @@ function main() {
         }
         // 波点命中但版本不对（命中标题带 变速/DJ/翻唱 等标记而歌单原名单是干净名）→ 严格换源找原版；
         // 找不到原版才保留波点命中（宁可用变速版也不给失败）
-        if (hit && hit.source === 'qq' && !(hit.payplay && config.autoSrcUpgrade) && isNonOrigTitle(String(hit.title || '') + ' ' + String(hit.artist || '')) && !isNonOrigTitle(String(s.name || ''))) {
+        if (false) { // 原版替换已解除
           let orig = null;
           if (qFull) {
             try {
@@ -3134,7 +3134,7 @@ function main() {
         const r = await neteaseAcc.playlistSongsAll(ref, null);
         if (!r.ok || !r.songs.length) return { ok: false, reason: r.reason || '歌单为空或获取失败' };
         // 非原版标题自动跨源换原版；total 供渲染层做掉歌透明提示（本源无版权歌 detail 接口会静默剔除）
-        return await adaptImportSongs({
+        return {
           ok: true, name: r.name || '', desc: r.desc || '', total: r.total || 0,
           songs: r.songs.map((s) => ({
             id: 'online:netease:' + s.id, online: true, source: 'netease', ref: s.id,
@@ -3143,7 +3143,7 @@ function main() {
         });
       }
       const full = await fetchKugouCollectAll(ref);
-      return full.ok ? await adaptImportSongs({ ok: true, name: '酷狗推荐歌单', desc: '', songs: full.songs }) : { ok: false, reason: '歌单获取失败' };
+      return full.ok ? { ok: true, name: '酷狗推荐歌单', desc: '', songs: full.songs } : { ok: false, reason: '歌单获取失败' };
     });
     // ---------- 本地账号（名字+头像；数据可序列化，为 1.3.8 云端账号同步铺路）----------
     // 存储：dataRoot()/local-account.json（含 avatar 本地路径）；头像复制到 dataRoot()/avatars/local.<ext>
