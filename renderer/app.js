@@ -1294,7 +1294,6 @@
   }
   function applyRecSections() {
     const v = recSections();
-    const hero = document.querySelector('.rec-hero'); if (hero) hero.style.display = v.daily ? '' : 'none';
     const grid = $('#recSections'); if (grid) grid.style.display = v.recPls ? '' : 'none';
     const bar = document.querySelector('.rec-srcsplit'); if (bar) bar.style.display = v.recPls ? '' : 'none';
     const guess = $('#recGuessSec'); if (guess) guess.style.display = v.guess ? '' : 'none';
@@ -1476,21 +1475,7 @@
     const net = d.netease || {};
     const kg = d.kugou || {};
     // ---- 每日推荐（固定，不随平台筛选隐藏）----
-    if (net.daily && net.daily.length) {
-      const __dailySub = $('#recDailySub'); if (__dailySub) __dailySub.textContent = net.dailyGuest ? '通用推荐 · 登录解锁个性化' : '为你精选 ' + net.daily.length + ' 首';
-      const __ds = $('#rcDailySub'); if (__ds) __ds.textContent = net.dailyGuest ? '通用推荐 · 登录解锁个性化' : '为你精选 ' + net.daily.length + ' 首';
-      const blk = recBlock('每日推荐', net.dailyGuest ? '通用每日推荐 · ' + net.daily.length + ' 首 · 登录解锁个性化' : '网易云为你精选' + (net.daily.length ? ' · ' + net.daily.length + ' 首' : ''));
-      const chips = el('div', 'rec-chips');
-      net.daily.slice(0, 10).forEach((s) => {
-        const c = el('div', 'rec-chip');
-        c.innerHTML = `<span class="rec-chip-t">${esc(s.title || '')}</span><span class="rec-chip-a">${esc(s.artist || '')}</span>`;
-        c.title = '播放 ' + (s.title || '') + (s.reason ? '\n推荐理由：' + s.reason : '');
-        c.addEventListener('click', () => playRecommendSong(s));
-        chips.appendChild(c);
-      });
-      blk.appendChild(chips);
-      $('#recDailyChips').replaceChildren(chips); // chips 挂独立容器（三列大卡下方）
-    } else if (net.dailyNeedLogin) {
+    if (!(net.daily && net.daily.length) && net.dailyNeedLogin) {
       const blk = recBlock('每日推荐', '每日推荐获取失败，稍后重试；登录网易云账号可解锁个性化推荐');
       sec.appendChild(blk);
     }
@@ -1599,15 +1584,6 @@
     if (!isFinite(v) || v <= 0) return '';
     if (v >= 10000) return (v / 10000).toFixed(1).replace(/\.0$/, '') + '万';
     return String(v);
-  }
-  // 单曲直接播放（推荐每日歌曲 → 并入当前队列并播放）
-  async function playRecommendSong(song) {
-    // 与歌单视图同路径：并入当前队列（若不重复）后定位播放
-    const inIdx = state.queue.findIndex((q) => q && q.id === song.id);
-    if (inIdx >= 0) { playList(state.queue, inIdx, 0, true, true, true); return; }
-    const q = state.queue.slice();
-    q.push(song);
-    playList(q, q.length - 1, 0, true, true, true);
   }
   // 推荐歌单全量导入：主进程全量拉取 → 存入 onlinePlaylists → 进入在线歌单视图
   async function openRecommendPlaylist(source, p) {
@@ -2000,39 +1976,8 @@
   function bindRecommendEvents() {
     const nav = document.querySelector('#nav .nav-item[data-view="recommend"]');
     if (nav) nav.addEventListener('click', () => setView('recommend'));
-    // 推荐页 hero 刷新按钮：强制刷新推荐（清 20min 缓存重新拉取）
-    const recHeroRefresh = $('#recHeroRefresh');
-    if (recHeroRefresh) recHeroRefresh.addEventListener('click', () => { refreshRecommend(true); toast('推荐已刷新'); });
     if ($('#recRefreshBtn')) $('#recRefreshBtn').addEventListener('click', () => { refreshRecommend(true); toast('推荐已刷新'); });
-    // 推荐页 hero 大播放钮：播放每日推荐全部（网易云每日精选，无则先拉取）
-    // 三列大卡点击：猜你喜欢开播 / 每日推荐进歌单 / 最近听过回列表
-    const bindBigCard = (id, fn) => { const el2 = $(id); if (el2) el2.addEventListener('click', fn); };
-    bindBigCard('#recCardGuess', () => { if (typeof startGuessFm === 'function') startGuessFm(); });
-    bindBigCard('#recCardDaily', () => { const d2 = (recCache.data && recCache.data.data && recCache.data.data.netease) || {}; const songs2 = d2.daily || []; if (songs2.length) { const pl2 = songs2.map((s) => ({ id: s.id, online: true, source: 'netease', ref: s.ref, title: s.title, artist: s.artist, picUrl: s.picUrl, duration: s.duration })); playList(pl2, 0, 0, true, true); } else { toast('每日推荐获取中…'); refreshRecommend(true); } });
-    bindBigCard('#recCardRecent', () => { renderRecRecent(); const sec2 = document.getElementById('recRecentSec'); if (sec2) sec2.scrollIntoView({ behavior: 'smooth' }); });
-    // 三列大卡：猜你喜欢开播 / 每日推荐播放 / 最近听过回列表
-    const bindCard = (id, fn) => { const el2 = $(id); if (el2) el2.addEventListener('click', fn); };
-    bindCard('#rcGuess', () => { if (typeof startGuessFm === 'function') startGuessFm(); });
-    bindCard('#rcDaily', () => {
-      const d2 = (recCache.data && recCache.data.data && recCache.data.data.netease) || {};
-      const songs2 = (d2.daily || []).map((s) => ({ id: s.id, online: true, source: 'netease', ref: s.ref, title: s.title, artist: s.artist, picUrl: s.picUrl, duration: s.duration }));
-      if (songs2.length) playList(songs2, 0, 0, true, true);
-      else { toast('每日推荐获取中…'); refreshRecommend(true); }
-    });
-    bindCard('#rcRecent', () => { renderRecRecent(); const s2 = document.getElementById('recRecentSec'); if (s2) s2.scrollIntoView({ behavior: 'smooth' }); });
-    const recHeroPlay = $('#recHeroPlay');
-    if (recHeroPlay) recHeroPlay.addEventListener('click', async () => {
-      const d = (recCache.data && recCache.data.data) || {};
-      const daily = (d.netease && d.netease.daily) || [];
-      if (!daily.length) { refreshRecommend(true); toast('正在拉取每日推荐…'); return; }
-      const q = state.queue.slice();
-      let n = 0;
-      daily.forEach((s) => { if (s && s.id && !q.some((x) => x && x.id === s.id)) { q.push(s); n++; } });
-      if (!n) { toast('每日推荐已在队列中'); return; }
-      playList(q, Math.max(0, q.length - n), 0, true, true, true);
-      toast(`开始播放每日推荐 ${n} 首`);
-    });
-    // 设置-账号管理区事件（推荐页登录卡已移除，登录入口 = 顶栏菜单 / 设置-账号管理）
+    // 设置-账号管理区事件    // 设置-账号管理区事件（推荐页登录卡已移除，登录入口 = 顶栏菜单 / 设置-账号管理）
     $('#accNetLogin') && ($('#accNetLogin').onclick = () => openLoginDialog('netease'));
     $('#accKgLogin') && ($('#accKgLogin').onclick = () => openLoginDialog('kugou'));
     $('#accNetLogout') && ($('#accNetLogout').onclick = () => logoutPlat('netease'));
