@@ -1478,6 +1478,7 @@
     // ---- 每日推荐（固定，不随平台筛选隐藏）----
     if (net.daily && net.daily.length) {
       const __dailySub = $('#recDailySub'); if (__dailySub) __dailySub.textContent = net.dailyGuest ? '通用推荐 · 登录解锁个性化' : '为你精选 ' + net.daily.length + ' 首';
+      const __ds = $('#rcDailySub'); if (__ds) __ds.textContent = net.dailyGuest ? '通用推荐 · 登录解锁个性化' : '为你精选 ' + net.daily.length + ' 首';
       const blk = recBlock('每日推荐', net.dailyGuest ? '通用每日推荐 · ' + net.daily.length + ' 首 · 登录解锁个性化' : '网易云为你精选' + (net.daily.length ? ' · ' + net.daily.length + ' 首' : ''));
       const chips = el('div', 'rec-chips');
       net.daily.slice(0, 10).forEach((s) => {
@@ -2008,6 +2009,16 @@
     bindBigCard('#recCardGuess', () => { if (typeof startGuessFm === 'function') startGuessFm(); });
     bindBigCard('#recCardDaily', () => { const d2 = (recCache.data && recCache.data.data && recCache.data.data.netease) || {}; const songs2 = d2.daily || []; if (songs2.length) { const pl2 = songs2.map((s) => ({ id: s.id, online: true, source: 'netease', ref: s.ref, title: s.title, artist: s.artist, picUrl: s.picUrl, duration: s.duration })); playList(pl2, 0, 0, true, true); } else { toast('每日推荐获取中…'); refreshRecommend(true); } });
     bindBigCard('#recCardRecent', () => { renderRecRecent(); const sec2 = document.getElementById('recRecentSec'); if (sec2) sec2.scrollIntoView({ behavior: 'smooth' }); });
+    // 三列大卡：猜你喜欢开播 / 每日推荐播放 / 最近听过回列表
+    const bindCard = (id, fn) => { const el2 = $(id); if (el2) el2.addEventListener('click', fn); };
+    bindCard('#rcGuess', () => { if (typeof startGuessFm === 'function') startGuessFm(); });
+    bindCard('#rcDaily', () => {
+      const d2 = (recCache.data && recCache.data.data && recCache.data.data.netease) || {};
+      const songs2 = (d2.daily || []).map((s) => ({ id: s.id, online: true, source: 'netease', ref: s.ref, title: s.title, artist: s.artist, picUrl: s.picUrl, duration: s.duration }));
+      if (songs2.length) playList(songs2, 0, 0, true, true);
+      else { toast('每日推荐获取中…'); refreshRecommend(true); }
+    });
+    bindCard('#rcRecent', () => { renderRecRecent(); const s2 = document.getElementById('recRecentSec'); if (s2) s2.scrollIntoView({ behavior: 'smooth' }); });
     const recHeroPlay = $('#recHeroPlay');
     if (recHeroPlay) recHeroPlay.addEventListener('click', async () => {
       const d = (recCache.data && recCache.data.data) || {};
