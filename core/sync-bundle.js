@@ -9,7 +9,8 @@ function now() { return Date.now(); }
 
 function songRef(song) {
   if (!song || !song.online) return null;
-  return { source: song.source, ref: song.ref, title: song.title || '', artist: song.artist || '', album: song.album || '', duration: song.duration || 0, picUrl: song.picUrl || '' };
+  // level 随包携带（真实档位；缺失留空由导入端回退），修复"同步过去的歌标签是硬编码假值"
+  return { source: song.source, ref: song.ref, title: song.title || '', artist: song.artist || '', album: song.album || '', duration: song.duration || 0, picUrl: song.picUrl || '', level: song.level || '' };
 }
 
 function exportBundle({ onlinePlaylists = [], favorites = [], recent = [], profile = null, accounts = null, tombstones = null } = {}, device = 'pc') {
@@ -33,14 +34,15 @@ function importBundle(bundle) {
     const songs = (pl.songs || []).filter((s) => s && s.source && s.ref).map((s) => ({
       id: 'online:' + s.source + ':' + s.ref, online: true, source: s.source, ref: s.ref,
       title: s.title || '', artist: s.artist || '', album: s.album || '', duration: s.duration || 0, picUrl: s.picUrl || '',
-      level: (s.source === 'netease') ? 'lossless' : (s.source === 'kugou' ? '128' : 'lossless')
+      // 优先包内真实 level；旧包缺失时留空 → 渲染层按当前在线音质设置回退（不再硬编码假档位）
+      level: s.level || ''
     }));
     if (!songs.length) continue;
     seenPl.add(pl.id);
     out.onlinePlaylists.push({ id: pl.id, name: pl.name || '在线歌单', source: pl.source || '', cover: pl.cover || '', songs, updatedAt: pl.updatedAt || now() });
   }
   for (const f of Array.isArray(bundle.favorites) ? bundle.favorites : []) {
-    if (f && f.source && f.ref) out.favorites.push({ id: 'online:' + f.source + ':' + f.ref, online: true, source: f.source, ref: f.ref, title: f.title || '', artist: f.artist || '', album: f.album || '', duration: f.duration || 0, picUrl: f.picUrl || '', updatedAt: f.updatedAt || now() });
+    if (f && f.source && f.ref) out.favorites.push({ id: 'online:' + f.source + ':' + f.ref, online: true, source: f.source, ref: f.ref, title: f.title || '', artist: f.artist || '', album: f.album || '', duration: f.duration || 0, picUrl: f.picUrl || '', level: f.level || '', updatedAt: f.updatedAt || now() });
   }
   for (const r of Array.isArray(bundle.recent) ? bundle.recent : []) {
     if (r && r.source && r.ref) out.recent.push({ id: 'online:' + r.source + ':' + r.ref, online: true, source: r.source, ref: r.ref, at: r.at || 0 });
