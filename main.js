@@ -3117,7 +3117,9 @@ function main() {
       }
       if (!platform || platform === 'kugou') {
         const k = kugouAcc.getState();
-        const pr = await kugouAcc.recommendPlaylists(0, 1 + Math.floor(Math.random() * 4), 30);
+        // 随机页码换一批；实测服务端偶发返回空页（同页码两次请求一次 0 条一次 29 条）→ 空则回退第 1 页
+        const pr0 = await kugouAcc.recommendPlaylists(0, 1 + Math.floor(Math.random() * 4), 30);
+        const pr = (pr0.playlists && pr0.playlists.length) ? pr0 : await kugouAcc.recommendPlaylists(0, 1, 30);
         out.kugou = {
           loggedIn: !!(k.token && k.userid),
           playlists: (pr.playlists || []).map((p) => ({
