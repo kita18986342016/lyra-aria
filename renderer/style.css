@@ -2369,6 +2369,27 @@ html[data-skin] #skinPanel { background: var(--panel); }
 /* 每日推荐区块：柔和强调面板（轻量版，取代旧 hero 大卡）+ 编号歌曲行 */
 .rec-block.rec-block-daily { background: linear-gradient(120deg, rgba(124, 92, 255, .12), rgba(74, 144, 255, .07) 55%, transparent); border: 1px solid rgba(124, 92, 255, .16); border-radius: 16px; padding: 14px 16px 16px; margin-bottom: 22px; }
 html[data-theme="light"] .rec-block.rec-block-daily { background: linear-gradient(120deg, rgba(124, 92, 255, .10), rgba(74, 144, 255, .06) 55%, transparent); border-color: rgba(124, 92, 255, .18); }
+/* 封面氛围背景：卡片/幽灵按钮加不透明底+毛玻璃，避免叠在封面上糊成一片看不见 */
+/* 封面氛围：卡片用页面底色 --bg 做 92% 底 + 原样紫色渐变 → 观感与普通模式一致，只透一丝封面；
+   注意选择器必须带 .rec-block 双类，否则被 html[data-theme=light] .rec-block.rec-block-daily 覆盖（实测教训） */
+body.bg-cover .rec-block.rec-block-daily,
+body.bg-cover .guess-fm-card {
+  background:
+    linear-gradient(120deg, rgba(124, 92, 255, .12), rgba(74, 144, 255, .07) 55%, transparent),
+    color-mix(in srgb, var(--bg) 92%, transparent);
+  border-color: rgba(167, 139, 250, .30);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+/* 封面氛围：卡片外裸标题/副标题加随主题柔光描边（浅主题白晕/深主题暗晕，拉开与亮封面距离） */
+body.bg-cover .rec-guess-title,
+body.bg-cover .rec-guess-sub,
+body.bg-cover .rrb-title { text-shadow: 0 1px 3px color-mix(in srgb, var(--bg) 85%, transparent); }
+body.bg-cover .rec-btn-ghost {
+  background: color-mix(in srgb, var(--panel-2) 90%, transparent);
+  border-color: var(--line);
+  color: var(--text);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
 .rec-block-daily .rec-block-head { margin-bottom: 10px; }
 .rec-block-daily .daily-acts { margin-left: auto; display: inline-flex; gap: 8px; align-self: center; }
 .rec-block-daily .daily-acts .rec-btn { font-size: 11.5px; padding: 4px 12px; border-radius: 999px; }
@@ -2658,11 +2679,12 @@ button:not(.active) .lgp-dot { opacity: .6; }
 /* 猜你喜欢（推荐页，常听歌手生成） */
 .rec-guess { margin-top: 20px; }
 .rec-guess-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 10px; }
-.rec-guess-title { margin: 0; font-size: 17px; font-weight: 800; letter-spacing: .5px; }
+.rec-guess-title { margin: 0; font-size: 17px; font-weight: 800; letter-spacing: .2px; color: var(--text); position: relative; padding-left: 12px; }
+.rec-guess-title::before { content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 4px; height: 16px; border-radius: 4px; background: linear-gradient(180deg, var(--accent), var(--accent-2)); box-shadow: 0 2px 8px rgba(167, 139, 250, .35); }
 .rec-guess-sub { color: var(--muted); font-size: 12px; margin-left: 10px; }
 /* 猜你喜欢 FM 单曲卡（对齐手机端：一次一首，播完自动续猜） */
 .guess-fm { margin-top: 4px; }
-.guess-fm-card { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); cursor: pointer; transition: border-color .14s, box-shadow .14s; }
+.guess-fm-card { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; background: linear-gradient(120deg, rgba(124, 92, 255, .12), rgba(74, 144, 255, .07) 55%, transparent); border: 1px solid rgba(124, 92, 255, .16); cursor: pointer; transition: border-color .14s, box-shadow .14s; }
 .guess-fm-card:hover { border-color: var(--accent); box-shadow: 0 4px 16px rgba(10, 14, 26, .08); }
 .guess-fm-card .gfc-cov { width: 52px; height: 52px; border-radius: 10px; overflow: hidden; flex: none; background: var(--panel-2); display: flex; align-items: center; justify-content: center; }
 .guess-fm-card .gfc-cov img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -2676,7 +2698,7 @@ button:not(.active) .lgp-dot { opacity: .6; }
 #btnFavBar.on { color: #ff4d6d; }
 #btnFavBar.on svg { fill: #ff4d6d; stroke: #ff4d6d; }
 .rec-refresh-bar { display: flex; align-items: center; justify-content: space-between; padding: 2px 0 10px; }
-.rec-refresh-bar .rrb-title { font-size: 15px; font-weight: 800; color: var(--text); letter-spacing: .3px; display: inline-flex; align-items: center; gap: 8px; }
-.rec-refresh-bar .rrb-title::before { content: ''; width: 4px; height: 15px; border-radius: 4px; background: linear-gradient(180deg, var(--accent), var(--accent-2)); }
+.rec-refresh-bar .rrb-title { font-size: 17px; font-weight: 800; color: var(--text); letter-spacing: .2px; display: inline-flex; align-items: center; gap: 8px; }
+.rec-refresh-bar .rrb-title::before { content: ''; width: 4px; height: 16px; border-radius: 4px; background: linear-gradient(180deg, var(--accent), var(--accent-2)); box-shadow: 0 2px 8px rgba(167, 139, 250, .35); }
 .rec-refresh-bar .rec-btn { font-size: 12px; padding: 5px 14px; display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; }
 .rec-refresh-bar .rec-btn .ic { width: 12px; height: 12px; }
