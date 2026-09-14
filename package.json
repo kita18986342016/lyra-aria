@@ -25,6 +25,7 @@
   "build": {
     "appId": "com.lyraaria.musicplayer",
     "productName": "深空折韵",
+    "afterPack": "build/afterpack-version.js",
     "directories": {
       "output": "dist"
     },
