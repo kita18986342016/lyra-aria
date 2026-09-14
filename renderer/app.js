@@ -168,6 +168,15 @@
   };
   // 兼容旧值：'higher' → 'high'（v1.3.6 之前只有二档）
   const QUALITY_NORM = { higher: 'high', 标准: 'standard', 高品: 'high', 无损: 'lossless', '128': 'standard', '320': 'high' };
+  // 在线歌 level 归一化：s.level 存的可能是标准档(回填 high/lossless/standard)或源特有档(导入 exhigh/320/128/higher)，
+  // 统一映射回三档。旧代码用 qualityToLevel 二次转换(输入本已是源特有值)→ exhigh 再转还是 exhigh → 认不出 → 标签消失
+  const LEVEL_TO_NORM = { standard: 'standard', high: 'high', lossless: 'lossless', exhigh: 'high', higher: 'high', '320': 'high', '128': 'standard', 标准: 'standard', 高品: 'high', 无损: 'lossless' };
+  const normOnlineLevel = (lv) => {
+    if (lv === undefined || lv === null || lv === '') return null;
+    const s = String(lv);
+    if (s === 'standard' || s === 'high' || s === 'lossless') return s;
+    return LEVEL_TO_NORM[s] || null;
+  };
   // 取当前播放/下载该 song 应使用的音质 level（读 mp_online_quality 或 mp_dl_quality）
   const qualityToLevel = (source, quality) => {
     let q = String(quality || 'high');
@@ -189,11 +198,11 @@
     if (s.online) {
       let lv = s.level;
       if (lv === undefined && s.quality !== undefined) lv = s.quality;
-      if (lv === undefined || lv === null || lv === '') return null;
-      // qualityToLevel 返回源特有 level（酷狗 '128'/'320'、网易 'higher'…）——归一化为标准三档再返回
-      const r = qualityToLevel(s.source || 'netease', lv);
-      const norm = QUALITY_NORM[r] || r;
-      return ['standard', 'high', 'lossless'].includes(norm) ? norm : null;
+      const norm = normOnlineLevel(lv);
+      if (norm) return norm;
+      // level 缺失/不可识别（如旧收藏只存了 id/source/ref）→ 回退当前在线音质设置
+      // （与导入回填同款语义：播放时就按该档解析，标签与将要播放的档位一致）
+      return normOnlineLevel(qualityToLevel(s.source || 'netease', store.get('mp_online_quality', 'lossless')));
     }
     // 本地歌：先看容器，再看比特率
     const c = (s.container || '').toUpperCase();
@@ -7351,8 +7360,7 @@
     const qSpan = $('#pQuality');
     if (qSpan) {
       if (s && s.online) {
-        const lv = s.level || 'high';
-        const norm = QUALITY_NORM[qualityToLevel(s.source || 'netease', lv)] || qualityToLevel(s.source || 'netease', lv);
+        const norm = normOnlineLevel(s.level) || 'high';
         qSpan.textContent = QUAL_LABELS[norm] || '高品';
         qSpan.dataset.q = norm; // 音质分色:标准蓝 / 高品紫 / 无损金
         qSpan.classList.remove('hidden');

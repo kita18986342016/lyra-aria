@@ -1836,8 +1836,8 @@ function main() {
         if (src && ref) pcTombstone('fav:' + src + ':' + ref);
         favs = favs.filter((f) => !same(f));
       } else if (song && typeof song === 'object' && song.online && typeof song.id === 'string') {
-        // 在线歌曲收藏：存完整歌曲对象（含 source/ref，重启后可恢复播放）
-        favs.push({ id: song.id, online: true, source: song.source, ref: song.ref, title: song.title, artist: song.artist || '', album: song.album || '', duration: song.duration || 0, picUrl: song.picUrl || '', updatedAt: Date.now() });
+        // 在线歌曲收藏：存完整歌曲对象（含 source/ref，重启后可恢复播放；level 供音质徽标，缺失时渲染层回退在线音质设置）
+        favs.push({ id: song.id, online: true, source: song.source, ref: song.ref, title: song.title, artist: song.artist || '', album: song.album || '', duration: song.duration || 0, picUrl: song.picUrl || '', level: song.level || '', updatedAt: Date.now() });
       } else {
         favs.push(id);
       }
