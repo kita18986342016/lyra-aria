@@ -1296,6 +1296,7 @@
   function applyRecSections() {
     const v = recSections();
     const grid = $('#recSections'); if (grid) grid.style.display = v.recPls ? '' : 'none';
+    const rbar = document.querySelector('.rec-refresh-bar'); if (rbar) rbar.style.display = v.recPls ? '' : 'none';
     const bar = document.querySelector('.rec-srcsplit'); if (bar) bar.style.display = v.recPls ? '' : 'none';
     const guess = $('#recGuessSec'); if (guess) guess.style.display = v.guess ? '' : 'none';
   }
