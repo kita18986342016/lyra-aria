@@ -1131,7 +1131,7 @@
       const dlAllP = $('#oplDlAll');
       if (dlAllP) { dlAllP.classList.remove('hidden'); dlAllP.onclick = () => openDlDialog(list); }
     } else if (view.startsWith('opl:')) {
-      try { const __p = state.onlinePlaylists.find((x) => 'opl:' + x.id === view); if (__p) window.api.recordRecPl({ id: __p.id, name: __p.name, source: __p.source, cover: __p.cover || '' }).catch(() => {}); } catch (e) {}
+      try { const __p = state.onlinePlaylists.find((x) => 'opl:' + x.id === view); if (__p && !__p._temp) window.api.recordRecPl({ id: __p.id, name: __p.name, source: __p.source, cover: __p.cover || '' }).catch(() => {}); } catch (e) {}
       const pl = state.onlinePlaylists.find((x) => 'opl:' + x.id === view);
       if (!pl) return setView('library');
       title = pl.name;
@@ -1288,8 +1288,9 @@
   // 拉取推荐数据并渲染（登录态变化后调用 refreshRecommend）
   // force=true：忽略缓存强制重新拉取（顶栏刷新按钮）；默认：10 分钟缓存内直接复用上次结果
   // 推荐页区块可见性（组件化）：{daily,recPls,guess} 1/0，至少保留一个
+  // 注意：历史存储混用过 布尔false 与 数字0（写回时未点字段存布尔），布尔 false !== 0 为 true → "关"被读成"开"，两种假值都要认
   function recSections() {
-    try { const o = JSON.parse(store.get('mp_rec_sections', '{"daily":1,"recPls":1,"guess":1}')); return { daily: o.daily !== 0, recPls: o.recPls !== 0, guess: o.guess !== 0 }; }
+    try { const o = JSON.parse(store.get('mp_rec_sections', '{"daily":1,"recPls":1,"guess":1}')); const on = (x) => x !== 0 && x !== false; return { daily: on(o.daily), recPls: on(o.recPls), guess: on(o.guess) }; }
     catch { return { daily: true, recPls: true, guess: true }; }
   }
   function applyRecSections() {
@@ -1297,7 +1298,6 @@
     const grid = $('#recSections'); if (grid) grid.style.display = v.recPls ? '' : 'none';
     const bar = document.querySelector('.rec-srcsplit'); if (bar) bar.style.display = v.recPls ? '' : 'none';
     const guess = $('#recGuessSec'); if (guess) guess.style.display = v.guess ? '' : 'none';
-    const rr = document.getElementById('recRecentSec'); if (rr) rr.style.display = v.recPls ? '' : 'none';
   }
   async function loadRecommend(force) {
     const sec = $('#recSections');
@@ -1307,7 +1307,6 @@
     if (!force && fresh) {
       sec.innerHTML = '';
       renderRecSections(recCache.data.data || {});
-      renderRecRecent();
       applyRecSections();
       return;
     }
@@ -1321,7 +1320,6 @@
     renderRecSections(data.data || {});
     const gl = $('#guessList');
     if (gl && !gl.children.length && recSections().guess) generateGuess();
-    renderRecRecent();
     applyRecSections();
   }
   // 刷新推荐（登录/登出后调用：不重建登录卡，只重拉各分区）
@@ -1381,7 +1379,6 @@
     return null;
   }
   // —— 猜你喜欢：按常听歌手生成（熟歌为主 + 尝新掺新），整批听完自动换新一批 ——
-  let guessSongs = [];
   function guessRatioGet() {
     const n = Number(store.get('mp_guess_ratio', '0.3'));
     return Number.isFinite(n) ? Math.min(0.5, Math.max(0, n)) : 0.3;
@@ -1404,6 +1401,8 @@
     });
     return [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([name, weight]) => ({ name, weight }));
   }
+  // FM 单曲连播（对齐手机端）：一次只播一首，播完自动取下一首（池空重抽一批）
+  const guessFm = { active: false, pool: [] };
   async function generateGuess(autoplay) {
     const list = $('#guessList');
     if (!list) return;
@@ -1412,33 +1411,64 @@
     if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
     let r = null;
     try { r = await window.api.recGuess(buildSeedArtists(), guessRatioGet()); } catch { r = null; }
-    if (btn) { btn.disabled = false; btn.textContent = '换一批'; }
+    if (btn) { btn.disabled = false; }
     if (!r || !r.ok || !r.songs || !r.songs.length) {
+      guessFm.pool = [];
       list.innerHTML = '<div class="rec-hint">生成失败：' + ((r && r.reason) || '常听数据不足或网络异常') + '</div>';
+      if (btn) btn.textContent = '重试';
       return;
     }
-    renderGuess(r.songs, autoplay);
+    guessFm.pool = r.songs;
+    if (autoplay) { startGuessFm(); return; }
+    renderGuessCard();
+    if (btn) btn.textContent = '开始猜';
   }
-  function renderGuess(songs, autoplay) {
+  function renderGuessCard() {
     const list = $('#guessList');
     if (!list) return;
-    guessSongs = songs;
-    state.guessBatch = songs;
+    const btn = $('#guessBtn'); if (btn) btn.textContent = guessFm.active ? '换一首' : '开始猜';
+    const cur = guessFm.active ? (currentSong() || guessFm.pool[0]) : guessFm.pool[0];
+    if (!cur) { list.innerHTML = '<div class="rec-hint">暂无推荐 — 先听几首或收藏歌曲</div>'; return; }
     list.innerHTML = '';
-    songs.forEach((sg, i) => {
-      const row = el('div', 'guess-row');
-      row.innerHTML = '<span class="g-idx">' + (i + 1) + '</span><span class="g-main"><span class="g-title"></span><span class="g-artist"></span></span><span class="g-dur">' + fmtTime(sg.duration) + '</span>';
-      row.querySelector('.g-title').textContent = sg.title || '未知';
-      row.querySelector('.g-artist').textContent = sg.artist || '';
-      row.title = (sg.title || '') + ' - ' + (sg.artist || '');
-      row.addEventListener('dblclick', () => {
-        playList(guessSongs, i, 0, true, true, true);
-        state.queueSource = 'guess';
-        toast('猜你喜欢 ' + guessSongs.length + ' 首：整批听完自动换新一批');
-      });
-      list.appendChild(row);
-    });
-    if (autoplay && songs.length) { playList(songs, 0, 0, true, true, true); state.queueSource = 'guess'; }
+    const card = el('div', 'guess-fm-card');
+    card.innerHTML = '<div class="gfc-cov">' + (cur.picUrl ? '<img loading="lazy" alt="">' : '<span class="gfc-note">♪</span>') + '</div><div class="gfc-info"><div class="gfc-title"></div><div class="gfc-artist"></div></div>' + (guessFm.active ? '<button class="rec-btn rec-btn-ghost gfc-skip">跳过</button>' : '');
+    if (cur.picUrl) card.querySelector('img').src = cur.picUrl;
+    card.querySelector('.gfc-title').textContent = cur.title || '未知';
+    card.querySelector('.gfc-artist').textContent = cur.artist || '';
+    card.addEventListener('click', (e) => { if (!e.target.closest('.gfc-skip')) startGuessFm(); });
+    const sk = card.querySelector('.gfc-skip');
+    if (sk) sk.addEventListener('click', (e) => { e.stopPropagation(); guessFmAdvance(true); });
+    list.appendChild(card);
+  }
+  async function startGuessFm() {
+    if (!guessFm.pool.length) { await generateGuess(true); return; }
+    const s = guessFm.pool[0];
+    await playList([s], 0, 0, true, true, true);
+    guessFm.active = true;
+    state.queueSource = 'guess';
+    renderGuessCard();
+  }
+  // 播完/跳过 → 取池内下一首；池空重抽一批；自动续播关 → 停
+  async function guessFmAdvance(skipped) {
+    if (!guessFm.active) return;
+    if (!skipped && store.get('mp_guess_auto', '1') === '0') { guessFm.active = false; renderGuessCard(); return; }
+    if (guessFm.pool.length <= 1) {
+      let r = null;
+      try { r = await window.api.recGuess(buildSeedArtists(), guessRatioGet()); } catch { r = null; }
+      if (r && r.ok && r.songs && r.songs.length) { guessFm.pool = r.songs; }
+      else { guessFm.pool = []; guessFm.active = false; renderGuessCard(); return; }
+    } else {
+      guessFm.pool.shift();
+    }
+    const s = guessFm.pool[0];
+    const q = state.queue.slice(0, state.queueIndex + 1);
+    q.push(s);
+    state.queue = q;
+    state.queueIndex = q.length - 1;
+    await playList(q, q.length - 1, 0, true, false, true);
+    state.queueSource = 'guess';
+    renderGuessCard();
+    updateQueueUI();
   }
   // 账号状态同步：设置-账号管理区 + 顶栏账号按钮（推荐页登录卡已移除，登录入口 = 顶栏菜单 / 设置）
   function updateRecAccountBar() {
@@ -1472,6 +1502,8 @@
     const sec = $('#recSections');
     if (!sec) return;
     sec.innerHTML = '';
+    const dailyHost = $('#recDailyHost') || sec;
+    dailyHost.innerHTML = '';
     const net = d.netease || {};
     const kg = d.kugou || {};
     // ---- 每日推荐（固定，不随平台筛选隐藏）----
@@ -1480,10 +1512,20 @@
       const blk = recBlock('每日推荐', net.dailyGuest ? '通用每日推荐 · ' + net.daily.length + ' 首 · 登录解锁个性化' : '网易云为你精选 · ' + net.daily.length + ' 首');
       blk.classList.add('rec-block-daily');
       const dailyArr = net.daily.map((s) => ({ id: s.id, online: true, source: 'netease', ref: s.ref, title: s.title, artist: s.artist, picUrl: s.picUrl, duration: s.duration }));
+      // 面板头部动作：播放全部 + 查看全部（虚拟临时歌单进详情视图，不落库不进口袋）
+      const acts = el('span', 'daily-acts');
+      const bAll = el('button', 'rec-btn rec-btn-ghost', '播放全部');
+      bAll.addEventListener('click', () => playList(dailyArr, 0, 0, true, true, true));
+      const bView = el('button', 'rec-btn rec-btn-ghost', '查看全部 ' + net.daily.length + ' 首 ›');
+      bView.addEventListener('click', () => openDailyPlaylist(net.daily));
+      acts.append(bAll, bView);
+      blk.querySelector('.rec-block-head').appendChild(acts);
       const list = el('div', 'daily-list');
       net.daily.slice(0, 10).forEach((s, i) => {
         const row = el('div', 'daily-row');
-        row.innerHTML = '<span class="d-idx">' + (i + 1) + '</span><span class="d-main"><span class="d-title"></span><span class="d-artist"></span></span>' + (s.reason ? '<span class="d-reason"></span>' : '');
+        row.innerHTML = '<span class="d-idx">' + (i + 1) + '</span><span class="d-cov"><img loading="lazy" alt=""></span><span class="d-main"><span class="d-title"></span><span class="d-artist"></span></span>' + (s.reason ? '<span class="d-reason"></span>' : '');
+        row.querySelector('.d-cov img').src = s.picUrl || '';
+        if (!s.picUrl) row.querySelector('.d-cov').classList.add('no-img');
         row.querySelector('.d-title').textContent = s.title || '未知';
         row.querySelector('.d-artist').textContent = s.artist || '';
         if (s.reason) row.querySelector('.d-reason').textContent = s.reason;
@@ -1493,10 +1535,10 @@
         list.appendChild(row);
       });
       blk.appendChild(list);
-      sec.appendChild(blk);
+      dailyHost.appendChild(blk);
     } else if (!(net.daily && net.daily.length) && net.dailyNeedLogin) {
       const blk = recBlock('每日推荐', '每日推荐获取失败，稍后重试；登录网易云账号可解锁个性化推荐');
-      sec.appendChild(blk);
+      dailyHost.appendChild(blk);
     }
     // ---- 平台切换条（全部 / 网易云 / 酷狗），选择持久化（mp_rec_plat_filter）----
     const bar = el('div', 'rec-srcsplit');
@@ -1529,30 +1571,15 @@
     if (!sec.children.length) sec.innerHTML = '<div class="rec-hint">暂无推荐（网络异常或平台接口暂不可用）</div>';
   }
 
-  // 分区容器：标题 + 副题
-  // 推荐页「最近听过」横排（recent-pls 持久化，点击回打开歌单；随 recPls 开关显隐）
-  async function renderRecRecent() {
-    const old = document.getElementById('recRecentSec'); if (old) old.remove();
-    if (!recSections().recPls) return;
-    let list = [];
-    try { list = await window.api.getRecPls(); } catch { return; }
-    if (!list || !list.length) return;
-    const grid = $('#recSections'); if (!grid) return;
-    const host = grid.parentElement; // 挂在 recSections 外层（推荐页容器），不随 recPls 开关隐藏
-    const blk = recBlock('最近听过', '最近打开过的歌单');
-    blk.id = 'recRecentSec';
-    const chips = el('div', 'rec-recent-row');
-    list.forEach((it) => {
-      const c = el('div', 'rec-recent-chip');
-      c.innerHTML = (it.cover ? '<img src="' + esc(it.cover) + '" alt="">' : '<span class="rr-ph">♪</span>') + '<span class="rr-name"></span>';
-      c.querySelector('.rr-name').textContent = it.name || '歌单';
-      c.title = it.name || '';
-      c.addEventListener('click', () => { const pl = state.onlinePlaylists.find((x) => x.id === it.id); if (pl) setView('opl:' + it.id); else toast('该歌单已不在在线列表中'); });
-      chips.appendChild(c);
-    });
-    blk.appendChild(chips);
-    host.appendChild(blk);
+  // 每日推荐「查看全部」：构造当日快照临时歌单进详情视图（不入库、不进侧边栏、不进最近听过）
+  function openDailyPlaylist(daily) {
+    const songs = daily.map((s) => ({ id: s.id, online: true, source: 'netease', ref: s.ref, title: s.title, artist: s.artist, album: s.album || '', picUrl: s.picUrl, duration: s.duration }));
+    state.onlinePlaylists = state.onlinePlaylists.filter((p) => p.id !== 'daily-tmp');
+    const pl = { id: 'daily-tmp', name: '每日推荐', source: 'netease', cover: (songs[0] || {}).picUrl || '', desc: '网易云每日推荐 · 当日快照', songs, _temp: true };
+    state.onlinePlaylists.push(pl);
+    setView('opl:daily-tmp');
   }
+  // 分区容器：标题 + 副题
   function recBlock(title, sub) {
     const blk = el('div', 'rec-block');
     const head = el('div', 'rec-block-head');
@@ -3534,6 +3561,7 @@
       await fadeOut(150);
       state._switching = false;
     }
+    if (fromUser) { state.queueSource = null; if (guessFm.active) { guessFm.active = false; renderGuessCard(); } } // 用户点歌 → 退出猜你喜欢 FM
     state.queue = list.slice();
     state.queueIndex = idx;
     // 用户主动点歌：重置该曲的断流重试计数（全新播放允许重新重连；自动连播不重置，防单曲 queue 死循环）
@@ -3685,6 +3713,8 @@
 
   function playNext() {
     if (!state.queue.length) return;
+    // 猜你喜欢 FM：用户主动下一首 = 跳过（不受自动续播开关限制；自然播完走 ended 分支）
+    if (state.queueSource === 'guess' && guessFm.active) { guessFmAdvance(true); return; }
     if (state.mode === 'shuffle') {
       if (state.queue.length === 1) return;
       // 走无重复随机顺序；一轮播完 → 重排（当前曲目放最前，下一首必为其他歌）
@@ -3705,17 +3735,7 @@
       playList(state.queue, n, 0, true, false, true);
       return;
     }
-    if (state.queueIndex >= state.queue.length - 1 && state.guessBatch && state.queue.length === state.guessBatch.length && state.queue[0] && state.guessBatch[0].id === state.queue[0].id) {
-      // 自动续播开关（mp_guess_auto 默认开）：关=循环本批不换新
-      if (store.get('mp_guess_auto', '1') === '0') { playList(state.queue, 0, 0, true, false, true); return; }
-      (async () => {
-        let r = null;
-        try { r = await window.api.recGuess(buildSeedArtists(), guessRatioGet()); } catch { r = null; }
-        if (r && r.ok && r.songs && r.songs.length) { renderGuess(r.songs, true); toast('猜你喜欢已换新一批'); }
-        else playList(state.queue, 0, 0, true, false, true);
-      })();
-      return;
-    }
+
     const next = (state.queueIndex + 1) % state.queue.length;
     playList(state.queue, next);
   }
@@ -6246,6 +6266,8 @@
         audio.volume = 0;
         audio.currentTime = 0;
         audio.play().catch(() => {});
+      } else if (state.queueSource === 'guess' && guessFm.active) {
+        guessFmAdvance(false); // 猜你喜欢 FM：播完自动续猜
       } else {
         playNext();
       }
@@ -6611,7 +6633,7 @@
       }
     });
     // 猜你喜欢：生成/换一批 + 设置-常规 尝新比例
-    $('#guessBtn') && ($('#guessBtn').onclick = () => generateGuess(false));
+    $('#guessBtn') && ($('#guessBtn').onclick = () => { if (guessFm.active) { guessFmAdvance(true); } else if (guessFm.pool.length) { startGuessFm(); } else { generateGuess(true); } });
     document.querySelectorAll('#stGuessRatio .st-mode').forEach((b) => {
       b.classList.toggle('active', Number(b.dataset.r) === guessRatioGet());
       b.addEventListener('click', () => {
@@ -7171,7 +7193,7 @@
       const onCount = Object.values(cur).filter(Boolean).length;
       if (cur[k] && onCount <= 1) { toast('至少保留一个推荐页区块'); return; }
       cur[k] = cur[k] ? 0 : 1;
-      store.set('mp_rec_sections', JSON.stringify({ daily: cur.daily, recPls: cur.recPls, guess: cur.guess }));
+      store.set('mp_rec_sections', JSON.stringify({ daily: cur.daily ? 1 : 0, recPls: cur.recPls ? 1 : 0, guess: cur.guess ? 1 : 0 }));
       applyRecSections(); syncRecSectionBtns();
     }));
     // 皮肤选择（v1.3.8 #18）：收束按钮 → 弹出放大选择面板

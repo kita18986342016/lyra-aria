@@ -2370,10 +2370,16 @@ html[data-skin] #skinPanel { background: var(--panel); }
 .rec-block.rec-block-daily { background: linear-gradient(120deg, rgba(124, 92, 255, .12), rgba(74, 144, 255, .07) 55%, transparent); border: 1px solid rgba(124, 92, 255, .16); border-radius: 16px; padding: 14px 16px 16px; margin-bottom: 22px; }
 html[data-theme="light"] .rec-block.rec-block-daily { background: linear-gradient(120deg, rgba(124, 92, 255, .10), rgba(74, 144, 255, .06) 55%, transparent); border-color: rgba(124, 92, 255, .18); }
 .rec-block-daily .rec-block-head { margin-bottom: 10px; }
+.rec-block-daily .daily-acts { margin-left: auto; display: inline-flex; gap: 8px; align-self: center; }
+.rec-block-daily .daily-acts .rec-btn { font-size: 11.5px; padding: 4px 12px; border-radius: 999px; }
 .daily-list { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 18px; }
-.daily-row { display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; cursor: default; transition: background .12s; }
+.daily-row { display: grid; grid-template-columns: 22px 40px 1fr auto; align-items: center; gap: 9px; padding: 5px 8px; border-radius: 9px; cursor: default; transition: background .12s; }
 .daily-row:hover { background: rgba(124, 92, 255, .10); }
 .daily-row .d-idx { color: var(--muted); font-size: 12px; text-align: center; font-weight: 700; }
+.daily-row .d-cov { width: 40px; height: 40px; border-radius: 8px; overflow: hidden; background: var(--panel-2); display: flex; align-items: center; justify-content: center; }
+.daily-row .d-cov img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.daily-row .d-cov.no-img img { display: none; }
+.daily-row .d-cov.no-img::after { content: '♪'; color: var(--muted); font-size: 16px; }
 .daily-row:hover .d-idx { color: var(--accent); }
 .daily-row .d-main { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .daily-row .d-title { font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2654,30 +2660,21 @@ button:not(.active) .lgp-dot { opacity: .6; }
 .rec-guess-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 10px; }
 .rec-guess-title { margin: 0; font-size: 17px; font-weight: 800; letter-spacing: .5px; }
 .rec-guess-sub { color: var(--muted); font-size: 12px; margin-left: 10px; }
-.guess-list { max-height: 480px; overflow-y: auto; border: 1px solid var(--line); border-radius: 14px; padding: 6px; }
-.guess-row { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; cursor: default; }
-.guess-row:hover { background: var(--panel-2); }
-.guess-row { transition: background .12s; }
-.guess-row:hover .g-title { color: var(--accent); }
-.guess-list .guess-row:nth-child(-n+3) .g-idx { color: var(--accent); font-weight: 800; }
-.guess-row .g-idx { color: var(--muted); font-size: 12px; text-align: center; }
-.guess-row .g-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.guess-row .g-title { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.guess-row .g-artist { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.guess-row .g-dur { color: var(--muted); font-size: 12px; }
-
+/* 猜你喜欢 FM 单曲卡（对齐手机端：一次一首，播完自动续猜） */
+.guess-fm { margin-top: 4px; }
+.guess-fm-card { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); cursor: pointer; transition: border-color .14s, box-shadow .14s; }
+.guess-fm-card:hover { border-color: var(--accent); box-shadow: 0 4px 16px rgba(10, 14, 26, .08); }
+.guess-fm-card .gfc-cov { width: 52px; height: 52px; border-radius: 10px; overflow: hidden; flex: none; background: var(--panel-2); display: flex; align-items: center; justify-content: center; }
+.guess-fm-card .gfc-cov img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.guess-fm-card .gfc-note { color: var(--muted); font-size: 22px; }
+.guess-fm-card .gfc-info { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.guess-fm-card .gfc-title { font-size: 14px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guess-fm-card .gfc-artist { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guess-fm-card .gfc-skip { flex: none; font-size: 12px; padding: 5px 14px; border-radius: 999px; }
+.guess-fm .rec-hint { padding: 8px 2px; }
 .st-group-sub { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
 #btnFavBar.on { color: #ff4d6d; }
 #btnFavBar.on svg { fill: #ff4d6d; stroke: #ff4d6d; }
-/* 推荐页「最近听过」横排 */
-.rec-recent-row { display: flex; gap: 10px; overflow-x: auto; padding: 4px 2px 8px; }
-.rec-recent-chip { flex: none; width: 92px; cursor: pointer; }
-.rec-recent-chip img, .rec-recent-chip .rr-ph { width: 92px; height: 92px; border-radius: 10px; object-fit: cover; display: block; }
-.rec-recent-chip .rr-ph { background: var(--panel-2); color: var(--muted); display: flex; align-items: center; justify-content: center; font-size: 26px; }
-.rec-recent-chip .rr-name { display: block; margin-top: 6px; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rec-recent-chip { transition: transform .15s; }
-.rec-recent-chip:hover { transform: translateY(-2px); }
-.rec-recent-chip:hover img { filter: brightness(1.08); box-shadow: 0 8px 20px rgba(10, 14, 26, .16); }
 .rec-refresh-bar { display: flex; align-items: center; justify-content: space-between; padding: 2px 0 10px; }
 .rec-refresh-bar .rrb-title { font-size: 15px; font-weight: 800; color: var(--text); letter-spacing: .3px; display: inline-flex; align-items: center; gap: 8px; }
 .rec-refresh-bar .rrb-title::before { content: ''; width: 4px; height: 15px; border-radius: 4px; background: linear-gradient(180deg, var(--accent), var(--accent-2)); }

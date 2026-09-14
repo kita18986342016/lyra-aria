@@ -3099,6 +3099,9 @@ function main() {
         if (n.cookie && /MUSIC_U=/.test(n.cookie)) daily = await neteaseAcc.recommendSongs();
         else daily = await neteaseAcc.guestDaily(); // 游客态：明文端点通用推荐
         pls = await neteaseAcc.personalizedPlaylists(30);
+        // 服务端无视分页参数（实测 offset 0/30/60 返回相同）→ 本地洗牌全量 30 条，
+        // 渲染层取前 10：每次刷新（重走本 handler）展示的歌单子集随机变化
+        for (let i = (pls.playlists || []).length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = pls.playlists[i]; pls.playlists[i] = pls.playlists[j]; pls.playlists[j] = t; }
         out.netease = {
           loggedIn: !!(n.cookie && /MUSIC_U=/.test(n.cookie)),
           daily: daily.songs.map((s) => ({
@@ -3114,7 +3117,7 @@ function main() {
       }
       if (!platform || platform === 'kugou') {
         const k = kugouAcc.getState();
-        const pr = await kugouAcc.recommendPlaylists(0, 1, 30);
+        const pr = await kugouAcc.recommendPlaylists(0, 1 + Math.floor(Math.random() * 4), 30);
         out.kugou = {
           loggedIn: !!(k.token && k.userid),
           playlists: (pr.playlists || []).map((p) => ({

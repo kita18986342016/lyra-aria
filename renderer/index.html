@@ -516,16 +516,17 @@
       <div id="empty" class="hidden"></div>
       <!-- 推荐页：两平台推荐歌单（网易云/酷狗）+ 每日推荐；登录入口在顶栏账号菜单 / 设置-账号管理 -->
       <div id="recommendView" class="hidden">
-        <div class="rec-refresh-bar">        <div class="rec-refresh-bar"><span class="rrb-title">为你推荐</span><button id="recRefreshBtn" class="rec-btn rec-btn-ghost" title="清缓存重新拉取推荐"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>刷新推荐</button></div>
-        <div id="recSections"></div>
-        <!-- 猜你喜欢：按常听歌手生成（熟歌为主 + 尝新掺新），整批听完自动换新一批 -->
+        <div class="rec-refresh-bar"><span class="rrb-title">为你推荐</span><button id="recRefreshBtn" class="rec-btn rec-btn-ghost" title="清缓存重新拉取推荐"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>刷新推荐</button></div>
+        <div id="recDailyHost"></div>
+        <!-- 猜你喜欢：FM 单曲连播（对齐手机端）：按常听歌手生成，播完自动续猜 -->
         <div class="rec-guess" id="recGuessSec">
           <div class="rec-guess-head">
-            <div><h2 class="rec-guess-title">猜你喜欢</h2><span class="rec-guess-sub">按你常听的歌手生成 · 听完自动换新一批</span></div>
-            <button id="guessBtn" class="rec-btn rec-btn-ghost">生成</button>
+            <div><h2 class="rec-guess-title">猜你喜欢</h2><span class="rec-guess-sub">按你常听的歌手生成 · 播完自动续猜</span></div>
+            <button id="guessBtn" class="rec-btn rec-btn-ghost">开始猜</button>
           </div>
-          <div id="guessList" class="guess-list"></div>
+          <div id="guessList" class="guess-fm"></div>
         </div>
+        <div id="recSections"></div>
       </div>
     </section>
 

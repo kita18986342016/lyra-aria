@@ -291,8 +291,9 @@ async function recommendResources() {
   };
 }
 // 个性推荐歌单（匿名可）
+// 注：实测服务端无视 offset/cursor（0/30/60 返回完全相同），换一批只能在调用方对全量结果洗牌
 async function personalizedPlaylists(limit = 30) {
-  const r = await weapiPost('/weapi/personalized/playlist', { limit, total: true, n: 1000 }, cookieFor());
+  const r = await weapiPost('/weapi/personalized/playlist', { offset: 0, limit, total: true, n: 1000 }, cookieFor());
   const list = (r.json && r.json.result) || [];
   return {
     ok: r.json && Number(r.json.code) === 200, code: r.json && r.json.code,
