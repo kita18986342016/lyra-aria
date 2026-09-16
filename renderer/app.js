@@ -374,7 +374,8 @@
     const bgRows = ['stBgMode', 'stBgPresets', 'stBgStrength', 'bgBlurRow', 'stBgModeTip'];
     bgRows.forEach((id) => {
       const el = document.getElementById(id);
-      if (el) el.style.display = skinActive ? 'none' : '';
+      const target = id === 'stBgMode' && el ? (el.closest('.dd') || el) : el; // 折叠后隐藏整个胶囊，避免皮肤激活时还能点开空下拉
+      if (target) target.style.display = skinActive ? 'none' : '';
     });
   }
   // #18 背景预设（v1.3.8 收束版）：设置行收束成小按钮显示当前预设名，点击弹出放大选择面板（12 项网格）
@@ -6736,7 +6737,7 @@
     const gAuto = $('#stGuessAuto');
     if (gAuto) {
       gAuto.checked = store.get('mp_guess_auto', '1') !== '0';
-      gAuto.addEventListener('change', () => { store.set('mp_guess_auto', gAuto.checked ? '1' : '0'); toast(gAuto.checked ? '整批听完将自动换新一批' : '整批听完将停止'); });
+      gAuto.addEventListener('change', () => { store.set('mp_guess_auto', gAuto.checked ? '1' : '0'); toast(gAuto.checked ? '已开启：一首播完自动续猜下一首' : '已关闭：播完停止'); });
     }
     $('#accBiliLogout').addEventListener('click', async () => {
       const r = await window.api.biliLogout().catch(() => null);
@@ -7261,21 +7262,9 @@
         applyAppearance();
       }));
       collapseDropdown('stBgMode');
+      applyAppearance(); // 折叠后重放皮肤互斥隐藏（此时 .dd 容器已存在）
     }
     bindGroup('stProgressStyle', 'mp_progress_style', applyAppearance);
-    // 歌单位置：tab=底栏标签 / me=嵌入我的页
-    const applyPlLoc = () => {
-      const inMe = (window.localStorage.getItem('mp_pl_loc') || 'tab') === 'me';
-      document.querySelectorAll('.nav-item[data-view="pls"]').forEach((x) => x.style.display = inMe ? 'none' : '');
-      const meSec = document.getElementById('mePlaylists'); if (meSec) meSec.style.display = inMe ? '' : 'none';
-    };
-    applyPlLoc();
-    document.querySelectorAll('#setPlLoc .seg-item').forEach((b) => b.addEventListener('click', () => {
-      localStorage.setItem('mp_pl_loc', b.dataset.v);
-      document.querySelectorAll('#setPlLoc .seg-item').forEach((x) => x.classList.toggle('active', x === b));
-      applyPlLoc();
-    }));
-    applyPlLoc(); // 初始执行（在 DOM ready 后 bindGroup 调用时 DOM 已就绪）
     // 推荐页区块开关（多选切换，至少保留一个）
     document.querySelectorAll('#stRecSections .st-mode').forEach((b) => b.addEventListener('click', () => {
       const k = b.dataset.rcsec; if (!k) return;

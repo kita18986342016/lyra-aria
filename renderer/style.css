@@ -1451,9 +1451,12 @@ html[data-theme="dark"] #diagOutput:hover { border-color: var(--accent); }
   opacity: 0; transform: translateY(-4px); pointer-events: none; transition: opacity .15s, transform .15s;
 }
 #settingsPanel .dd.open .dd-menu, .dd-menu.floating { opacity: 1; transform: none; pointer-events: auto; }
-/* 折叠进菜单的原分段条：等宽网格（复用其 .st-mode 选中态样式，零重写） */
-#settingsPanel .dd-menu .st-modes { display: grid; flex: none; }
-#settingsPanel .dd-menu .st-mode { white-space: nowrap; }
+/* 折叠进菜单的原分段条：竖排✓列表（对齐音质 dd-opt 表现；监听器随节点走，零重写） */
+#settingsPanel .dd-menu .st-modes { display: flex; flex-direction: column; background: transparent; border: none; padding: 0; gap: 0; }
+#settingsPanel .dd-menu .st-mode { flex: none; width: 100%; text-align: left; padding: 9px 12px; border-radius: 8px; position: relative; background: transparent; box-shadow: none; color: var(--text); font-weight: 400; white-space: nowrap; }
+#settingsPanel .dd-menu .st-mode:hover { background: var(--hover); color: var(--text); }
+#settingsPanel .dd-menu .st-mode.active { background: transparent; color: var(--accent); font-weight: 700; box-shadow: none; }
+#settingsPanel .dd-menu .st-mode.active::after { content: '✓'; position: absolute; right: 12px; color: var(--accent); }
 #settingsPanel .dd-opt {
   display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
   padding: 9px 12px; border: none; border-radius: 8px; background: transparent; color: var(--text);
