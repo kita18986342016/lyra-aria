@@ -239,6 +239,28 @@
     }));
     host._ddSync = sync;
   };
+  // 折叠现有 .st-modes 分段控件为下拉：移动原节点入浮层菜单（监听器随节点走，业务逻辑零重写），胶囊摘要跟随 .active 实时同步
+  const collapseDropdown = (segId) => {
+    const seg = document.getElementById(segId);
+    if (!seg || seg._collapsed) return; seg._collapsed = 1;
+    const row = seg.closest('.st-row'); if (!row) return;
+    const dd = document.createElement('div'); dd.className = 'dd';
+    const trigger = document.createElement('button'); trigger.type = 'button'; trigger.className = 'dd-trigger';
+    trigger.innerHTML = '<span class="dd-cur"></span><svg class="dd-chev" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>';
+    const menu = document.createElement('div'); menu.className = 'dd-menu';
+    row.insertBefore(dd, seg); dd.append(trigger, menu); menu.append(seg);
+    const n = seg.querySelectorAll('.st-mode').length;
+    seg.style.gridTemplateColumns = 'repeat(' + (n <= 4 ? n : 3) + ',1fr)';
+    const cur = trigger.querySelector('.dd-cur');
+    const sync = () => { const a = [...seg.querySelectorAll('.st-mode.active')]; cur.textContent = a.length ? a[0].textContent.trim() : '未设置'; };
+    sync();
+    try { new MutationObserver(sync).observe(seg, { subtree: true, attributes: true, attributeFilter: ['class'] }); } catch (e) {}
+    const place = () => { const r = trigger.getBoundingClientRect(); menu.style.minWidth = Math.max(r.width, 150) + 'px'; menu.style.maxWidth = '320px'; const h = Math.min(menu.scrollHeight + 12, 264); const below = r.bottom + 6; menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8)) + 'px'; menu.style.top = (below + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 6) : below) + 'px'; };
+    const close = () => { dd.classList.remove('open'); document.removeEventListener('mousedown', onDoc, true); window.removeEventListener('resize', close); };
+    const onDoc = (e) => { if (!dd.contains(e.target)) close(); };
+    trigger.addEventListener('click', (e) => { e.stopPropagation(); const willOpen = !dd.classList.contains('open'); document.querySelectorAll('#settingsPanel .dd.open').forEach((d) => d !== dd && d.classList.remove('open')); if (willOpen) { dd.classList.add('open'); place(); document.addEventListener('mousedown', onDoc, true); window.addEventListener('resize', close); } else close(); });
+    seg.addEventListener('click', () => { sync(); setTimeout(close, 160); });
+  };
   const QUAL_OPTS = [
     { v: 'standard', label: '标准 128kbps' },
     { v: 'high', label: '高品 320kbps' },
@@ -5989,6 +6011,7 @@
       else setSleepMode(+b.dataset.sleep);
     };
     document.querySelectorAll('#stSleepModes .st-mode').forEach((b) => b.addEventListener('click', () => applySleep(b)));
+    collapseDropdown('stSleepModes');
     $('#stSleepCustom').addEventListener('change', (e) => {
       const v = Math.max(1, Math.min(360, Math.round(Number(e.target.value) || 0)));
       e.target.value = v;
@@ -6032,6 +6055,7 @@
       b.classList.add('active');
       window.api.setLyricWin({ sweepStyle: b.dataset.sweep });
     }));
+    collapseDropdown('stLyrSweep');
     // 字体系统（v1.4 双目标）：桌面歌词默认/楷体/新魏/宋体 + ⋯ 全 9 款弹窗；界面字体同款，应用到整个软件 UI
     // default 默认 / kai 楷体 / xinwei 新魏 / songti 宋体 / yahei 雅黑 / noto 思源黑体 / misans MiSans / wenkai 文楷 / xingkai 行书
     const fontNames = { default: '默认', kai: '楷体', xinwei: '新魏', songti: '宋体', yahei: '雅黑', noto: '思源黑体', misans: 'MiSans', wenkai: '文楷', xingkai: '行书' };
@@ -7236,6 +7260,7 @@
         bgModeWrap.querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
         applyAppearance();
       }));
+      collapseDropdown('stBgMode');
     }
     bindGroup('stProgressStyle', 'mp_progress_style', applyAppearance);
     // 歌单位置：tab=底栏标签 / me=嵌入我的页

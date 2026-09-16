@@ -1451,6 +1451,9 @@ html[data-theme="dark"] #diagOutput:hover { border-color: var(--accent); }
   opacity: 0; transform: translateY(-4px); pointer-events: none; transition: opacity .15s, transform .15s;
 }
 #settingsPanel .dd.open .dd-menu, .dd-menu.floating { opacity: 1; transform: none; pointer-events: auto; }
+/* 折叠进菜单的原分段条：等宽网格（复用其 .st-mode 选中态样式，零重写） */
+#settingsPanel .dd-menu .st-modes { display: grid; flex: none; }
+#settingsPanel .dd-menu .st-mode { white-space: nowrap; }
 #settingsPanel .dd-opt {
   display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
   padding: 9px 12px; border: none; border-radius: 8px; background: transparent; color: var(--text);
