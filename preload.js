@@ -114,6 +114,7 @@ contextBridge.exposeInMainWorld('api', {
   leizResolve: (source, ref, level) => ipcRenderer.invoke('leiz:resolve', source, ref, level),
   leizLyrics: (source, ref, level) => ipcRenderer.invoke('leiz:lyrics', source, ref, level),
   // QQ 音乐官方接口（2026-08 起弃用第三方 API；登录态 Cookie 只存主进程，渲染层只拿状态摘要）
+  // ⚠️ [1.4.2-DELETE] 以下 qq* 桥接随 QQ 音源一并移除
   qqStatus: () => ipcRenderer.invoke('qq:status'),
   qqSetCookie: (cookie) => ipcRenderer.invoke('qq:setCookie', cookie),
   qqSearch: (query, limit) => ipcRenderer.invoke('qq:search', query, limit),

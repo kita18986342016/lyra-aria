@@ -143,7 +143,7 @@
     store.set('mp_search_n', JSON.stringify(merged));
   };
   // 启用的在线搜索音源（mp_search_srcs = JSON 数组；未设置时用 DEFAULT_SRCS）
-  const ALL_SRCS = ['netease', 'kugou', 'qq']; // 注册表：以后加音源在这里扩展
+  const ALL_SRCS = ['netease', 'kugou', 'qq']; // 注册表：以后加音源在这里扩展；⚠️ [1.4.2-DELETE] 'qq' 将于 v1.4.2 移除
   const DEFAULT_SRCS = ['netease', 'kugou', 'qq'];   // 默认启用集（QQ 源=波点酷我曲库）
   function enabledSources() {
     try {
@@ -1417,6 +1417,7 @@
   }
 
   // —— 播放失败换源兜底：本源解析不了 → 其他源找同歌（干净标题+歌手匹配），找到换源续播 ——
+  const normTitleStrict = (t) => String(t || '').trim().toLowerCase().replace(/s+/g, ''); // 仅去空格+小写，保留版本词
   function cleanTitleLoose(t) {
     let x = String(t || '');
     x = x.replace(/[\(（\[【].*?[\)）\]】]/g, ' ');
@@ -1424,11 +1425,12 @@
     return x.replace(/\s+/g, ' ').trim().toLowerCase();
   }
   async function findAltSource(song) {
-    const bare = cleanTitleLoose(song.title);
-    if (!bare) return null;
-    const artists = String(song.artist || '').split(/[、,/]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
-    const wFirst = (String(song.artist || '').split(/[、,/]/)[0] || '').trim().toLowerCase().replace(/[.。\s]+$/, '');
-    const normSoft = (x) => String(x || '').toLowerCase().replace(/[\s（）()\[\]]+/g, '');
+    // 精确匹配（用户决策）：歌名去空格小写后完全相等——Live版/翻唱/治愈版等改版歌只换「同一版本」，
+    // 不剥版本词去搜原版（有人就是爱听改版；悄悄塞原版=骗人）。歌手整词相等（非子串，防「王菲」误配「菲儿乐队」）。
+    const want = normTitleStrict(song.title);
+    if (!want) return null;
+    const artists = String(song.artist || '').split(/[、,，/]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+    const normSoft = (x) => String(x || '').toLowerCase().replace(/[s（）()[]]+/g, '');
     const albumEq = (a, b) => { const x = normSoft(a), y = normSoft(b); return !!x && !!y && (x === y || (x.includes(y) || y.includes(x)) && Math.min(x.length, y.length) >= 2); };
     let best = null, bestScore = -1, bestSrc = '';
     for (const src of ['kugou', 'netease', 'qq']) {
@@ -1436,34 +1438,28 @@
       try {
         let items = null;
         if (src === 'qq') {
-          const r = await window.api.qqSearch(bare, 10).catch(() => null);
+          const r = await window.api.qqSearch(String(song.title || ''), 10).catch(() => null);
           items = r && r.ok ? r.data : null;
         } else {
-          const r = await window.api.leizSearch(src, bare, 10).catch(() => null);
+          const r = await window.api.leizSearch(src, String(song.title || ''), 10).catch(() => null);
           items = r && r.ok ? r.data : null;
         }
         if (!Array.isArray(items)) continue;
         for (const it of items) {
           if (!it) continue;
-          const t = String(it.name || it.title || '').toLowerCase();
+          const t = String(it.name || it.title || '');
           const ar = String(it.artists || it.artist || '').toLowerCase();
-          if (!t || /变速|加速|减速|slowed|sped|pitch|remix|dj版|\bdj\b|cover|翻唱|伴奏|铃声|现场|live版|纯音乐|串烧|治愈版|伤感版|女声版|男生版/i.test(t + ' ' + ar)) continue;
-          const tc = cleanTitleLoose(t);
-          let sc = 0;
-          if (tc === bare) sc += 4;
-          else if ((tc.includes(bare) || bare.includes(tc)) && Math.min(tc.length, bare.length) >= 2) sc += 2;
-          else continue;
-          const artistOk = !artists.length || artists.some((a) => a && ar.includes(a));
-          if (!artistOk) continue;
-          if (song.album && it.album && albumEq(song.album, it.album)) sc += 3;
-          const cFirst = (String(it.artists || it.artist || '').split(/[、,/]/)[0] || '').trim().toLowerCase().replace(/[.。\s]+$/, '');
-          if (wFirst && cFirst === wFirst) sc += 2;
+          if (normTitleStrict(t) !== want) continue; // 歌名精确相等（含版本词）
+          const candArtists = ar.split(/[、,，/]/).map((x) => x.trim()).filter(Boolean);
+          // 对齐手机 strictFallback：两边都有歌手→整词相等必须命中；仅一边有 → 不换源（宁缺毋滥）
+          if (!(artists.length && candArtists.length && artists.some((a) => candArtists.some((ca) => ca === a)))) continue;
+          let sc = 1;
+          if (song.album && it.album && albumEq(song.album, it.album)) sc += 3; // 专辑命中优先（多版本消歧）
           if (sc > bestScore) { bestScore = sc; best = it; bestSrc = src; }
         }
       } catch { /* 单源失败继续 */ }
     }
-    // 兜底场景宁缺毋滥放宽到 4（解析失败时换到能播的同名歌优先于放弃）；.album 兜底字段可能缺失
-    if (best && bestScore >= 4) return buildOnlineSong(bestSrc, best, store.get('mp_online_quality', 'lossless'));
+    if (best) return buildOnlineSong(bestSrc, best, store.get('mp_online_quality', 'lossless'));
     return null;
   }
   // —— 猜你喜欢：按常听歌手生成（熟歌为主 + 尝新掺新），整批听完自动换新一批 ——

@@ -1,4 +1,7 @@
 // QQ 音乐官方接口模块(纯官方,无第三方 API)
+// ⚠️ [1.4.2-DELETE] 计划于 v1.4.2 整体移除 QQ 音源（含 bodian.js 波点链路）：
+// 会员歌限制导致体验差，网易云/酷狗已覆盖绝大部分曲库；v1.4.1 公告已预告。
+// 删除范围：core/qq.js、core/bodian.js、main.js qq:* handlers、preload qq* 桥、renderer ALL_SRCS/开关/搜索/筛选分支。
 // 搜索: c.y.qq.com/soso/fcgi-bin/search_for_qq_cp(匿名可用,含 payplay)
 // 歌单: u.y.qq.com/cgi-bin/musicu.fcg → music.srfDissInfo.aiDissInfo(song_begin/song_num 分页,匿名可用)
 // 歌词: c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new(匿名可用,直接返回 LRC)
