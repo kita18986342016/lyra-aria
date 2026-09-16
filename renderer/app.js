@@ -201,21 +201,38 @@
     const trigger = host.querySelector('.dd-trigger');
     const cur = host.querySelector('.dd-cur');
     const menu = host.querySelector('.dd-menu');
-    const getMask = () => document.getElementById('ddMask');
     menu.innerHTML = options.map((o) => '<button type="button" class="dd-opt" data-v="' + o.v + '"><span>' + o.label + '</span><svg class="dd-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></button>').join('');
     const sync = (v) => { cur.textContent = labelOf(v); menu.querySelectorAll('.dd-opt').forEach((x) => x.classList.toggle('active', String(x.dataset.v) === String(v))); };
     sync(curVal);
-    const close = () => { host.classList.remove('open'); const mask = getMask(); if (mask) { mask.classList.remove('show'); mask.onclick = null; } };
+    const place = () => {
+      const r = trigger.getBoundingClientRect();
+      menu.style.minWidth = Math.max(r.width, 150) + 'px';
+      menu.style.maxWidth = '300px';
+      const h = Math.min(menu.scrollHeight + 12, 264);
+      const below = r.bottom + 6;
+      menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8)) + 'px';
+      menu.style.top = (below + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 6) : below) + 'px';
+    };
+    const close = () => {
+      host.classList.remove('open');
+      document.removeEventListener('mousedown', onDocDown, true);
+      window.removeEventListener('resize', close);
+      const sc = host.closest('.st-scroll'); if (sc) sc.removeEventListener('scroll', close);
+    };
+    const onDocDown = (e) => { if (!host.contains(e.target)) close(); };
     trigger.addEventListener('click', (e) => {
       e.stopPropagation();
       const willOpen = !host.classList.contains('open');
-      document.querySelectorAll('#settingsPanel .dd.open').forEach((d) => d.classList.remove('open'));
-      const mask = getMask();
-      if (willOpen) { host.classList.add('open'); if (mask) { mask.classList.add('show'); mask.onclick = close; } }
-      else if (mask) { mask.classList.remove('show'); mask.onclick = null; }
+      document.querySelectorAll('.dd.open').forEach((d) => d !== host && d.classList.remove('open'));
+      if (willOpen) {
+        host.classList.add('open');
+        place();
+        document.addEventListener('mousedown', onDocDown, true);
+        window.addEventListener('resize', close);
+        const sc = host.closest('.st-scroll'); if (sc) sc.addEventListener('scroll', close);
+      } else close();
     });
-    menu.querySelectorAll('.dd-opt').forEach((b) => b.addEventListener('click', (e) => {
-      e.stopPropagation();
+    menu.querySelectorAll('.dd-opt').forEach((b) => b.addEventListener('click', () => {
       sync(b.dataset.v);
       close();
       if (onPick) onPick(b.dataset.v);
