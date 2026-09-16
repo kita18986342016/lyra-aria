@@ -89,7 +89,7 @@
             <div class="st-row"><span class="st-label">默认音量</span><input type="range" id="stVolRange" min="0" max="100" step="1"><span id="stVolVal" class="st-val"></span></div>
             <div class="st-row st-row-sw"><span class="st-label">启动恢复</span><label class="st-switch"><input type="checkbox" id="stResume" checked><span class="st-slider"></span></label></div>
             <div class="st-row st-row-sw"><span class="st-label">开机自启</span><label class="st-switch"><input type="checkbox" id="stAutoLaunch"><span class="st-slider"></span></label></div>
-            <div class="st-row"><span class="st-label">猜你喜欢·尝新比例</span><div class="st-modes" id="stGuessRatio"><button class="st-mode" data-r="0">关</button><button class="st-mode" data-r="0.1">10%</button><button class="st-mode" data-r="0.3">30%</button><button class="st-mode" data-r="0.5">50%</button></div></div>
+            <div class="st-row"><span class="st-label">猜你喜欢·尝新比例</span><div class="dd" id="stGuessRatio"></div></div>
             <div class="st-row st-sub"><span class="st-tip">「猜你喜欢」按常听歌手生成；尝新比例决定掺入未听过新歌的份额（选「关」则只推熟歌）</span></div>
             <div class="st-row st-row-sw"><span class="st-label">自动续播</span><label class="st-switch"><input type="checkbox" id="stGuessAuto" checked><span class="st-slider"></span></label></div>
             <div class="st-row st-sub"><span class="st-tip">整批听完自动换新一批继续播放；关闭则听完停止</span></div>
@@ -133,9 +133,9 @@
             <div class="st-row st-row-src"><span class="st-label">QQ</span><label class="st-switch"><input type="checkbox" id="stSrcQQ" checked><span class="st-slider"></span></label><input type="number" id="stSearchQQ" min="5" max="100" step="5" value="10" title="QQ搜索条数（上限 100）"></div>
             <div class="st-row st-sub"><span class="st-tip">勾选启用音源参与在线搜索；每源条数 5-100 首。</span></div>
             <div class="st-group">音质</div>
-            <div class="st-row"><span class="st-label">在线播放音质</span><div class="st-modes" id="stOnlineQuality"><button class="st-mode" data-q="standard">标准 128kbps</button><button class="st-mode active" data-q="high">高品 320kbps</button><button class="st-mode" data-q="lossless">无损 FLAC</button></div></div>
+            <div class="st-row"><span class="st-label">在线播放音质</span><div class="dd" id="stOnlineQuality"></div></div>
             <div class="st-row st-sub"><span class="st-tip">在线试听与播放时请求的音质档位（视歌曲本身是否提供而定）</span></div>
-            <div class="st-row"><span class="st-label">下载音质</span><div class="st-modes" id="stDlQuality3"><button class="st-mode" data-q="standard">标准 128kbps</button><button class="st-mode" data-q="high">高品 320kbps</button><button class="st-mode active" data-q="lossless">无损 FLAC</button></div></div>
+            <div class="st-row"><span class="st-label">下载音质</span><div class="dd" id="stDlQuality3"></div></div>
             <div class="st-row st-sub"><span class="st-tip">批量/单曲下载时下载到本地的音质，默认无损</span></div>
             <div class="st-row st-row-sw"><span class="st-label">自动换源</span><label class="st-switch"><input type="checkbox" id="stAutoSrcUpgrade" checked><span class="st-slider"></span></label></div>
             <div class="st-row st-sub"><span class="st-tip">导入歌单时，若某歌当前音源仅有标准音质版本，而其他平台存在同歌名同歌手的高音质版本，是否自动替换为高音质版本？（默认开启，可随时关闭；在线音质选「标准 128kbps」时无需换源，会自动关闭）</span></div>
@@ -639,7 +639,7 @@
     <div id="dlDialogPanel">
       <div class="dl-dialog-title">下载歌曲</div>
       <div class="dl-dialog-row"><span class="dl-dialog-label">目录</span><span id="dlDialogDir"></span><button id="dlDialogPick">浏览…</button></div>
-      <div class="dl-dialog-row"><span class="dl-dialog-label">音质</span><div id="dlDialogQuality"><button data-q="standard">标准 128kbps</button><button data-q="high">高品 320kbps</button><button data-q="lossless">无损 FLAC</button></div></div>
+      <div class="dl-dialog-row"><span class="dl-dialog-label">音质</span><div id="dlDialogQuality"><button data-q="standard">标准 128kbps</button><button data-q="high">高品 320kbps</button><button data-q="lossless">无损 FLAC</button><button data-q="master">臻品母带</button></div></div>
       <div class="dl-dialog-foot"><button id="dlDialogCancel">取消</button><button id="dlDialogOk" class="primary">确定</button></div>
     </div>
   </div>
@@ -693,5 +693,6 @@
   </div>
 
   <script src="app.js"></script>
+  <div id="ddMask"></div>
 </body>
 </html>

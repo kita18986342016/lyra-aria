@@ -163,32 +163,71 @@
   // ---------- 外观（主题/强调色/背景/进度条样式）----------
   // 在线歌曲音质 level 映射（item 18，三档：standard / high / lossless）
   const LEVEL_MAP = {
-    netease: { standard: 'standard', high: 'exhigh', lossless: 'lossless' }, // exhigh=320k；higher 只有 192k
-    kugou: { standard: '128', high: '320', lossless: 'lossless' }
+    netease: { standard: 'standard', high: 'exhigh', lossless: 'lossless', master: 'jymaster' }, // exhigh=320k；jymaster=超清母带(实测2.7-3.2M FLAC)
+    kugou: { standard: '128', high: '320', lossless: 'flac', master: 'hires' } // 酷狗母带=hires(实测3.175M FLAC，返回 level=high)
   };
   // 兼容旧值：'higher' → 'high'（v1.3.6 之前只有二档）
-  const QUALITY_NORM = { higher: 'high', 标准: 'standard', 高品: 'high', 无损: 'lossless', '128': 'standard', '320': 'high' };
+  const QUALITY_NORM = { higher: 'high', 标准: 'standard', 高品: 'high', 无损: 'lossless', 臻品: 'master', '128': 'standard', '320': 'high', jymaster: 'master', jyeffect: 'master', hires: 'master', hi: 'master' };
   // 在线歌 level 归一化：s.level 存的可能是标准档(回填 high/lossless/standard)或源特有档(导入 exhigh/320/128/higher)，
   // 统一映射回三档。旧代码用 qualityToLevel 二次转换(输入本已是源特有值)→ exhigh 再转还是 exhigh → 认不出 → 标签消失
-  const LEVEL_TO_NORM = { standard: 'standard', high: 'high', lossless: 'lossless', exhigh: 'high', higher: 'high', '320': 'high', '128': 'standard', 标准: 'standard', 高品: 'high', 无损: 'lossless' };
-  const normOnlineLevel = (lv) => {
+  const LEVEL_TO_NORM = { standard: 'standard', high: 'high', lossless: 'lossless', master: 'master', exhigh: 'high', higher: 'high', '320': 'high', '128': 'standard', flac: 'lossless', jymaster: 'master', jyeffect: 'master', hires: 'master', 标准: 'standard', 高品: 'high', 无损: 'lossless', 臻品: 'master' };
+  const normOnlineLevel = (lv, bitrate) => {
     if (lv === undefined || lv === null || lv === '') return null;
     const s = String(lv);
-    if (s === 'standard' || s === 'high' || s === 'lossless') return s;
+    if (s === 'standard' || s === 'high' || s === 'lossless' || s === 'master') return s;
+    // 码率主判别：>=2M FLAC 一律臻品（酷狗母带返回 level=high 与高品同名，只能靠码率区分）
+    const br = Number(bitrate) || 0;
+    if (br >= 2000000) return 'master';
     return LEVEL_TO_NORM[s] || null;
   };
   // 取当前播放/下载该 song 应使用的音质 level（读 mp_online_quality 或 mp_dl_quality）
   const qualityToLevel = (source, quality) => {
     let q = String(quality || 'high');
     if (QUALITY_NORM[q]) q = QUALITY_NORM[q];
-    if (!['standard', 'high', 'lossless'].includes(q)) q = 'high';
+    if (!['standard', 'high', 'lossless', 'master'].includes(q)) q = 'high';
     const m = LEVEL_MAP[source] || LEVEL_MAP.netease;
     return m[q] || 'lossless';
   };
   // 音质徽标映射（底栏 / 弹窗）——三档标签统一映射名 QUAL_LABELS
-  const QUAL_LABELS = { standard: '标准', high: '高品', lossless: '无损' };
+  const QUAL_LABELS = { standard: '标准', high: '高品', lossless: '无损', master: '臻品' };
   const QUALITY_LABEL = QUAL_LABELS; // 兼容旧引用
-  const Q_FULL_LABEL = { standard: '标准 128kbps', high: '高品 320kbps', lossless: '无损 FLAC' };
+  const Q_FULL_LABEL = { standard: '标准 128kbps', high: '高品 320kbps', lossless: '无损 FLAC', master: '臻品母带 Hi-Res' };
+  // ===== 下拉选择器组件（设置页多选项收纳）：收起=浅灰胶囊(当前值+下箭头)，展开=白色圆角卡片(选中项右侧✓)，遮罩/选项/再点触发器均收起 =====
+  const buildDropdown = (host, options, curVal, onPick) => {
+    if (!host) return;
+    const labelOf = (v) => { const o = options.find((x) => String(x.v) === String(v)); return o ? o.label : ((options[0] || {}).label || ''); };
+    host.classList.add('dd');
+    host.innerHTML = '<button type="button" class="dd-trigger"><span class="dd-cur"></span><svg class="dd-chev" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg></button><div class="dd-menu"></div>';
+    const trigger = host.querySelector('.dd-trigger');
+    const cur = host.querySelector('.dd-cur');
+    const menu = host.querySelector('.dd-menu');
+    const getMask = () => document.getElementById('ddMask');
+    menu.innerHTML = options.map((o) => '<button type="button" class="dd-opt" data-v="' + o.v + '"><span>' + o.label + '</span><svg class="dd-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></button>').join('');
+    const sync = (v) => { cur.textContent = labelOf(v); menu.querySelectorAll('.dd-opt').forEach((x) => x.classList.toggle('active', String(x.dataset.v) === String(v))); };
+    sync(curVal);
+    const close = () => { host.classList.remove('open'); const mask = getMask(); if (mask) { mask.classList.remove('show'); mask.onclick = null; } };
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const willOpen = !host.classList.contains('open');
+      document.querySelectorAll('#settingsPanel .dd.open').forEach((d) => d.classList.remove('open'));
+      const mask = getMask();
+      if (willOpen) { host.classList.add('open'); if (mask) { mask.classList.add('show'); mask.onclick = close; } }
+      else if (mask) { mask.classList.remove('show'); mask.onclick = null; }
+    });
+    menu.querySelectorAll('.dd-opt').forEach((b) => b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sync(b.dataset.v);
+      close();
+      if (onPick) onPick(b.dataset.v);
+    }));
+    host._ddSync = sync;
+  };
+  const QUAL_OPTS = [
+    { v: 'standard', label: '标准 128kbps' },
+    { v: 'high', label: '高品 320kbps' },
+    { v: 'lossless', label: '无损 FLAC' },
+    { v: 'master', label: '臻品母带 Hi-Res' }
+  ];
   // 无损容器编码集（用于本地歌 bitrate/container 推导音质）
   const LOSSLESS_CONTAINERS = new Set(['FLAC', 'ALAC', 'APE', 'WAV']);
   // 本地/在线歌曲统一音质档位推导：在线歌按 level/quality（qualityToLevel）；本地歌按容器/比特率
@@ -198,7 +237,7 @@
     if (s.online) {
       let lv = s.level;
       if (lv === undefined && s.quality !== undefined) lv = s.quality;
-      const norm = normOnlineLevel(lv);
+      const norm = normOnlineLevel(lv, s.bitrate);
       if (norm) return norm;
       // level 缺失/不可识别（如旧收藏只存了 id/source/ref）→ 回退当前在线音质设置
       // （与导入回填同款语义：播放时就按该档解析，标签与将要播放的档位一致）
@@ -379,11 +418,10 @@
       if (!wrap) return;
       let v = store.get(key, dft);
       if (QUALITY_NORM[v]) v = QUALITY_NORM[v];
-      if (!['standard', 'high', 'lossless'].includes(v)) v = dft;
+      if (!['standard', 'high', 'lossless', 'master'].includes(v)) v = dft;
       wrap.querySelectorAll('button[data-q]').forEach((b) => b.classList.toggle('active', b.dataset.q === v));
     };
-    setQ3('stOnlineQuality', 'mp_online_quality', 'lossless');
-    setQ3('stDlQuality3', 'mp_dl_quality', 'lossless');
+    // （音质档位现由 bindQuality3 的下拉组件渲染，setQ3 空转已移除）
     // item ⑥：默认打开模式（本地/在线）高亮
     const dm = store.get('mp_def_search_mode', 'online');
     setQ('stDefMode', 'mode', dm === 'online' ? 'online' : 'local');
@@ -3473,7 +3511,7 @@
           else r = { ok: false, reason: (rb && rb.reason) || '解析失败' };
           return _playResolved(r);
         }
-        r = await window.api.leizResolve(song.source, song.ref, qualityToLevel(song.source, store.get('mp_online_quality', 'lossless'))).catch(() => null); // 按当前音质设置请求（旧 song.level 只是导入时标签）
+        r = await window.api.leizResolve(song.source, song.ref, store.get('mp_online_quality', 'lossless')).catch(() => null); // 发原始档位，主进程统一映射（修双重映射：此前渲染层已映射、主进程再映射 miss→恒无损）
         return _playResolved(r);
       })();
       return;
@@ -3485,12 +3523,11 @@
           const fmt = String(r.data.format || '');
           if (br > 0 || fmt) {
             // B站自建解析按音轨代码诚实标档（30251=Hi-Res无损 / 30280=高清192k），其余源按码率推
-            let real = r.data.level || null;
-            if (!real) {
-              if (fmt === 'flac' || br >= 1000) real = 'lossless';
-              else if (br >= 320) real = 'high';
-              else if (br > 0) real = 'standard';
-            }
+            // 归一顺序：①码率≥2Mbps=臻品母带（kugou 母带 level=high 与高品同名，只能靠码率）②level 名归一（exhigh→high 等，单位安全）③兜底格式/码率
+            let real = null;
+            if (br >= 2000000 || r.data.level === 'jymaster' || r.data.level === 'jyeffect' || r.data.level === 'hires') real = 'master';
+            else real = normOnlineLevel(r.data.level)
+              || (fmt === 'flac' ? 'lossless' : br >= 1000000 ? 'lossless' : br >= 300000 ? 'high' : br > 0 ? 'standard' : null);
             if (real && song.level !== real) {
               song.level = real;
               if (br) song.bitrate = br;
@@ -5195,7 +5232,7 @@
     if (biliCnt) toast('B站歌曲 ' + biliCnt + ' 首暂不支持下载，已跳过');
     if (!list.length) { toast('可下载 0 首（歌单内均为本地歌曲）'); return; }
     dlDialogTarget = list;
-    dlDialogQuality = qualityToLevel('netease', store.get('mp_dl_quality', 'lossless')); // 三档：standard|high|lossless
+    dlDialogQuality = store.get('mp_dl_quality', 'lossless'); // 四档：standard|high|lossless|master（存原始档位，按钮 data-q 即档位）
     // 显示当前下载目录
     try { const d = await window.api.dlDir(); dlDialogDir = d || ''; } catch { dlDialogDir = ''; }
     const dirEl = $('#dlDialogDir');
@@ -5215,7 +5252,7 @@
     const dq = $('#dlDialogQuality');
     if (dq) dq.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
       const v = b.dataset.q;
-      if (!['standard', 'high', 'lossless'].includes(v)) return;
+      if (!['standard', 'high', 'lossless', 'master'].includes(v)) return;
       dlDialogQuality = v;
       dq.querySelectorAll('button').forEach((x) => x.classList.toggle('active', x.dataset.q === dlDialogQuality));
     }));
@@ -6644,13 +6681,14 @@
     });
     // 猜你喜欢：生成/换一批 + 设置-常规 尝新比例
     $('#guessBtn') && ($('#guessBtn').onclick = () => { if (guessFm.active) { guessFmAdvance(true); } else if (guessFm.pool.length) { startGuessFm(); } else { generateGuess(true); } });
-    document.querySelectorAll('#stGuessRatio .st-mode').forEach((b) => {
-      b.classList.toggle('active', Number(b.dataset.r) === guessRatioGet());
-      b.addEventListener('click', () => {
-        store.set('mp_guess_ratio', b.dataset.r);
-        document.querySelectorAll('#stGuessRatio .st-mode').forEach((x) => x.classList.toggle('active', x === b));
-        toast('猜你喜欢尝新比例：' + Math.round(Number(b.dataset.r) * 100) + '%');
-      });
+    buildDropdown(document.getElementById('stGuessRatio'), [
+      { v: '0', label: '关（只推熟歌）' },
+      { v: '0.1', label: '10%' },
+      { v: '0.3', label: '30%（推荐）' },
+      { v: '0.5', label: '50%' }
+    ], String(guessRatioGet()), (v) => {
+      store.set('mp_guess_ratio', v);
+      toast('猜你喜欢尝新比例：' + (Number(v) === 0 ? '关' : Math.round(Number(v) * 100) + '%'));
     });
     // 猜你喜欢自动续播开关
     const gAuto = $('#stGuessAuto');
@@ -7076,7 +7114,7 @@
     const bindQuality3 = (sel, key, dft) => {
       const wrap = document.getElementById(sel);
       if (!wrap) return;
-      const norm = (v) => { v = String(v); if (QUALITY_NORM[v]) v = QUALITY_NORM[v]; return ['standard', 'high', 'lossless'].includes(v) ? v : dft; };
+      const norm = (v) => { v = String(v); if (QUALITY_NORM[v]) v = QUALITY_NORM[v]; return ['standard', 'high', 'lossless', 'master'].includes(v) ? v : dft; };
       // 在线音质与「付费歌自动换源」联动：在线听标准 128 时付费歌无需换源 → 自动关闭换源开关并禁用；
       // 切回高品/无损时恢复开关可用（checked 保持用户上次选择）
       const syncSrcUpgrade = (v) => {
@@ -7091,13 +7129,12 @@
           if (ck.dataset.prev !== undefined) ck.checked = ck.dataset.prev === '1';
         }
       };
-      wrap.querySelectorAll('button[data-q]').forEach((b) => b.addEventListener('click', () => {
-        const v = norm(b.dataset.q);
-        store.set(key, v);
-        wrap.querySelectorAll('button[data-q]').forEach((x) => x.classList.toggle('active', x.dataset.q === v));
+      buildDropdown(wrap, QUAL_OPTS, norm(store.get(key, dft)), (v) => {
+        const nv = norm(v);
+        store.set(key, nv);
         toast((key === 'mp_dl_quality' ? '下载' : '在线播放') + '音质已更新');
-        syncSrcUpgrade(v);
-      }));
+        syncSrcUpgrade(nv);
+      });
       // 初始化联动（用户存量在线音质为标准 128 → 换源开关自动关闭）
       syncSrcUpgrade(norm(store.get(key, dft)));
     };

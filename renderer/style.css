@@ -500,6 +500,9 @@ html[data-theme="dark"] .song-tag.quality.standard { color: #7fb2ff; background:
 html[data-theme="dark"] .song-tag.quality.high { color: #c9a6ff; background: rgba(160, 107, 255, .18); border-color: rgba(190, 140, 255, .42); }
 .song-tag.quality.lossless { color: #cb9f27; background: linear-gradient(135deg, rgba(252, 224, 130, .70), rgba(235, 190, 70, .42)); border-color: rgba(212, 168, 52, .58); } /* 无损=香槟金渐变(背景+20%亮,字+30%亮) */
 html[data-theme="dark"] .song-tag.quality.lossless { color: #f2dc9a; background: linear-gradient(135deg, rgba(248, 212, 100, .30), rgba(210, 160, 45, .14)); border-color: rgba(248, 215, 120, .50); }
+/* 臻品母带=酒红底+金描边+暖黑字（黑中带暖棕，与纯黑区分，金晕提高级感） */
+.song-tag.quality.master { color: #241014; background: linear-gradient(135deg, #8a2433, #5e1622); border-color: rgba(224, 178, 92, .92); box-shadow: inset 0 0 0 1px rgba(224, 178, 92, .28), 0 1px 4px rgba(94, 22, 34, .3); text-shadow: 0 0 3px rgba(240, 208, 130, .55); }
+html[data-theme="dark"] .song-tag.quality.master { color: #2a1216; border-color: rgba(240, 200, 110, .95); box-shadow: inset 0 0 0 1px rgba(240, 200, 110, .3), 0 0 8px rgba(240, 200, 110, .22); }
 /* 音源标签 = 对应平台主题色（网易云红 / 酷狗蓝 / QQ 绿） */
 .song-tag.src[data-src="netease"] { color: #d43c33; background: rgba(212, 60, 51, .10); border-color: rgba(212, 60, 51, .34); }
 html[data-theme="dark"] .song-tag.src[data-src="netease"] { color: #ff6b60; background: rgba(212, 60, 51, .16); border-color: rgba(255, 107, 96, .42); }
@@ -1426,6 +1429,35 @@ html[data-theme="dark"] #diagOutput:hover { border-color: var(--accent); }
   background: var(--panel-2); color: var(--accent); font-weight: 700;
   box-shadow: 0 1px 4px rgba(23, 29, 46, .14);
 }
+/* ===== 下拉选择器（Dropdown Select）：收起=浅灰胶囊(当前值+下箭头)；展开=白色圆角悬浮卡片，选中项右侧✓，超长可滚，背景半透明遮罩 ===== */
+#settingsPanel .dd { position: relative; flex: 1; min-width: 0; }
+#settingsPanel .dd-trigger {
+  width: 100%; display: inline-flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: var(--hover); border: 1px solid transparent; border-radius: 11px;
+  padding: 7px 12px; color: var(--text); font-size: 12.5px; cursor: pointer; transition: border-color .14s, background .14s;
+}
+#settingsPanel .dd-trigger:hover { border-color: var(--accent); }
+#settingsPanel .dd-trigger .dd-cur { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#settingsPanel .dd-trigger .dd-chev { width: 14px; height: 14px; flex: none; stroke: var(--muted); fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; transition: transform .18s; }
+#settingsPanel .dd.open .dd-trigger .dd-chev { transform: rotate(180deg); }
+#settingsPanel .dd-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 540; min-width: 100%; max-width: 320px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(23, 29, 46, .22); padding: 5px; max-height: 260px; overflow-y: auto;
+  opacity: 0; transform: translateY(-4px); pointer-events: none; transition: opacity .15s, transform .15s;
+}
+#settingsPanel .dd.open .dd-menu { opacity: 1; transform: none; pointer-events: auto; }
+#settingsPanel .dd-opt {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+  padding: 9px 12px; border: none; border-radius: 8px; background: transparent; color: var(--text);
+  font-size: 13px; cursor: pointer; text-align: left; white-space: nowrap; transition: background .12s;
+}
+#settingsPanel .dd-opt:hover { background: var(--hover); }
+#settingsPanel .dd-opt .dd-check { width: 15px; height: 15px; flex: none; opacity: 0; stroke: var(--accent); fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+#settingsPanel .dd-opt.active { color: var(--accent); font-weight: 700; }
+#settingsPanel .dd-opt.active .dd-check { opacity: 1; }
+#ddMask { position: fixed; inset: 0; z-index: 530; background: rgba(23, 29, 46, .28); opacity: 0; pointer-events: none; transition: opacity .15s; }
+#ddMask.show { opacity: 1; pointer-events: auto; }
 /* 字体分段控件折叠（补六）：4 款常驻 + ⋯ 横向铺开（5 等宽列，与卡拉OK样式行逐列对齐）；⋯ 打开居中弹窗选更多字体 */
 #settingsPanel .st-font-modes .st-more-btn { flex: 1; color: var(--muted-2); letter-spacing: 1px; }
 #settingsPanel .st-font-modes .st-more-btn:hover { color: var(--accent); }
@@ -2113,6 +2145,7 @@ body.detail-open #pRight { margin-left: auto; }
 #pQuality[data-q="high"] { color: #a06bff; background: rgba(160,107,255,.15); }
 #pQuality[data-q="lossless"] { color: #cb9f27; background: linear-gradient(135deg, rgba(252,224,130,.70), rgba(235,190,70,.42)); }
 html[data-theme="dark"] #pQuality[data-q="lossless"] { color: #f2dc9a; background: linear-gradient(135deg, rgba(248,212,100,.30), rgba(210,160,45,.14)); }
+#pQuality[data-q="master"] { color: #241014; background: linear-gradient(135deg, #8a2433, #5e1622); box-shadow: inset 0 0 0 1px rgba(224,178,92,.9); text-shadow: 0 0 3px rgba(240,208,130,.55); }
 
 /* ---------- 设置：强调色色点 / 背景强度 ---------- */
 /* 背景预设（#17/#18 收束版）：设置行收束成小按钮，点击弹出放大选择面板（与皮肤同款） */

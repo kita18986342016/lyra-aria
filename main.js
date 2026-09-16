@@ -2058,12 +2058,21 @@ function main() {
     // ref: 网易云=song id；酷狗=分享链接或 hash（url/hash/id 三选一，推荐 url）
     ipcMain.handle('leiz:resolve', async (e, source, ref, level) => {
       if (!isTrusted(e) || !['netease', 'kugou'].includes(source) || typeof ref !== 'string' || !ref) return { ok: false, reason: '参数错误' };
-      // 档位映射：high=320k——网易对应 exhigh（higher 只有 192k），酷狗对应 higher；实测 2026-09-07
-      const lvMap = source === 'netease'
-        ? { standard: 'standard', high: 'exhigh', lossless: 'lossless' }
-        : { standard: 'standard', high: 'higher', lossless: 'lossless' };
-      const lvRaw = typeof level === 'string' && level ? level : 'lossless';
-      const lv = lvMap[lvRaw] || 'lossless';
+      // 档位映射（幂等）：输入可能是档位名(渲染层新契约 standard/high/lossless/master)或源值(歌词/手机端 exhigh/320/flac/jymaster…)，
+      // 先归一到档位，再映射一次到源值。此前直接 lvMap[level] 导致渲染层已映射的值再查 miss→恒无损（双重映射 bug）。
+      const toTier = (x) => {
+        x = String(x || '');
+        if (x === 'standard' || x === 'high' || x === 'lossless' || x === 'master') return x;
+        if (x === 'exhigh' || x === 'higher' || x === '320' || x === 'hq' || x === '高品') return 'high';
+        if (x === '128' || x === 'sq' || x === '标准') return 'standard';
+        if (x === 'flac' || x === '无损') return 'lossless';
+        if (x === 'jymaster' || x === 'jyeffect' || x === 'hires' || x === '臻品') return 'master';
+        return 'lossless';
+      };
+      const srcLv = source === 'netease'
+        ? { standard: 'standard', high: 'exhigh', lossless: 'lossless', master: 'jymaster' }
+        : { standard: '128', high: '320', lossless: 'flac', master: 'hires' };
+      const lv = srcLv[toTier(level)] || 'lossless';
       let p;
       if (source === 'netease') {
         p = '/netease?id=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
@@ -3815,6 +3824,7 @@ function main() {
   // 更新公告表：版本号 → 更新内容列表（新版本首次启动展示；设置-软件更新页侧栏按历代版本浏览，须随发版同步维护）
   const CHANGELOG = {
     '1.4.1': [
+      '**音质升级**：新增「臻品母带 Hi-Res」档（网易云超清母带 / 酷狗 Hi-Res，实测 2.7-3.2M FLAC），在线与下载音质均可选；音质徽标新增酒红金描边「臻品」胶囊；拿不到母带自动降级并诚实标注实际档位',
       '**手机电脑双端互通**——同一 WiFi 下，手机与电脑自动同步歌单、收藏、最近播放与账号登录态；首次配对后设备绑定，之后无感同步（设置-账号管理-局域网同步）',
       '**游客也能用每日推荐**：无需登录即享网易云每日推荐 30+ 首（含推荐理由），登录自动升级个性化',
       '**推荐页可定制**：每日推荐/推荐歌单/猜你喜欢等区块可在设置-外观自由开关',
