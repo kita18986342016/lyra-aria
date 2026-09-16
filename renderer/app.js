@@ -2533,6 +2533,7 @@
     state.showMoreActive = false;
     state.view = 'online';
     state.list = state.searchResults;
+    const rvOnline = $('#recommendView'); if (rvOnline) rvOnline.classList.add('hidden'); // onlineSearch 不走 setView，需手动回收推荐容器，否则推荐页残留半页
     const quality = store.get('mp_online_quality', 'lossless');
     $('#viewTitleText').textContent = `在线搜索「${q}」`;
     const subS = $('#viewTitleSub'); if (subS) subS.classList.add('hidden');

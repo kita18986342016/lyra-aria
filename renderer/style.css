@@ -1434,7 +1434,7 @@ html[data-theme="dark"] #diagOutput:hover { border-color: var(--accent); }
   box-shadow: 0 1px 4px rgba(23, 29, 46, .14);
 }
 /* ===== 下拉选择器（Dropdown Select）：收起=浅灰胶囊(当前值+下箭头)；展开=白色圆角悬浮卡片，选中项右侧✓，超长可滚，背景半透明遮罩 ===== */
-#settingsPanel .dd { position: static; flex: 0 0 auto; }
+#settingsPanel .dd { position: static; flex: 0 0 auto; margin-left: auto; }
 #settingsPanel .dd-trigger {
   width: 100%; display: inline-flex; align-items: center; justify-content: space-between; gap: 8px;
   background: var(--hover); border: 1px solid transparent; border-radius: 11px;
