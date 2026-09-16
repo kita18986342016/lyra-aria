@@ -501,8 +501,12 @@ html[data-theme="dark"] .song-tag.quality.high { color: #c9a6ff; background: rgb
 .song-tag.quality.lossless { color: #cb9f27; background: linear-gradient(135deg, rgba(252, 224, 130, .70), rgba(235, 190, 70, .42)); border-color: rgba(212, 168, 52, .58); } /* 无损=香槟金渐变(背景+20%亮,字+30%亮) */
 html[data-theme="dark"] .song-tag.quality.lossless { color: #f2dc9a; background: linear-gradient(135deg, rgba(248, 212, 100, .30), rgba(210, 160, 45, .14)); border-color: rgba(248, 215, 120, .50); }
 /* 臻品母带=酒红底+金描边+暖黑字（黑中带暖棕，与纯黑区分，金晕提高级感） */
-.song-tag.quality.master { color: #f0d082; background: linear-gradient(135deg, #7c1f2e, #571420); border-color: rgba(224, 178, 92, .92); box-shadow: inset 0 0 0 1px rgba(240, 208, 130, .22), 0 1px 4px rgba(94, 22, 34, .3); }
-html[data-theme="dark"] .song-tag.quality.master { color: #f6dd9c; border-color: rgba(240, 200, 110, .95); box-shadow: inset 0 0 0 1px rgba(240, 200, 110, .28), 0 0 8px rgba(240, 200, 110, .2); }
+.song-tag.quality.master {
+  color: #f3d99b; border: 1.5px solid transparent;
+  background: linear-gradient(135deg, #952537, #681826) padding-box, repeating-linear-gradient(45deg, #f0c86a 0 3px, #d24a5a 3px 6px) border-box;
+  box-shadow: 0 1px 4px rgba(94, 22, 34, .35), 0 0 6px rgba(240, 200, 110, .3);
+}
+html[data-theme="dark"] .song-tag.quality.master { color: #f8e4b0; box-shadow: 0 0 8px rgba(240, 200, 110, .35); }
 /* 音源标签 = 对应平台主题色（网易云红 / 酷狗蓝 / QQ 绿） */
 .song-tag.src[data-src="netease"] { color: #d43c33; background: rgba(212, 60, 51, .10); border-color: rgba(212, 60, 51, .34); }
 html[data-theme="dark"] .song-tag.src[data-src="netease"] { color: #ff6b60; background: rgba(212, 60, 51, .16); border-color: rgba(255, 107, 96, .42); }
@@ -2135,7 +2139,7 @@ body.detail-open #pRight { margin-left: auto; }
 .p-meta { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
 #pSource, #pQuality {
   display: inline-flex; align-items: center;
-  padding: 1px 7px; border-radius: 5px; font-size: 10.5px; line-height: 1.5;
+  padding: 0 6px; border: 1.5px solid transparent; border-radius: 6px; font-size: 10.5px; line-height: 1.5;
   background: var(--hover); color: var(--muted);
 }
 #pSource.online { color: #4d8bff; background: rgba(47,107,255,.14); }
@@ -2144,7 +2148,11 @@ body.detail-open #pRight { margin-left: auto; }
 #pQuality[data-q="high"] { color: #a06bff; background: rgba(160,107,255,.15); }
 #pQuality[data-q="lossless"] { color: #cb9f27; background: linear-gradient(135deg, rgba(252,224,130,.70), rgba(235,190,70,.42)); }
 html[data-theme="dark"] #pQuality[data-q="lossless"] { color: #f2dc9a; background: linear-gradient(135deg, rgba(248,212,100,.30), rgba(210,160,45,.14)); }
-#pQuality[data-q="master"] { color: #f0d082; background: linear-gradient(135deg, #7c1f2e, #571420); box-shadow: inset 0 0 0 1px rgba(224,178,92,.9); }
+#pQuality[data-q="master"] {
+  color: #f3d99b;
+  background: linear-gradient(135deg, #952537, #681826) padding-box, repeating-linear-gradient(45deg, #f0c86a 0 3px, #d24a5a 3px 6px) border-box;
+  box-shadow: 0 0 6px rgba(240, 200, 110, .3);
+}
 
 /* ---------- 设置：强调色色点 / 背景强度 ---------- */
 /* 背景预设（#17/#18 收束版）：设置行收束成小按钮，点击弹出放大选择面板（与皮肤同款） */
