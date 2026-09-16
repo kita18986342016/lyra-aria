@@ -502,8 +502,8 @@ html[data-theme="dark"] .song-tag.quality.high { color: #c9a6ff; background: rgb
 html[data-theme="dark"] .song-tag.quality.lossless { color: #f2dc9a; background: linear-gradient(135deg, rgba(248, 212, 100, .30), rgba(210, 160, 45, .14)); border-color: rgba(248, 215, 120, .50); }
 /* 臻品母带=酒红底+金描边+暖黑字（黑中带暖棕，与纯黑区分，金晕提高级感） */
 .song-tag.quality.master {
-  color: #f3d99b; border: 1.5px solid transparent;
-  background: linear-gradient(135deg, #952537, #681826) padding-box, repeating-linear-gradient(45deg, #f0c86a 0 3px, #d24a5a 3px 6px) border-box;
+  color: #f3d99b; border: 2.5px solid transparent;
+  background: linear-gradient(135deg, #952537, #681826) padding-box, repeating-linear-gradient(-45deg, #d24a5a 0 2px, transparent 2px 4px), repeating-linear-gradient(45deg, #f0c86a 0 2px, transparent 2px 4px), linear-gradient(#c99a3f, #c99a3f) border-box;
   box-shadow: 0 1px 4px rgba(94, 22, 34, .35), 0 0 6px rgba(240, 200, 110, .3);
 }
 html[data-theme="dark"] .song-tag.quality.master { color: #f8e4b0; box-shadow: 0 0 8px rgba(240, 200, 110, .35); }
@@ -2150,7 +2150,7 @@ body.detail-open #pRight { margin-left: auto; }
 html[data-theme="dark"] #pQuality[data-q="lossless"] { color: #f2dc9a; background: linear-gradient(135deg, rgba(248,212,100,.30), rgba(210,160,45,.14)); }
 #pQuality[data-q="master"] {
   color: #f3d99b;
-  background: linear-gradient(135deg, #952537, #681826) padding-box, repeating-linear-gradient(45deg, #f0c86a 0 3px, #d24a5a 3px 6px) border-box;
+  background: linear-gradient(135deg, #952537, #681826) padding-box, repeating-linear-gradient(-45deg, #d24a5a 0 2px, transparent 2px 4px), repeating-linear-gradient(45deg, #f0c86a 0 2px, transparent 2px 4px), linear-gradient(#c99a3f, #c99a3f) border-box;
   box-shadow: 0 0 6px rgba(240, 200, 110, .3);
 }
 
