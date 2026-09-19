@@ -2749,3 +2749,26 @@ button:not(.active) .lgp-dot { opacity: .6; }
 .rec-refresh-bar .rrb-title::before { content: ''; width: 4px; height: 16px; border-radius: 4px; background: linear-gradient(180deg, var(--accent), var(--accent-2)); box-shadow: 0 2px 8px rgba(167, 139, 250, .35); }
 .rec-refresh-bar .rec-btn { font-size: 12px; padding: 5px 14px; display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; }
 .rec-refresh-bar .rec-btn .ic { width: 12px; height: 12px; }
+
+/* ========== 换源结果堆叠通知卡片（借鉴 Mineradio provider-fallback 通知栈，GPL-3.0；配色对齐本项目 toast） ========== */
+#noticeStack {
+  position: fixed; z-index: 210; top: 20px; right: 20px;
+  width: min(320px, calc(100vw - 40px));
+  display: flex; flex-direction: column; gap: 8px;
+  pointer-events: none;
+}
+.noticeCard {
+  position: relative; padding: 11px 13px; border-radius: 12px;
+  background: rgba(28, 34, 48, .94); color: rgba(255,255,255,.88);
+  box-shadow: 0 12px 32px rgba(0,0,0,.35);
+  pointer-events: auto;
+  opacity: 0; transform: translateX(16px);
+  transition: opacity .24s, transform .24s;
+}
+.noticeCard.show { opacity: 1; transform: translateX(0); }
+.noticeCard.leaving { opacity: 0; transform: translateX(18px); }
+.noticeCard .nc-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px; }
+.noticeCard .nc-title { font-size: 13px; font-weight: 600; }
+.noticeCard .nc-close { border: 0; background: none; color: rgba(255,255,255,.5); font-size: 15px; cursor: pointer; padding: 0 2px; line-height: 1; }
+.noticeCard .nc-close:hover { color: #fff; }
+.noticeCard .nc-body { font-size: 12px; color: rgba(255,255,255,.68); word-break: break-all; }

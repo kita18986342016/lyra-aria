@@ -114,6 +114,39 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => t.classList.remove('show'), 2400);
   }
+  // ---------- 换源结果堆叠通知卡片（借鉴 Mineradio 05-playback/11-provider-fallback.js，GPL-3.0；样式对齐本项目 toast） ----------
+  // 用于"自动换源成功/失败"这类需要用户看见结果的事件；普通轻提示仍走 toast。
+  function ensureNoticeStack() {
+    let stack = document.getElementById('noticeStack');
+    if (!stack) {
+      stack = document.createElement('div');
+      stack.id = 'noticeStack';
+      stack.setAttribute('aria-live', 'polite');
+      document.body.appendChild(stack);
+    }
+    return stack;
+  }
+  function removeNoticeCard(card) {
+    if (!card) return;
+    card.classList.add('leaving');
+    setTimeout(() => { if (card.parentNode) card.parentNode.removeChild(card); }, 260);
+  }
+  function showNoticeCard(title, body) {
+    const stack = ensureNoticeStack();
+    const card = document.createElement('div');
+    card.className = 'noticeCard';
+    const head = document.createElement('div'); head.className = 'nc-head';
+    const tEl = document.createElement('div'); tEl.className = 'nc-title'; tEl.textContent = title || '自动换源';
+    const close = document.createElement('button'); close.className = 'nc-close'; close.type = 'button'; close.textContent = '×';
+    close.onclick = () => removeNoticeCard(card);
+    const bEl = document.createElement('div'); bEl.className = 'nc-body'; bEl.textContent = body || '';
+    head.appendChild(tEl); head.appendChild(close);
+    card.appendChild(head); card.appendChild(bEl);
+    stack.insertBefore(card, stack.firstChild || null); // 新卡在上
+    while (stack.children.length > 3) removeNoticeCard(stack.lastElementChild); // 最多 3 张
+    requestAnimationFrame(() => card.classList.add('show'));
+    setTimeout(() => removeNoticeCard(card), 5600);
+  }
 
   // ---------- localStorage 安全读写（偏好）----------
   const store = {
@@ -3482,15 +3515,6 @@
     return state.queue[state.queueIndex] || null;
   }
 
-  // v1.4.2 QQ 音源已移除：存量 qq/波点歌曲在播放前严格换源到酷狗/网易云（findAltSource 精确匹配），命中则原地改写 song
-  async function relegacySource(song) {
-    if (song.source !== 'qq' && song.source !== 'bodian') return true;
-    const alt = await findAltSource(song).catch(() => null);
-    if (!alt || !alt.ref || (alt.source !== 'kugou' && alt.source !== 'netease')) return false;
-    song.source = alt.source; song.ref = alt.ref; song.level = alt.level || song.level;
-    song.id = 'online:' + alt.source + ':' + alt.ref;
-    return true;
-  }
   // ---------- 播放核心（队列与视图解耦） ----------
   // 加载并播放单曲：play 被拒（数据未就绪）→ 等 canplay 自动补播，保证一次点击即响
   // autoPlay=false 时仅加载（恢复上次进度用），保持暂停
@@ -3503,25 +3527,36 @@
       (async () => {
         let r = null;
         if (song.source === 'qq' || song.source === 'bodian') {
-          // v1.4.2 QQ 音源已移除：存量歌曲播放前严格换源（酷狗/网易云），命中则原地改写后按新源解析
-          const fixed = await relegacySource(song);
-          if (!fixed) return _playResolved({ ok: false, reason: '该歌曲来自已下线的 QQ 音源，未找到可用的换源版本' });
+          // v1.4.2 解析收拢：存量 qq/波点歌曲交主进程统一解析（内部严格换源，命中返回 switchedSource/switchedRef）
+          const qr = await window.api.resolveSong(song, store.get('mp_online_quality', 'lossless')).catch(() => null);
+          if (qr && qr.ok && qr.data) {
+            if (qr.data.switchedSource) {
+              showNoticeCard('已自动换源', `「${song.title}」原 QQ 音源已下线，已切换为 ${SRC_NAMES[qr.data.switchedSource] || qr.data.switchedSource} 版本`);
+              song.source = qr.data.switchedSource; song.ref = qr.data.switchedRef;
+              song.id = 'online:' + song.source + ':' + song.ref;
+              renderList();
+            }
+            r = { ok: true, data: qr.data };
+          } else {
+            r = { ok: false, reason: (qr && qr.reason) || '解析失败' };
+          }
+          return _playResolved(r);
         }
         if (song.source === 'bilibili') {
           toast('正在解析 B 站视频…');
-          const rb = await window.api.biliResolve(String(song.ref || '')).catch(() => null);
+          const rb = await window.api.resolveSong({ source: 'bilibili', ref: song.ref }, store.get('mp_online_quality', 'lossless')).catch(() => null);
           if (rb && rb.ok) {
             // 播放当前歌时后台预热后面五首：顺序听歌基本每首都已合成好，秒开
             for (const n of state.queue.slice(state.queueIndex + 1, state.queueIndex + 6)) {
               if (n && n.online && n.source === 'bilibili' && n.ref) window.api.biliWarm(n.ref);
             }
           }
-          if (rb && rb.ok && rb.data && rb.data.url) r = { ok: true, data: { url: rb.data.url, bitrate: rb.data.bitrate, format: rb.data.format, level: rb.data.level } };
-          else r = { ok: false, reason: (rb && rb.reason) || '解析失败' };
+          r = (rb && rb.ok) ? { ok: true, data: rb.data } : { ok: false, reason: (rb && rb.reason) || '解析失败' };
           return _playResolved(r);
         }
-        r = await window.api.leizResolve(song.source, song.ref, store.get('mp_online_quality', 'lossless')).catch(() => null); // 发原始档位，主进程统一映射（修双重映射：此前渲染层已映射、主进程再映射 miss→恒无损）
-        return _playResolved(r);
+        // v1.4.2 解析收拢：netease/kugou 也走主进程统一端点（发原始档位，主进程统一映射+魔数探测）
+        r = await window.api.resolveSong(song, store.get('mp_online_quality', 'lossless')).catch(() => null);
+        return _playResolved(r || { ok: false, reason: '网络异常' });
       })();
       return;
       async function _playResolved(r) {
@@ -3555,14 +3590,16 @@
             });
           }
         } else {
-          toast(`在线歌曲解析失败：${(r && r.reason) || '网络异常'}`);
+          // v1.4.2：解析失败升格为通知卡片（带原因，用户可看清为什么放不了）；换源兜底继续走
+          showNoticeCard('播放失败', `「${song.title}」${(r && r.reason) || '网络异常'}，正在尝试其他音源…`);
           if (autoPlay && song.online) {
             // 换源兜底：本源没有这首歌（如网易无版权下架）→ 其他源找同歌换源续播；都没有 → 跳下一首
             const alt = await findAltSource(song).catch(() => null);
             if (state.playingId !== song.id) return; // 用户已切歌，放弃
             if (alt && alt.ref) {
+              const prevSrc = SRC_NAMES[song.source] || song.source;
               Object.assign(song, alt, { id: alt.id });
-              toast(`「${song.title}」已自动换源`);
+              showNoticeCard('已自动换源', `「${song.title}」 ${prevSrc} 不可播，已切换为 ${SRC_NAMES[song.source] || song.source} 版本`);
               renderList();
               startSong(song, seekTo, autoPlay, true);
               return;

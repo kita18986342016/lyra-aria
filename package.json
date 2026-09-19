@@ -74,7 +74,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "深空折韵",
-      "artifactName": "lyra-aria-setup-${version}.exe"
+      "artifactName": "lyra-aria-setup-${version}.exe",
+      "include": "build/installer.nsh"
     },
     "asar": true,
     "asarUnpack": [

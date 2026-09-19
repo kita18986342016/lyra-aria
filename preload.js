@@ -122,6 +122,8 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('qq-playlist-progress', h);
   },
   qqResolveLink: (url) => ipcRenderer.invoke('qq:resolveLink', url),
+  // v1.4.2 解析收拢：播放直链统一入口（qq/bodian 存量换源、bilibili 自建解析、netease/kugou 走 leiz+探测）
+  resolveSong: (song, quality) => ipcRenderer.invoke('resolve:song', song, quality),
   accMyPlaylists: (platform) => ipcRenderer.invoke('acc:my-playlists', platform),
   netCaptchaSend: (phone) => ipcRenderer.invoke('acc:net-captcha-send', phone),
   netCaptchaLogin: (phone, captcha) => ipcRenderer.invoke('acc:net-captcha-login', phone, captcha),

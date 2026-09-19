@@ -1455,17 +1455,8 @@ function main() {
       const lv = (song && song.level) || '';
       let url, d;
       if (song.source === 'qq' || song.source === 'bodian') {
-        // v1.4.2 QQ 音源已移除：存量 qq/波点歌曲下载时严格换源（酷狗→网易云，歌名+歌手全等）后按新源解析
-        const artists = String(song.artist || '').split(/[、,，/]/).map((x) => x.trim()).filter(Boolean);
-        const bare = String(song.title || '').trim();
-        const qFull = (bare + ' ' + (artists[0] || '')).trim();
-        let hit = null;
-        if (qFull) {
-          try { const kg = await leizGet('/kugou/search?q=' + encodeURIComponent(qFull) + '&limit=8'); if (kg.ok && Array.isArray(kg.data)) hit = pickFallback(kg.data, song.title, artists, 'kugou', true); } catch { /* 忽略 */ }
-        }
-        if (!hit && qFull) {
-          try { const ne = await leizGet('/netease/search?q=' + encodeURIComponent(qFull) + '&limit=8'); if (ne.ok && Array.isArray(ne.data)) hit = pickFallback(ne.data, song.title, artists, 'netease', true); } catch { /* 忽略 */ }
-        }
+        // v1.4.2 QQ 音源已移除：存量 qq/波点歌曲下载时严格换源后按新源解析（strictAltHit 与 resolve:song 共用）
+        const hit = await strictAltHit(song.title, song.artist);
         if (!hit) throw new Error('该歌曲来自已下线的 QQ 音源，未找到可用的换源版本');
         song.source = hit.source; song.ref = hit.ref;
         // level 归一值 → 新源特有值（kugou: flac/hires；netease: exhigh/jymaster）
@@ -2165,12 +2156,59 @@ function main() {
         // 酷狗此前漏传 level → 永远 128k；不传 url 时才带 hash（url 解析由上游决定音质）
         p = /^https?:\/\//.test(ref) ? '/kugou?url=' + encodeURIComponent(ref) : '/kugou?hash=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
       }
+      return leizResolveCore(source, ref, lv);
+    });
+    // leiz 解析核心（leiz:resolve 与 resolve:song 统一端点共用）：含直链魔数探测
+    async function leizResolveCore(source, ref, lv) {
+      const p = source === 'netease'
+        ? '/netease?id=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv)
+        : (/^https?:\/\//.test(ref) ? '/kugou?url=' + encodeURIComponent(ref) : '/kugou?hash=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv));
       const r = await leizGet(p);
       if (!r.ok) return { ok: false, reason: humanizeFailReason(r.message || ('HTTP ' + r.status)) };
-      // v1.4.2 韧性：直链先验魔数再交付，拦"换源成功实为错误页"的静默失败
       const durl = r.data && (r.data.url || r.data.src);
       if (durl && !(await verifyDirectUrl(durl))) return { ok: false, reason: '音源地址异常，请尝试换源或稍后再试' };
       return { ok: true, data: r.data };
+    }
+    // 存量 qq/波点歌曲严格换源（酷狗→网易云，歌名+歌手全等；dlResolveUrl 与 resolve:song 共用）
+    async function strictAltHit(title, artist) {
+      const artists = String(artist || '').split(/[、,，/]/).map((x) => x.trim()).filter(Boolean);
+      const bare = String(title || '').trim();
+      const qFull = (bare + ' ' + (artists[0] || '')).trim();
+      let hit = null;
+      if (qFull) {
+        try { const kg = await leizGet('/kugou/search?q=' + encodeURIComponent(qFull) + '&limit=8'); if (kg.ok && Array.isArray(kg.data)) hit = pickFallback(kg.data, title, artists, 'kugou', true); } catch { /* 忽略 */ }
+      }
+      if (!hit && qFull) {
+        try { const ne = await leizGet('/netease/search?q=' + encodeURIComponent(qFull) + '&limit=8'); if (ne.ok && Array.isArray(ne.data)) hit = pickFallback(ne.data, title, artists, 'netease', true); } catch { /* 忽略 */ }
+      }
+      return hit;
+    }
+    // v1.4.2 解析收拢：播放直链统一入口——前端不再区分音源分支。
+    // qq/bodian 存量歌 → 主进程严格换源；bilibili → 自建解析；netease/kugou → leiz + 魔数探测。
+    // 存量歌换源命中时返回 data.switchedSource/switchedRef 供前端改写歌曲对象。
+    ipcMain.handle('resolve:song', async (e, song, quality) => {
+      if (!isTrusted(e) || !song || typeof song !== 'object') return { ok: false, reason: '参数错误' };
+      const source = String(song.source || '');
+      try {
+        if (source === 'qq' || source === 'bodian') {
+          const hit = await strictAltHit(song.title, song.artist);
+          if (!hit) return { ok: false, reason: '该歌曲来自已下线的 QQ 音源，未找到可用的换源版本' };
+          const r = await leizResolveCore(hit.source, hit.ref, 'lossless');
+          if (r.ok) { r.data.switchedSource = hit.source; r.data.switchedRef = hit.ref; }
+          return r;
+        }
+        if (source === 'bilibili') {
+          const r = await biliResolveFull(String(song.ref || '')); // 统一入口：缓存→自建→LeiZ 兜底
+          if (!r || !r.ok || !r.data) return { ok: false, reason: (r && r.reason) || '解析失败' };
+          return { ok: true, data: { url: r.data.url, bitrate: r.data.bitrate, format: r.data.format, level: r.data.level } };
+        }
+        if (source === 'netease' || source === 'kugou') {
+          return await leizResolveCore(source, String(song.ref || ''), String(quality || song.level || 'lossless'));
+        }
+        return { ok: false, reason: '未知音源：' + source };
+      } catch (err) {
+        return { ok: false, reason: humanizeFailReason((err && err.message) || '解析异常') };
+      }
     });
     ipcMain.handle('leiz:lyrics', async (e, source, ref, level) => {
       if (!isTrusted(e) || !['netease', 'kugou'].includes(source) || typeof ref !== 'string' || !ref) return { ok: false, reason: '参数错误' };
