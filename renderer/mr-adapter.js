@@ -421,9 +421,8 @@ async function mrMount(host) {
   uniforms.uPixel.value = renderer.getPixelRatio();
   // fx 出厂即舞台形态；星河用户开关默认关（MR 04:93），这里按移植范围打开（星河属于歌词舞台效果的一部分）
   fx.lyricGlowParticles = true;
-  // 相机锁定模式：MR 的歌词贴合机制（lyricCameraLockFit 把歌词缩放到视野内）——
-  // 我们的画布是 300px 侧栏而非 MR 的全窗口，不锁会溢出画布
-  fx.lyricCameraLock = true;
+  // 全窗口沉浸式=MR 原生形态，相机锁定/lockFit 关（MR 出厂默认），歌词按 MR 全屏布局呈现
+  fx.lyricCameraLock = false;
   // 歌词组根节点：MR 由封面粒子模块创建，这里由适配层直接创建（vendored 03-lyrics-star-river.js 同款函数）
   if (typeof createLyricsParticles === 'function' && stageLyrics && !stageLyrics.group) createLyricsParticles();
   mrEnsureAudioGraph(); // 双分析器（fft2048, smoothing 0.58/0.10）→ bass/beat 驱动星河与溢光

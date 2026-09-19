@@ -830,13 +830,13 @@ html[data-skin] .fav-btn { opacity: .62; color: var(--text); } /* 皮肤下未�
 #lyricBox { flex: 1; overflow-y: auto; padding: 10px 22px 60px; font-size: var(--lyric-fs, 17px); line-height: 1.75; position: relative; scroll-behavior: smooth; font-family: "Microsoft YaHei UI", "MiSans", "HarmonyOS Sans SC", "OPPO Sans", "Alibaba PuHuiTi 3.0", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei", "Segoe UI", sans-serif; letter-spacing: .01em; }
 
 /* ========== 3D 歌词舞台（v1.4.2 第二期） ========== */
-#stage3dHost { flex: 1; position: relative; overflow: hidden; }
+/* 3D 歌词舞台：全窗口沉浸覆盖层（MR 同款形态，从歌曲详情页触发） */
+#stage3dOverlay { position: fixed; inset: 0; z-index: 220; display: block; background: radial-gradient(ellipse at 50% 42%, #182234 0%, #0a101c 55%, #03060c 100%); }
+#stage3dOverlay.hidden { display: none; }
+#stage3dHost { position: absolute; inset: 0; overflow: hidden; }
 #stage3dHost .stage3d-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-#lyricPanel.stage3d-on #lyricBox { display: none; }
-/* MR 舞台底：深空径向渐变（MR scene.background=null，氛围由页面底色承担——docs 移植结论） */
-#stage3dHost { background: radial-gradient(ellipse at 50% 42%, #182234 0%, #0a101c 55%, #03060c 100%); }
-#lyricPanel.stage3d-on { background: #0a101c; }
-#lyricPanel.stage3d-on .lyric-head { color: #dfe7f2; }
+#btnCloseStage3D { position: absolute; top: 18px; right: 22px; border: none; background: rgba(255,255,255,0.08); color: #dfe7f2; width: 34px; height: 34px; border-radius: 50%; font-size: 15px; cursor: pointer; z-index: 2; }
+#btnCloseStage3D:hover { background: rgba(255,255,255,0.18); }
 
 /* ========== 播放队列抽屉 ========== */
 #queuePanel {
@@ -1095,6 +1095,14 @@ body.detail-open #nav { display: none; }
   box-shadow: 0 4px 14px rgba(23, 29, 46, .12); transition: all .15s;
 }
 #pdCopyLyric:hover { background: #fff; color: var(--accent); }
+#pdStage3D {
+  position: absolute; left: 60px; bottom: 16px; z-index: 10;
+  height: 34px; padding: 0 14px; border: 1px solid var(--line); border-radius: 17px;
+  background: rgba(255, 255, 255, .8); backdrop-filter: blur(10px);
+  color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 700; letter-spacing: .04em;
+  box-shadow: 0 4px 14px rgba(23, 29, 46, .12); transition: all .15s;
+}
+#pdStage3D:hover { background: #fff; color: var(--accent); }
 .pd-body { flex: 1; display: flex; gap: 56px; padding: 48px 64px; min-height: 0; overflow: hidden; }
 #pdCover {
   width: 340px; height: 340px; flex-shrink: 0;

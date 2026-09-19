@@ -529,7 +529,6 @@
     <aside id="lyricPanel" class="hidden">
       <div class="lyric-head"><span>歌词</span><button id="btnCloseLyric"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
       <div id="lyricBox"></div>
-      <div id="stage3dHost" class="hidden"></div>
       <div id="lyricSettings">
         <div class="ls-title">歌词显示 <label class="switch"><input type="checkbox" id="lsToggle"><span></span></label></div>
         <div class="ls-row"><span class="ls-label">模式</span>
@@ -592,6 +591,7 @@
   <section id="pageDetail" class="hidden">
     <button id="pdBack" title="返回"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg></button>
     <button id="pdCopyLyric" title="复制歌词"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+    <button id="pdStage3D" title="3D 歌词舞台（全屏沉浸）">3D</button>
     <div class="pd-body">
       <div id="pdCover"><img id="pdCoverImg" alt=""><span class="pd-note">♪</span></div>
       <div class="pd-info">
@@ -688,6 +688,11 @@
         <button id="accImportGo" class="rec-btn" disabled>导入</button>
       </div>
     </div>
+  </div>
+
+  <div id="stage3dOverlay" class="hidden">
+    <div id="stage3dHost"></div>
+    <button id="btnCloseStage3D" title="退出 3D 舞台 (Esc)">✕</button>
   </div>
 
   <script src="karaoke.js"></script>
