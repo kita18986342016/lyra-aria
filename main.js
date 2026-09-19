@@ -1,5 +1,5 @@
 // 深空折韵 主进程（v2：单实例/IPC 校验/调和/缓存/媒体会话支持）
-const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, dialog, nativeImage, shell, session, screen, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, dialog, nativeImage, shell, session, screen, safeStorage, protocol, desktopCapturer, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -12,6 +12,13 @@ const store = require('./core/store');
 const { importSonglist } = require('./core/songlist');
 const lyrics = require('./core/lyrics');
 const covers = require('./core/covers');
+// ===== Wallpaper Engine 集成（Ported from Mineradio 2.2.0, GPL-3.0, desktop/main.js + desktop/wallpaper-engine-*.js）=====
+const { WallpaperEngineLibrary, registerWallpaperEngineScheme } = require('./desktop/wallpaper-engine-library');
+const { WallpaperEngineRuntime } = require('./desktop/wallpaper-engine-runtime');
+const { FullDesktopModeRuntime } = require('./desktop/full-desktop-mode-runtime');
+const { nativeWindowHandleDecimal } = require('./desktop/wallpaper-mode-runtime');
+// 特权协议必须在 app ready 前注册（mineradio-wallpaper:// = WE 壁纸封面/预览媒体流，带 token 鉴权）
+registerWallpaperEngineScheme(protocol);
 
 // Windows 任务栏/通知归属：不设 AppUserModelID 时任务栏右键菜单显示 "Electron"，
 // 设为与 build.appId 一致的应用 ID（配合安装版快捷方式可正确显示「深空折韵」）
@@ -597,6 +604,1230 @@ function main() {
   // 桌面歌词默认 = 用户当前美学（#17 默认值迁移 v2）：字号 28、柔光、bgOpacity 0.3、锁定、描边开、字体默认
   const LYRIC_DEFAULTS = { enabled: true, mode: 'desktop', fontSize: 28, color: '#bcfb89', color2: '#4deaff', bgOpacity: 0.3, opacity: 1, locked: true, pos: null, sweepStyle: 'soft', lyricFont: 'default', lockedSize: { width: 840, height: 160 }, stroke: true };
 
+  // ======================================================================
+  // Wallpaper Engine 集成编排段（Ported from Mineradio 2.2.0, GPL-3.0，
+  // 来源 desktop/main.js 182-210 全局段 + 809-1418 + 1530-1763 + 4168-4560 IPC 段）
+  // 与 MR 原文的差异（均为两应用环境差异）：
+  //  ① mainWindow 由 createWindow 与本应用主窗 win 同步；
+  //  ② isLocalAppUrl：DSH 主窗经 loadFile(file://) 加载，判定 file: 协议即可（MR 判本地服务器端口）；
+  //  ③ MR「全屏沉浸桌面模式」用户功能（enable/disable/Esc/托盘恢复）未移植，FullDesktopModeRuntime
+  //    仅作 WE 协同状态源（恒 disabled，协同分支自然不触发），beforePassive 传不可达 no-op；
+  //  ④ 手势摄像头（gesture camera）权限段未移植；
+  //  ⑤ MAIN_WINDOW_BACKGROUND_THROTTLING 固定 false：DSH 后台保持渲染（任务栏封面缩略图实时），
+  //    不能被 WE 宿主恢复路径改回节流；
+  //  ⑥ 托盘重建（createOrUpdateTray）/sendWindowState 为 MR 专属，未移植。
+  // ======================================================================
+  const LOCAL_APP_PERMISSION_ALLOWLIST = new Set(['speaker-selection', 'pointerLock', 'pointer-lock']);
+  // MR 为 system-memory.probeProcessElevation（PowerShell IsTokenElevated），此处最小等价实现：
+  // 判定当前进程是否提权——提权时 WE 控制进程须走桌面 shell broker 以普通权限拉起
+  let weElevationCache = null;
+  function probeProcessElevationForWE() {
+    if (weElevationCache !== null) return Promise.resolve(weElevationCache);
+    if (process.platform !== 'win32') return Promise.resolve(false);
+    return new Promise((resolve) => {
+      require('child_process').execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        '([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)'],
+        { windowsHide: true, timeout: 10000 }, (error, stdout) => {
+          weElevationCache = error ? false : String(stdout || '').trim() === 'True';
+          resolve(weElevationCache);
+        });
+    });
+  }
+  function startupDelay(delayMs) { return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(delayMs) || 0))); }
+  function isLocalAppUrl(value) {
+    try {
+      const u = new URL(String(value || ''));
+      return u.protocol === 'file:' && (!u.hostname || u.hostname === 'localhost');
+    } catch (e) {
+      return false;
+    }
+  }
+
+  let wallpaperEngineCaptureSourceId = '';
+  let wallpaperEngineCaptureGrant = null;
+  let wallpaperEngineCaptureOperation = 0;
+  let wallpaperEngineCapturePreparationOperation = 0;
+  let wallpaperEngineGlassCaptureOperation = 0;
+  let wallpaperEngineHostBoundsRestartTimer = null;
+  let wallpaperEngineHostBoundsRestartPending = false;
+  let wallpaperEngineHostBoundsStopPromise = null;
+  let wallpaperEngineHostBoundsOperation = 0;
+  let wallpaperEngineHostBoundsFollowupReason = '';
+  let wallpaperEngineHostVisibilitySuspended = false;
+  let wallpaperEngineHostVisibilityResumePending = false;
+  let wallpaperEngineHostVisibilityResumeTimer = null;
+  let wallpaperEngineHostVisibilityOperation = 0;
+  let wallpaperEngineHostVisibilityStopPromise = null;
+  let wallpaperEngineHostVisibilityResidentMinimized = false;
+  let fullDesktopModeHostVisibilityTransitionDepth = 0;
+  let wallpaperEngineDesktopIconLayeringQueue = Promise.resolve(true);
+  let windowFullscreenActive = false;
+  let htmlFullscreenActive = false;
+  const WALLPAPER_ENGINE_CAPTURE_GRANT_MS = 12000;
+  const WALLPAPER_ENGINE_CAPTURE_PREPARE_TIMEOUT_MS = 9000;
+  const WALLPAPER_ENGINE_MAX_CAPTURE_FPS = 240;
+  const WALLPAPER_ENGINE_HOST_RESUME_TIMEOUT_MS = 30000;
+  const MAIN_WINDOW_BACKGROUND_THROTTLING = false; // 差异⑤：DSH 后台保持渲染
+
+  const WE_NATIVE_TEMP_PATH = path.join(dataRoot(), 'we-native');
+  fs.mkdirSync(WE_NATIVE_TEMP_PATH, { recursive: true });
+  const wallpaperEngineLibrary = new WallpaperEngineLibrary({ userDataPath: dataRoot() });
+  const wallpaperEngineRuntime = new WallpaperEngineRuntime({
+    library: wallpaperEngineLibrary,
+    desktopCapturer,
+    hostElevationProbe: probeProcessElevationForWE,
+    nativeTempPath: WE_NATIVE_TEMP_PATH,
+  });
+  const fullDesktopModeRuntime = new FullDesktopModeRuntime({
+    screen,
+    platform: process.platform,
+    execFileImpl: require('child_process').execFile,
+    nativeTempPath: WE_NATIVE_TEMP_PATH,
+    // 差异③：DSH 无全屏沉浸桌面模式入口，beforePassive 不可达；reconcile 仅在 enabled 时才被触达
+    beforePassive: () => Promise.resolve({ ok: false, error: 'FULL_DESKTOP_MODE_NOT_AVAILABLE' }),
+    requestReconcile: (reason) => fullDesktopModeRuntime.reconcile(reason),
+    onStatus: (status) => broadcastDesktopWallpaperStatus(status),
+  });
+
+  function isTrustedWallpaperEngineIpc(event) {
+    return !!(event && win && !win.isDestroyed() && event.sender === win.webContents); // 差异①：主窗限定（不含歌词窗）
+  }
+
+  function broadcastDesktopWallpaperStatus(status) {
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents || mainWindow.webContents.isDestroyed()) return;
+    mainWindow.webContents.send('mineradio-wallpaper-runtime-state', {
+      ...(status || fullDesktopModeRuntime.getStatus('broadcast')),
+      recoveryTrayAvailable: false, // 差异⑥：DSH 无恢复托盘
+      escapeShortcutRegistered: false,
+    });
+  }
+
+  function wallpaperEngineProvidesDesktopBackdrop() {
+    const status = wallpaperEngineRuntime.getStatus();
+    return !!(status && status.active === true
+      && status.captureMode === 'dwm-thumbnail'
+      && status.dwmSurfaceReady === true
+      && status.dwmSurfaceActive === true
+      && Number(status.dwmSurfaceWindowId) > 0);
+  }
+
+  function clearWallpaperEngineCaptureGrant(sessionId = '') {
+    const expectedSessionId = String(sessionId || '');
+    if (expectedSessionId && !wallpaperEngineCaptureGrant) return false;
+    if (expectedSessionId && wallpaperEngineCaptureGrant.sessionId !== expectedSessionId) return false;
+    if (!wallpaperEngineCaptureGrant) return false;
+    if (wallpaperEngineCaptureGrant && wallpaperEngineCapturePreparationOperation === wallpaperEngineCaptureGrant.operation) {
+      wallpaperEngineCapturePreparationOperation = 0;
+    }
+    wallpaperEngineCaptureGrant = null;
+    wallpaperEngineCaptureSourceId = '';
+    return true;
+  }
+
+  function createWallpaperEngineCaptureGrant(result, operation, options = {}) {
+    const sessionId = String(result && result.sessionId || '');
+    const sourceId = String(result && result.sourceId || '');
+    if (!/^[a-f0-9]{24}$/i.test(sessionId) || !sourceId) {
+      clearWallpaperEngineCaptureGrant();
+      return null;
+    }
+    wallpaperEngineCaptureSourceId = sourceId;
+    wallpaperEngineCaptureGrant = {
+      sessionId,
+      sourceId,
+      operation: Number(operation) || 0,
+      kind: options.kind === 'dwm-glass' ? 'dwm-glass' : 'scene',
+      captureSource: options.captureSource || null,
+      expiresAt: Date.now() + WALLPAPER_ENGINE_CAPTURE_GRANT_MS,
+      requestStarted: false,
+    };
+    return wallpaperEngineCaptureGrant;
+  }
+
+  function getWallpaperEngineCaptureGrant() {
+    const grant = wallpaperEngineCaptureGrant;
+    if (!grant) return null;
+    const active = wallpaperEngineRuntime.getStatus();
+    if (Date.now() > grant.expiresAt || !active || !active.active || active.sessionId !== grant.sessionId) {
+      clearWallpaperEngineCaptureGrant(grant.sessionId);
+      return null;
+    }
+    return grant;
+  }
+
+  function isTrustedWallpaperEngineDisplayCapturePermission(webContents, origin, details) {
+    try {
+      if (!webContents || !mainWindow || mainWindow.isDestroyed() || webContents !== mainWindow.webContents || webContents.isDestroyed()) return false;
+      if (!isLocalAppUrl(origin)) return false;
+      if (details && details.isMainFrame === false) return false;
+      const grant = getWallpaperEngineCaptureGrant();
+      return !!grant && wallpaperEngineCaptureSourceId === grant.sourceId;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isTrustedWallpaperEnginePreparationMediaPermission(webContents, origin, details) {
+    const grant = getWallpaperEngineCaptureGrant();
+    if (!grant || wallpaperEngineCapturePreparationOperation !== grant.operation) return false;
+    const mediaType = String(details && details.mediaType || '').toLowerCase();
+    const mediaTypes = details && Array.isArray(details.mediaTypes)
+      ? details.mediaTypes.map((value) => String(value || '').toLowerCase()).filter(Boolean)
+      : [];
+    if (mediaType.includes('audio') || mediaTypes.some((value) => value.includes('audio'))) return false;
+    if (mediaType && !mediaType.includes('video')) return false;
+    if (mediaTypes.length && !mediaTypes.every((value) => value.includes('video'))) return false;
+    return isTrustedWallpaperEngineDisplayCapturePermission(webContents, origin, details);
+  }
+
+  async function prepareWallpaperEngineRendererCapture(sessionId, fps) {
+    if (!mainWindow || mainWindow.isDestroyed() || !/^[a-f0-9]{24}$/i.test(String(sessionId || ''))) {
+      return { ok: false, error: 'WALLPAPER_CAPTURE_RENDERER_UNAVAILABLE' };
+    }
+    const safeSessionId = String(sessionId);
+    const safeFps = Math.max(24, Math.min(WALLPAPER_ENGINE_MAX_CAPTURE_FPS, Number(fps) || 60));
+    const grant = getWallpaperEngineCaptureGrant();
+    if (!grant || grant.sessionId !== safeSessionId) return { ok: false, error: 'WALLPAPER_CAPTURE_GRANT_MISSING' };
+    const safeSourceId = /^window:\d+:\d+$/.test(String(grant.sourceId || '')) ? String(grant.sourceId) : '';
+    if (!safeSourceId) return { ok: false, error: 'WALLPAPER_CAPTURE_SOURCE_INVALID' };
+    const script = `(() => {
+    const prepare = window.__mineradioPrepareWallpaperEngineCapture;
+    if (typeof prepare !== 'function') return { ok: false, error: 'WALLPAPER_CAPTURE_PREPARE_HANDLER_MISSING' };
+    return Promise.resolve(prepare(${JSON.stringify(safeSessionId)}, ${safeFps}, ${JSON.stringify(safeSourceId)}))
+      .then((value) => value && typeof value === 'object' ? value : { ok: false, error: 'WALLPAPER_CAPTURE_PREPARE_RESULT_INVALID' })
+      .catch((error) => ({ ok: false, error: String(error && (error.message || error.name) || error || 'WALLPAPER_CAPTURE_PREPARE_FAILED').slice(0, 500) }));
+  })()`;
+    let timeout;
+    try {
+      wallpaperEngineCapturePreparationOperation = grant.operation;
+      const result = await Promise.race([
+        mainWindow.webContents.executeJavaScript(script, true),
+        new Promise((resolve) => {
+          timeout = setTimeout(() => resolve({ ok: false, error: 'WALLPAPER_CAPTURE_PREPARE_TIMEOUT' }), WALLPAPER_ENGINE_CAPTURE_PREPARE_TIMEOUT_MS);
+        }),
+      ]);
+      return result && typeof result === 'object'
+        ? { ok: result.ok === true, error: String(result.error || '').slice(0, 500) }
+        : { ok: false, error: 'WALLPAPER_CAPTURE_PREPARE_RESULT_INVALID' };
+    } catch (error) {
+      return { ok: false, error: String(error && (error.message || error.name) || error || 'WALLPAPER_CAPTURE_PREPARE_FAILED').slice(0, 500) };
+    } finally {
+      if (wallpaperEngineCapturePreparationOperation === grant.operation) wallpaperEngineCapturePreparationOperation = 0;
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
+  async function prepareWallpaperEngineRendererGlassCapture(sessionId, fps, sourceId) {
+    if (!mainWindow || mainWindow.isDestroyed() || !/^[a-f0-9]{24}$/i.test(String(sessionId || ''))) {
+      return { ok: false, error: 'WALLPAPER_GLASS_CAPTURE_RENDERER_UNAVAILABLE' };
+    }
+    const safeSessionId = String(sessionId);
+    const safeFps = Math.max(24, Math.min(60, Number(fps) || 60));
+    const safeSourceId = /^window:\d+:\d+$/.test(String(sourceId || '')) ? String(sourceId) : '';
+    const grant = getWallpaperEngineCaptureGrant();
+    if (!grant || grant.kind !== 'dwm-glass' || grant.sessionId !== safeSessionId
+      || grant.sourceId !== safeSourceId) {
+      return { ok: false, error: 'WALLPAPER_GLASS_CAPTURE_GRANT_MISSING' };
+    }
+    const script = `(() => {
+    const prepare = window.__mineradioPrepareWallpaperEngineGlassCapture;
+    if (typeof prepare !== 'function') return { ok: false, error: 'WALLPAPER_GLASS_CAPTURE_PREPARE_HANDLER_MISSING' };
+    return Promise.resolve(prepare(${JSON.stringify(safeSessionId)}, ${safeFps}, ${JSON.stringify(safeSourceId)}))
+      .then((value) => value && typeof value === 'object' ? value : { ok: false, error: 'WALLPAPER_GLASS_CAPTURE_PREPARE_RESULT_INVALID' })
+      .catch((error) => ({ ok: false, error: String(error && (error.message || error.name) || error || 'WALLPAPER_GLASS_CAPTURE_PREPARE_FAILED').slice(0, 500) }));
+  })()`;
+    let timeout;
+    try {
+      wallpaperEngineCapturePreparationOperation = grant.operation;
+      const result = await Promise.race([
+        mainWindow.webContents.executeJavaScript(script, true),
+        new Promise((resolve) => {
+          timeout = setTimeout(() => resolve({ ok: false, error: 'WALLPAPER_GLASS_CAPTURE_PREPARE_TIMEOUT' }), WALLPAPER_ENGINE_CAPTURE_PREPARE_TIMEOUT_MS);
+        }),
+      ]);
+      return result && typeof result === 'object'
+        ? { ok: result.ok === true, error: String(result.error || '').slice(0, 500) }
+        : { ok: false, error: 'WALLPAPER_GLASS_CAPTURE_PREPARE_RESULT_INVALID' };
+    } catch (error) {
+      return { ok: false, error: String(error && (error.message || error.name) || error || 'WALLPAPER_GLASS_CAPTURE_PREPARE_FAILED').slice(0, 500) };
+    } finally {
+      if (wallpaperEngineCapturePreparationOperation === grant.operation) wallpaperEngineCapturePreparationOperation = 0;
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
+  async function prepareWallpaperEngineRendererHostBoundsFrame(sessionId, reason = 'bounds-changed') {
+    if (!mainWindow || mainWindow.isDestroyed() || !/^[a-f0-9]{24}$/i.test(String(sessionId || ''))) {
+      return { ok: false, frozen: false, error: 'WALLPAPER_BOUNDS_FREEZE_RENDERER_UNAVAILABLE' };
+    }
+    const safeSessionId = String(sessionId);
+    const safeReason = String(reason || 'bounds-changed').slice(0, 80);
+    const script = `(() => {
+    const prepare = window.__mineradioPrepareWallpaperEngineHostBoundsChange;
+    if (typeof prepare !== 'function') return { ok: false, frozen: false, error: 'WALLPAPER_BOUNDS_FREEZE_HANDLER_MISSING' };
+    try {
+      const value = prepare(${JSON.stringify(safeSessionId)}, ${JSON.stringify(safeReason)});
+      return value && typeof value === 'object'
+        ? value
+        : { ok: false, frozen: false, error: 'WALLPAPER_BOUNDS_FREEZE_RESULT_INVALID' };
+    } catch (error) {
+      return { ok: false, frozen: false, error: String(error && (error.message || error.name) || error || 'WALLPAPER_BOUNDS_FREEZE_FAILED').slice(0, 500) };
+    }
+  })()`;
+    try {
+      // Do not race executeJavaScript with a timeout. A timed-out renderer script
+      // cannot be cancelled and may run later, freeze the new frame, and clear the
+      // live capture after main has already abandoned the restart. This promise is
+      // asynchronous and does not block Electron's main loop; renderer teardown
+      // rejects it during crash/navigation cleanup.
+      const result = await mainWindow.webContents.executeJavaScript(script, true);
+      return result && typeof result === 'object'
+        ? { ok: result.ok === true, frozen: result.frozen === true, error: String(result.error || '').slice(0, 500) }
+        : { ok: false, frozen: false, error: 'WALLPAPER_BOUNDS_FREEZE_RESULT_INVALID' };
+    } catch (error) {
+      return { ok: false, frozen: false, error: String(error && (error.message || error.name) || error || 'WALLPAPER_BOUNDS_FREEZE_FAILED').slice(0, 500) };
+    }
+  }
+
+  async function prepareWallpaperEngineRendererDesktopPreview(sessionId, reason = 'full-desktop-passive') {
+    const safeSessionId = String(sessionId || '');
+    const safeReason = String(reason || 'full-desktop-passive').slice(0, 80);
+    if (!mainWindow || mainWindow.isDestroyed()
+      || (safeSessionId && !/^[a-f0-9]{24}$/i.test(safeSessionId))) {
+      return { ok: false, preview: false, error: 'WALLPAPER_DESKTOP_PREVIEW_RENDERER_UNAVAILABLE' };
+    }
+    const script = `(() => {
+    const prepare = window.__mineradioPrepareWallpaperEngineDesktopPreview;
+    if (typeof prepare !== 'function') {
+      return { ok: false, preview: false, error: 'WALLPAPER_DESKTOP_PREVIEW_HANDLER_MISSING' };
+    }
+    return Promise.resolve(prepare(${JSON.stringify(safeSessionId)}, ${JSON.stringify(safeReason)}))
+      .then((value) => value && typeof value === 'object'
+        ? value
+        : { ok: false, preview: false, error: 'WALLPAPER_DESKTOP_PREVIEW_RESULT_INVALID' })
+      .catch((error) => ({
+        ok: false,
+        preview: false,
+        error: String(error && (error.message || error.name) || error || 'WALLPAPER_DESKTOP_PREVIEW_FAILED').slice(0, 500)
+      }));
+  })()`;
+    try {
+      const result = await mainWindow.webContents.executeJavaScript(script, true);
+      return result && typeof result === 'object'
+        ? {
+          ok: result.ok === true,
+          preview: result.preview === true,
+          selectedEngine: result.selectedEngine === true,
+          skipped: result.skipped === true,
+          error: String(result.error || '').slice(0, 500),
+        }
+        : { ok: false, preview: false, error: 'WALLPAPER_DESKTOP_PREVIEW_RESULT_INVALID' };
+    } catch (error) {
+      return {
+        ok: false,
+        preview: false,
+        error: String(error && (error.message || error.name) || error || 'WALLPAPER_DESKTOP_PREVIEW_FAILED').slice(0, 500),
+      };
+    }
+  }
+
+  function waitForWallpaperEngineHelperExit(child, timeoutMs = 2200) {
+    if (!child || child.exitCode !== null || child.signalCode != null) return Promise.resolve(true);
+    if (typeof child.once !== 'function') return Promise.resolve(false);
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer = null;
+      const finish = (exited) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (typeof child.removeListener === 'function') {
+          child.removeListener('exit', onExit);
+          child.removeListener('close', onExit);
+        }
+        resolve(exited === true);
+      };
+      const onExit = () => finish(true);
+      child.once('exit', onExit);
+      child.once('close', onExit);
+      timer = setTimeout(() => finish(false), Math.max(600, Number(timeoutMs) || 2200));
+    });
+  }
+
+  function cancelWallpaperEngineHostBoundsRestart() {
+    if (wallpaperEngineHostBoundsRestartTimer) {
+      clearTimeout(wallpaperEngineHostBoundsRestartTimer);
+      wallpaperEngineHostBoundsRestartTimer = null;
+    }
+    wallpaperEngineHostBoundsRestartPending = false;
+    wallpaperEngineHostBoundsStopPromise = null;
+    wallpaperEngineHostBoundsFollowupReason = '';
+    wallpaperEngineHostBoundsOperation += 1;
+  }
+
+  function stopWallpaperEngineRuntimeForRenderer(reason = '') {
+    wallpaperEngineCaptureOperation += 1;
+    cancelWallpaperEngineHostBoundsRestart();
+    clearWallpaperEngineCaptureGrant();
+    return wallpaperEngineRuntime.stop().catch((error) => {
+      console.warn('[Wallpaper Engine] renderer cleanup failed:', reason || 'renderer-reset', error && error.message || error);
+      return { ok: false, stopped: false, error: String(error && (error.message || error.name) || error || 'WALLPAPER_ENGINE_STOP_FAILED') };
+    });
+  }
+
+  function setMainWindowBackgroundThrottling(targetWin, enabled) {
+    if (!targetWin || targetWin.isDestroyed() || !targetWin.webContents || targetWin.webContents.isDestroyed()) return;
+    try {
+      targetWin.webContents.setBackgroundThrottling(enabled === true);
+    } catch (_) { }
+  }
+
+  function finishWallpaperEngineVisibleHostResume(targetWin) {
+    wallpaperEngineHostVisibilityResumePending = false;
+    if (wallpaperEngineHostVisibilityResumeTimer) {
+      clearTimeout(wallpaperEngineHostVisibilityResumeTimer);
+      wallpaperEngineHostVisibilityResumeTimer = null;
+    }
+    const desktopMode = fullDesktopModeRuntime.getStatus('wallpaper-engine-resume-finished');
+    setMainWindowBackgroundThrottling(targetWin, desktopMode.enabled === true ? false : MAIN_WINDOW_BACKGROUND_THROTTLING);
+  }
+
+  function suspendWallpaperEngineForHiddenHost(targetWin, reason = 'hidden') {
+    if (!targetWin || targetWin.isDestroyed()) return Promise.resolve({ ok: true, stopped: false });
+    const normalizedReason = String(reason || 'hidden').toLowerCase();
+    const runtimeStatus = wallpaperEngineRuntime.getStatus();
+    if (/^minimi[sz]e(?:d)?$/.test(normalizedReason)
+      && runtimeStatus
+      && runtimeStatus.active === true
+      && runtimeStatus.captureMode === 'dwm-thumbnail'
+      && runtimeStatus.dwmSurfaceReady === true) {
+      // The DWM helper is an independent native surface and can remain resident
+      // while Chromium is minimized. Stopping it here discards Scene state and
+      // forces a visible reload on restore.
+      wallpaperEngineHostVisibilityResidentMinimized = true;
+      finishWallpaperEngineVisibleHostResume(targetWin);
+      cancelWallpaperEngineHostBoundsRestart();
+      return Promise.resolve({
+        ok: true,
+        stopped: false,
+        preserved: true,
+        sessionId: String(runtimeStatus.sessionId || ''),
+      });
+    }
+    wallpaperEngineHostVisibilityResidentMinimized = false;
+    if (wallpaperEngineHostVisibilitySuspended) {
+      return wallpaperEngineHostVisibilityStopPromise || Promise.resolve({ ok: true, stopped: true });
+    }
+    wallpaperEngineHostVisibilitySuspended = true;
+    wallpaperEngineHostVisibilityOperation += 1;
+    finishWallpaperEngineVisibleHostResume(targetWin);
+    cancelWallpaperEngineHostBoundsRestart();
+    try {
+      targetWin.webContents.send('mineradio-wallpaper-engine-host-bounds-changed', {
+        phase: 'prepare',
+        reason: String(reason || 'hidden'),
+      });
+    } catch (_) { }
+    wallpaperEngineHostVisibilityStopPromise = stopWallpaperEngineRuntimeForRenderer(`host-${reason || 'hidden'}`);
+    return wallpaperEngineHostVisibilityStopPromise;
+  }
+
+  function resumeWallpaperEngineForVisibleHost(targetWin, reason = 'visible') {
+    const desktopMode = fullDesktopModeRuntime.getStatus('wallpaper-engine-visible-host');
+    if (app.isQuitting || (desktopMode.enabled === true
+      && (desktopMode.interactive !== true || desktopMode.phase !== 'interactive'))) return;
+    if (!wallpaperEngineHostVisibilitySuspended) {
+      if (!wallpaperEngineHostVisibilityResidentMinimized) return;
+      wallpaperEngineHostVisibilityResidentMinimized = false;
+      const residentStatus = wallpaperEngineRuntime.getStatus();
+      if (!residentStatus || residentStatus.active !== true || residentStatus.captureMode !== 'dwm-thumbnail') return;
+      setMainWindowBackgroundThrottling(targetWin, false);
+      syncWallpaperEngineDesktopIconLayering(`resident-${reason || 'visible'}`).catch(() => false);
+      const notifyResident = () => {
+        if (!targetWin || targetWin.isDestroyed() || !targetWin.isVisible() || targetWin.isMinimized()) return;
+        try {
+          targetWin.webContents.send('mineradio-wallpaper-engine-host-bounds-changed', {
+            phase: 'resident',
+            reason: String(reason || 'visible'),
+            sessionId: String(residentStatus.sessionId || ''),
+            forceVisibleHost: true,
+          });
+        } catch (_) { }
+      };
+      setTimeout(notifyResident, 80);
+      setTimeout(notifyResident, 420);
+      setTimeout(() => finishWallpaperEngineVisibleHostResume(targetWin), 900);
+      return;
+    }
+    wallpaperEngineHostVisibilitySuspended = false;
+    wallpaperEngineHostVisibilityResumePending = true;
+    const visibilityOperation = ++wallpaperEngineHostVisibilityOperation;
+    const forceVisibleHost = /^full-desktop-/i.test(String(reason || ''));
+    // Electron's background-throttling switch also controls Page Visibility.
+    // Temporarily disabling it makes a newly shown tray/minimized window visible
+    // to Chromium before we ask the renderer to create the WE capture stream.
+    setMainWindowBackgroundThrottling(targetWin, false);
+    if (wallpaperEngineHostVisibilityResumeTimer) clearTimeout(wallpaperEngineHostVisibilityResumeTimer);
+    wallpaperEngineHostVisibilityResumeTimer = setTimeout(() => {
+      finishWallpaperEngineVisibleHostResume(targetWin);
+    }, WALLPAPER_ENGINE_HOST_RESUME_TIMEOUT_MS);
+    const notifyRestart = () => {
+      if (wallpaperEngineHostVisibilityOperation !== visibilityOperation
+        || wallpaperEngineHostVisibilitySuspended
+        || !targetWin
+        || targetWin.isDestroyed()
+        || !targetWin.isVisible()
+        || targetWin.isMinimized()) return;
+      try {
+        targetWin.webContents.send('mineradio-wallpaper-engine-host-bounds-changed', {
+          phase: 'restart',
+          reason: String(reason || 'visible'),
+          forceVisibleHost,
+        });
+      } catch (_) { }
+    };
+    const stopped = wallpaperEngineHostVisibilityStopPromise;
+    Promise.resolve(stopped).catch(() => null).finally(() => {
+      if (wallpaperEngineHostVisibilityStopPromise === stopped) wallpaperEngineHostVisibilityStopPromise = null;
+      if (wallpaperEngineHostVisibilityOperation !== visibilityOperation || wallpaperEngineHostVisibilitySuspended) return;
+      setTimeout(notifyRestart, 80);
+      setTimeout(notifyRestart, 420);
+      setTimeout(notifyRestart, 1100);
+    });
+  }
+
+  function fullDesktopIconLayeringDesired(reason = '') {
+    const status = fullDesktopModeRuntime.getStatus(reason || 'dwm-icon-layering');
+    return status.enabled === true
+      && status.interactive === true
+      && status.coexisting === true
+      && status.iconShapeActive === true;
+  }
+
+  function syncWallpaperEngineDesktopIconLayering(reason = 'desktop-state', desiredOverride) {
+    const operation = async () => {
+      const desired = typeof desiredOverride === 'boolean'
+        ? desiredOverride
+        : fullDesktopIconLayeringDesired(`${reason}-queued`);
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const active = wallpaperEngineRuntime.getStatus();
+        if (!active || active.active !== true || !active.sessionId
+          || active.captureMode !== 'dwm-thumbnail') return true;
+        try {
+          const updated = await wallpaperEngineRuntime.updateDwmDesktopIconLayering(active.sessionId, desired);
+          if (updated === true) return true;
+        } catch (error) {
+          console.warn('[FullDesktopMode] DWM desktop-icon layering sync failed:', reason, error && error.message || error);
+        }
+        if (attempt < 3) await startupDelay(70 + attempt * 55);
+      }
+      console.warn('[FullDesktopMode] DWM desktop-icon layering was not acknowledged:', reason, desired);
+      return false;
+    };
+    wallpaperEngineDesktopIconLayeringQueue = wallpaperEngineDesktopIconLayeringQueue.then(operation, operation);
+    return wallpaperEngineDesktopIconLayeringQueue;
+  }
+
+  function scheduleWallpaperEngineHostBoundsRestart(targetWin, reason = 'bounds-changed') {
+    if (!targetWin || targetWin.isDestroyed()) return;
+    const status = wallpaperEngineRuntime.getStatus();
+    // The DWM surface helper follows the authoritative host HWND and resizes the
+    // source in place. Restarting the Scene here would discard native parallax
+    // state and reintroduce the old capture-only lifecycle on every drag.
+    if (status && status.active === true && status.captureMode === 'dwm-thumbnail') return;
+    if (!wallpaperEngineHostBoundsRestartPending && (!status || status.active !== true)) return;
+    let job = wallpaperEngineHostBoundsStopPromise;
+    if (job && job.started === true) {
+      // A second movement after the settled restart began is handled once the new
+      // capture ACK arrives. Continuous native dragging never reaches this branch
+      // because the real debounce below is reset on every move/resize event.
+      wallpaperEngineHostBoundsFollowupReason = String(reason || 'bounds-changed').slice(0, 80);
+      return;
+    }
+    if (!job) {
+      wallpaperEngineHostBoundsRestartPending = true;
+      job = {
+        boundsOperation: ++wallpaperEngineHostBoundsOperation,
+        captureOperation: 0,
+        sessionId: String(status && status.sessionId || ''),
+        reason: String(reason || 'bounds-changed').slice(0, 80),
+        started: false,
+        promise: null,
+      };
+      wallpaperEngineHostBoundsStopPromise = job;
+    } else {
+      job.reason = String(reason || job.reason || 'bounds-changed').slice(0, 80);
+    }
+    if (wallpaperEngineHostBoundsRestartTimer) clearTimeout(wallpaperEngineHostBoundsRestartTimer);
+    wallpaperEngineHostBoundsRestartTimer = setTimeout(() => {
+      wallpaperEngineHostBoundsRestartTimer = null;
+      if (wallpaperEngineHostBoundsStopPromise !== job || job.started === true) return;
+      const currentBeforePrepare = wallpaperEngineRuntime.getStatus();
+      if (!currentBeforePrepare || currentBeforePrepare.active !== true
+        || String(currentBeforePrepare.sessionId || '') !== job.sessionId) {
+        wallpaperEngineHostBoundsStopPromise = null;
+        wallpaperEngineHostBoundsRestartPending = false;
+        return;
+      }
+      job.started = true;
+      job.captureOperation = ++wallpaperEngineCaptureOperation;
+      clearWallpaperEngineCaptureGrant();
+      job.promise = prepareWallpaperEngineRendererHostBoundsFrame(job.sessionId, job.reason)
+        .then(async (prepared) => {
+          const current = wallpaperEngineRuntime.getStatus();
+          const stale = wallpaperEngineHostBoundsStopPromise !== job
+            || wallpaperEngineHostBoundsOperation !== job.boundsOperation
+            || wallpaperEngineCaptureOperation !== job.captureOperation
+            || wallpaperEngineHostVisibilitySuspended
+            || targetWin.isDestroyed()
+            || !current
+            || current.active !== true
+            || String(current.sessionId || '') !== job.sessionId;
+          if (stale) {
+            return {
+              ok: false,
+              stale: true,
+              frozen: !!(prepared && prepared.frozen === true),
+              stopped: false,
+            };
+          }
+          // Never tear down the live source unless the renderer preserved a real
+          // frame. Once frozen, however, always release the renderer by starting a
+          // fresh session even if the old native HWND refuses its first close.
+          if (!prepared || prepared.ok !== true || prepared.frozen !== true) {
+            return {
+              ok: false,
+              frozen: false,
+              stopped: false,
+              error: String(prepared && prepared.error || 'WALLPAPER_BOUNDS_FREEZE_UNAVAILABLE'),
+            };
+          }
+          try {
+            const stopped = await wallpaperEngineRuntime.stop(job.sessionId);
+            return { ok: true, frozen: true, stopped: !!(stopped && stopped.stopped), result: stopped };
+          } catch (error) {
+            return {
+              ok: false,
+              frozen: true,
+              stopped: false,
+              error: String(error && (error.message || error.name) || error || 'WALLPAPER_BOUNDS_RUNTIME_STOP_FAILED'),
+            };
+          }
+        });
+      Promise.resolve(job.promise).then((result) => {
+        const ownsCurrentJob = wallpaperEngineHostBoundsStopPromise === job;
+        const operationCurrent = wallpaperEngineHostBoundsOperation === job.boundsOperation
+          && wallpaperEngineCaptureOperation === job.captureOperation;
+        if (ownsCurrentJob) {
+          wallpaperEngineHostBoundsStopPromise = null;
+          wallpaperEngineHostBoundsRestartPending = false;
+        }
+        if (!result || result.frozen !== true) return;
+        // A renderer freeze can complete after another operation cancelled and
+        // detached this job. The freeze itself is not cancellable, so its late
+        // completion must still receive a visible-host recovery signal; otherwise
+        // the renderer can remain permanently stuck on the preserved frame.
+        const recoveryOnly = !ownsCurrentJob || !operationCurrent || result.stale === true;
+        setTimeout(() => {
+          if (wallpaperEngineHostVisibilitySuspended
+            || targetWin.isDestroyed()
+            || !targetWin.isVisible()
+            || targetWin.isMinimized()) return;
+          if (!recoveryOnly && (wallpaperEngineHostBoundsOperation !== job.boundsOperation
+            || wallpaperEngineCaptureOperation !== job.captureOperation)) return;
+          try {
+            targetWin.webContents.send('mineradio-wallpaper-engine-host-bounds-changed', {
+              phase: 'restart',
+              reason: recoveryOnly ? 'bounds-stale-recovery' : job.reason,
+              forceVisibleHost: true,
+            });
+          } catch (_) { }
+        }, 90);
+      }).catch(() => {
+        if (wallpaperEngineHostBoundsStopPromise === job) {
+          wallpaperEngineHostBoundsStopPromise = null;
+          wallpaperEngineHostBoundsRestartPending = false;
+        }
+      });
+    }, 260);
+  }
+
+  function wallpaperEngineTargetFps(display, requestedFps) {
+    const displayFrequency = Math.max(24, Math.min(
+      WALLPAPER_ENGINE_MAX_CAPTURE_FPS,
+      Math.round(Number(display && display.displayFrequency) || 60)
+    ));
+    const requested = Number(requestedFps);
+    if (!Number.isFinite(requested) || requested <= 0) return displayFrequency;
+    return Math.max(24, Math.min(displayFrequency, WALLPAPER_ENGINE_MAX_CAPTURE_FPS, Math.round(requested)));
+  }
+
+  function wallpaperEngineHostCornerRadius(targetWin) {
+    if (!targetWin || targetWin.isDestroyed() || targetWin.isMaximized() || targetWin.isFullScreen()
+      || windowFullscreenActive || htmlFullscreenActive) return 0;
+    const bounds = targetWin.getContentBounds();
+    const display = screen.getDisplayMatching(bounds);
+    const scaleFactor = Math.max(1, Number(display && display.scaleFactor) || 1);
+    return Math.max(0, Math.round(34 * scaleFactor));
+  }
+
+  function wallpaperEnginePhysicalContentBounds(targetWin, fallback = {}) {
+    const bounds = targetWin && !targetWin.isDestroyed()
+      ? targetWin.getContentBounds()
+      : {
+        x: Number(fallback.x) || 0,
+        y: Number(fallback.y) || 0,
+        width: Number(fallback.width) || 1280,
+        height: Number(fallback.height) || 720,
+      };
+    const display = screen.getDisplayMatching(bounds);
+    const scaleFactor = Math.max(1, Number(display && display.scaleFactor) || 1);
+    if (targetWin && !targetWin.isDestroyed() && typeof screen.dipToScreenRect === 'function') {
+      try {
+        const physicalRect = screen.dipToScreenRect(targetWin, bounds);
+        if (physicalRect && Number(physicalRect.width) > 0 && Number(physicalRect.height) > 0) {
+          return {
+            bounds,
+            display,
+            scaleFactor,
+            x: Math.round(Number(physicalRect.x) || 0),
+            y: Math.round(Number(physicalRect.y) || 0),
+            width: Math.max(1, Math.round(Number(physicalRect.width) || 1)),
+            height: Math.max(1, Math.round(Number(physicalRect.height) || 1)),
+          };
+        }
+      } catch (_) { }
+    }
+    const dipOrigin = { x: Number(bounds.x) || 0, y: Number(bounds.y) || 0 };
+    const dipEnd = {
+      x: dipOrigin.x + Math.max(1, Number(bounds.width) || Number(fallback.width) || 1280),
+      y: dipOrigin.y + Math.max(1, Number(bounds.height) || Number(fallback.height) || 720),
+    };
+    const physicalOrigin = typeof screen.dipToScreenPoint === 'function'
+      ? screen.dipToScreenPoint(dipOrigin)
+      : { x: Math.round(dipOrigin.x * scaleFactor), y: Math.round(dipOrigin.y * scaleFactor) };
+    const physicalEnd = typeof screen.dipToScreenPoint === 'function'
+      ? screen.dipToScreenPoint(dipEnd)
+      : { x: Math.round(dipEnd.x * scaleFactor), y: Math.round(dipEnd.y * scaleFactor) };
+    return {
+      bounds,
+      display,
+      scaleFactor,
+      x: Number.isFinite(Number(physicalOrigin.x)) ? Number(physicalOrigin.x) : 0,
+      y: Number.isFinite(Number(physicalOrigin.y)) ? Number(physicalOrigin.y) : 0,
+      width: Math.max(1, Math.abs(Math.round(Number(physicalEnd.x) - Number(physicalOrigin.x))) || Math.round((Number(bounds.width) || 1280) * scaleFactor)),
+      height: Math.max(1, Math.abs(Math.round(Number(physicalEnd.y) - Number(physicalOrigin.y))) || Math.round((Number(bounds.height) || 720) * scaleFactor)),
+    };
+  }
+
+  // WE 相关会话权限（Ported from Mineradio desktop/main.js:1654-1763，差异④：去手势摄像头）。
+  // display-capture/media 仅在一次性捕获授权（grant）有效时放行；其余权限走本地应用白名单。
+  function configureLocalAppPermissions() {
+    const ses = session.defaultSession;
+    if (!ses || ses._wePermissionsConfigured) return;
+    ses._wePermissionsConfigured = true;
+    ses.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+      const origin = requestingOrigin || (details && details.requestingUrl) || (webContents && webContents.getURL && webContents.getURL()) || '';
+      if (permission === 'display-capture') return isTrustedWallpaperEngineDisplayCapturePermission(webContents, origin, details);
+      if (permission === 'media') return isTrustedWallpaperEnginePreparationMediaPermission(webContents, origin, details);
+      return LOCAL_APP_PERMISSION_ALLOWLIST.has(permission) && isLocalAppUrl(origin);
+    });
+    ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
+      const origin = (details && (details.requestingUrl || details.securityOrigin)) || (webContents && webContents.getURL && webContents.getURL()) || '';
+      if (permission === 'display-capture') {
+        callback(isTrustedWallpaperEngineDisplayCapturePermission(webContents, origin, details));
+        return;
+      }
+      if (permission === 'media') {
+        callback(isTrustedWallpaperEnginePreparationMediaPermission(webContents, origin, details));
+        return;
+      }
+      callback(LOCAL_APP_PERMISSION_ALLOWLIST.has(permission) && isLocalAppUrl(origin));
+    });
+    ses.setDisplayMediaRequestHandler((request, callback) => {
+      let replied = false;
+      const reply = (value) => {
+        if (replied) return;
+        replied = true;
+        callback(value || {});
+      };
+      Promise.resolve().then(async () => {
+        const frame = request && request.frame;
+        const trustedFrame = !!(frame
+          && mainWindow
+          && !mainWindow.isDestroyed()
+          && frame === mainWindow.webContents.mainFrame
+          && !frame.parent
+          && isLocalAppUrl(request.securityOrigin));
+        const grant = getWallpaperEngineCaptureGrant();
+        if (!trustedFrame || !request.videoRequested || request.audioRequested || !grant || grant.requestStarted) {
+          reply({});
+          return;
+        }
+        grant.requestStarted = true;
+        if (grant.kind === 'dwm-glass') {
+          const current = wallpaperEngineRuntime.getStatus();
+          const source = grant.captureSource;
+          const sourceMatch = /^window:(\d+):\d+$/.exec(String(source && source.id || ''));
+          if (wallpaperEngineCaptureGrant !== grant
+            || !current
+            || current.active !== true
+            || current.sessionId !== grant.sessionId
+            || current.dwmGlassSurfaceReady !== true
+            || current.dwmGlassSurfaceActive !== true
+            || !sourceMatch
+            || Number(sourceMatch[1]) !== Number(current.dwmGlassSurfaceWindowId)
+            || String(source && source.name || '') !== 'Mineradio WE DWM Surface') {
+            reply({});
+            return;
+          }
+          reply({ video: source });
+          return;
+        }
+        let refreshed = typeof wallpaperEngineRuntime.refreshActiveSource === 'function'
+          ? await wallpaperEngineRuntime.refreshActiveSource(grant.sessionId, {
+            timeoutMs: 1600,
+            pollIntervalMs: 80,
+            includeSource: true,
+          })
+          : wallpaperEngineRuntime.getStatus();
+        let source = refreshed && refreshed.captureSource;
+        if (wallpaperEngineCaptureGrant !== grant
+          || !refreshed
+          || refreshed.sessionId !== grant.sessionId
+          || !refreshed.sourceId
+          || !source
+          || String(source.id || '') !== String(refreshed.sourceId)) {
+          reply({});
+          return;
+        }
+        if (refreshed.sourceWindowAligned !== true || String(refreshed.sourceId) !== String(grant.sourceId || '')) {
+          await wallpaperEngineRuntime.embedActiveWindow(grant.sessionId, {
+            hostWindowId: nativeWindowHandleDecimal(mainWindow),
+            hostExecutable: process.execPath,
+            cornerRadius: wallpaperEngineHostCornerRadius(mainWindow),
+            desktopIconLayering: fullDesktopIconLayeringDesired('wallpaper-engine-source-refresh'),
+          });
+          refreshed = await wallpaperEngineRuntime.refreshActiveSource(grant.sessionId, {
+            timeoutMs: 1600,
+            pollIntervalMs: 80,
+            includeSource: true,
+          });
+          source = refreshed && refreshed.captureSource;
+        }
+        if (wallpaperEngineCaptureGrant !== grant
+          || !refreshed
+          || refreshed.sessionId !== grant.sessionId
+          || refreshed.sourceWindowAligned !== true
+          || !source
+          || String(source.id || '') !== String(refreshed.sourceId || '')) {
+          reply({});
+          return;
+        }
+        grant.sourceId = String(refreshed.sourceId);
+        wallpaperEngineCaptureSourceId = grant.sourceId;
+        reply({ video: source });
+      }).catch(() => reply({}));
+    }, { useSystemPicker: false });
+  }
+
+  // ===== WE IPC（Ported from Mineradio desktop/main.js:4168-4560）=====
+  ipcMain.handle('mineradio-wallpaper-engine-list', async (event, payload = {}) => {
+    try {
+      if (!isTrustedWallpaperEngineIpc(event)) return { ok: false, projects: [], count: 0, error: 'WALLPAPER_ENGINE_UNTRUSTED_CALLER' };
+      const snapshot = await wallpaperEngineLibrary.list({ force: payload && payload.force === true });
+      const runtime = await wallpaperEngineRuntime.probe(payload && payload.force === true);
+      return { ...snapshot, runtime };
+    } catch (error) {
+      return { ok: false, projects: [], count: 0, error: error.message || 'WALLPAPER_ENGINE_SCAN_FAILED' };
+    }
+  });
+
+  ipcMain.handle('mineradio-wallpaper-engine-project-details', async (event, id) => {
+    try {
+      if (!isTrustedWallpaperEngineIpc(event)) return { ok: false, error: 'WALLPAPER_ENGINE_UNTRUSTED_CALLER' };
+      return await wallpaperEngineLibrary.getProjectDetails(String(id || ''));
+    } catch (error) {
+      return { ok: false, error: error.message || 'WALLPAPER_ENGINE_PROJECT_DETAILS_FAILED' };
+    }
+  });
+
+  ipcMain.handle('mineradio-wallpaper-engine-open-project-details', async (event, payload = {}) => {
+    try {
+      if (!isTrustedWallpaperEngineIpc(event)) return { ok: false, error: 'WALLPAPER_ENGINE_UNTRUSTED_CALLER' };
+      const details = await wallpaperEngineLibrary.getProjectDetails(String(payload && payload.id || ''));
+      const workshopId = String(details && details.workshopId || '');
+      if (!/^\d{5,32}$/.test(workshopId)) {
+        return { ok: false, error: 'WALLPAPER_ENGINE_WORKSHOP_DETAILS_UNAVAILABLE' };
+      }
+      const target = payload && payload.target === 'workshop' ? 'workshop' : 'we';
+      let revealError = '';
+      if (target === 'we') {
+        try {
+          await wallpaperEngineRuntime.revealWorkshop(workshopId);
+          return { ok: true, opened: 'wallpaper-engine', workshopId };
+        } catch (error) {
+          revealError = error && (error.code || error.message) || 'WALLPAPER_ENGINE_REVEAL_FAILED';
+        }
+      }
+      const steamUri = 'steam://url/CommunityFilePage/' + workshopId;
+      try {
+        await shell.openExternal(steamUri);
+        return { ok: true, opened: 'steam-workshop', workshopId, fallback: target === 'we', revealError };
+      } catch (_) {
+        const webUrl = 'https://steamcommunity.com/sharedfiles/filedetails/?id=' + workshopId;
+        await shell.openExternal(webUrl);
+        return { ok: true, opened: 'web-workshop', workshopId, fallback: target === 'we', revealError };
+      }
+    } catch (error) {
+      return { ok: false, error: error.message || 'WALLPAPER_ENGINE_OPEN_PROJECT_DETAILS_FAILED' };
+    }
+  });
+
+  ipcMain.handle('mineradio-wallpaper-engine-choose-directory', async (event) => {
+    try {
+      if (!isTrustedWallpaperEngineIpc(event)) return { ok: false, canceled: false, projects: [], count: 0, error: 'WALLPAPER_ENGINE_UNTRUSTED_CALLER' };
+      const options = {
+        title: '识别并导入 Wallpaper Engine 项目',
+        buttonLabel: '识别此目录',
+        properties: ['openDirectory'],
+      };
+      const result = mainWindow && !mainWindow.isDestroyed()
+        ? await dialog.showOpenDialog(mainWindow, options)
+        : await dialog.showOpenDialog(options);
+      if (result.canceled || !result.filePaths || !result.filePaths[0]) return { ok: true, canceled: true };
+      const snapshot = await wallpaperEngineLibrary.addManualRoot(result.filePaths[0]);
+      const runtime = await wallpaperEngineRuntime.probe(false);
+      return { ...snapshot, runtime, canceled: false };
+    } catch (error) {
+      return { ok: false, canceled: false, projects: [], count: 0, error: error.message || 'WALLPAPER_ENGINE_IMPORT_FAILED' };
+    }
+  });
+
+  ipcMain.handle('mineradio-wallpaper-engine-choose-project-file', async (event) => {
+    try {
+      if (!isTrustedWallpaperEngineIpc(event)) return { ok: false, canceled: false, projects: [], count: 0, error: 'WALLPAPER_ENGINE_UNTRUSTED_CALLER' };
+      const options = {
+        title: '选择 Wallpaper Engine 的 project.json 或场景包（.pkg/.pak）',
+        buttonLabel: '导入此项目',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Wallpaper Engine 项目', extensions: ['pkg', 'pak', 'json'] },
+        ],
+      };
+      const result = mainWindow && !mainWindow.isDestroyed()
+        ? await dialog.showOpenDialog(mainWindow, options)
+        : await dialog.showOpenDialog(options);
+      if (result.canceled || !result.filePaths || !result.filePaths[0]) return { ok: true, canceled: true };
+      const selected = path.resolve(result.filePaths[0]);
+      const snapshot = await wallpaperEngineLibrary.addManualProjectFile(selected);
+      const runtime = await wallpaperEngineRuntime.probe(false);
+      return { ...snapshot, runtime, canceled: false };
+    } catch (error) {
+      return { ok: false, canceled: false, projects: [], count: 0, error: error.message || 'WALLPAPER_ENGINE_IMPORT_PROJECT_FAILED' };
+    }
+  });
+
+  ipcMain.handle('mineradio-wallpaper-engine-remove-directory', async (event, rootId) => {
+    try {
+      if (!isTrustedWallpaperEngineIpc(event)) return { ok: false, projects: [], count: 0, error: 'WALLPAPER_ENGINE_UNTRUSTED_CALLER' };
+      const snapshot = await wallpaperEngineLibrary.removeManualRoot(rootId);
+      const runtime = await wallpaperEngineRuntime.probe(false);
+      return { ...snapshot, runtime };
+    } catch (error) {
+      return { ok: false, projects: [], count: 0, error: error.message || 'WALLPAPER_ENGINE_REMOVE_ROOT_FAILED' };
+    }
+  });
+
+  ipcMain.handle('mineradio-wallpaper-engine-runtime-status', async (event, payload = {}) => {
+    try {
+      if (!isTrustedWallpaperEngineIpc(event)) return { ok: false, available: false, error: 'WALLPAPER_ENGINE_UNTRUSTED_CALLER' };
+      const probe = await wallpaperEngineRuntime.probe(payload && payload.force === true);
+      return { ...probe, ...wallpaperEngineRuntime.getStatus(), pending: wallpaperEngineRuntime.pending != null };
+    } catch (error) {
+      return { ok: false, available: false, error: error.message || 'WALLPAPER_ENGINE_RUNTIME_PROBE_FAILED' };
+    }
+  });
+
+  ipcMain.handle('mineradio-wallpaper-engine-start-scene', async (event, payload = {}) => {
+    let operation = 0;
+    let startedSessionId = '';
+    try {
+      if (!isTrustedWallpaperEngineIpc(event)) return { ok: false, error: 'WALLPAPER_ENGINE_UNTRUSTED_CALLER' };
+      operation = ++wallpaperEngineCaptureOperation;
+      const desktopMode = fullDesktopModeRuntime.getStatus('wallpaper-engine-start-scene');
+      if (wallpaperEngineHostVisibilitySuspended
+        || (desktopMode.enabled === true
+          && (desktopMode.interactive !== true || desktopMode.phase !== 'interactive'))) {
+        return { ok: false, error: 'WALLPAPER_ENGINE_HOST_SUSPENDED' };
+      }
+      const physicalBounds = wallpaperEnginePhysicalContentBounds(mainWindow, payload);
+      const display = physicalBounds.display;
+      const targetFps = wallpaperEngineTargetFps(display, payload.fps);
+      const hostCornerRadius = wallpaperEngineHostCornerRadius(mainWindow);
+      const result = await wallpaperEngineRuntime.start(String(payload.id || ''), {
+        // The native scene follows the authoritative BrowserWindow content rect;
+        // renderer innerWidth/innerHeight can be stale during a DPI transition.
+        width: Math.max(640, Math.min(7680, physicalBounds.width)),
+        height: Math.max(360, Math.min(4320, physicalBounds.height)),
+        fps: targetFps,
+        x: physicalBounds.x,
+        y: physicalBounds.y,
+      });
+      startedSessionId = String(result && result.sessionId || '');
+      if (operation !== wallpaperEngineCaptureOperation) {
+        await wallpaperEngineRuntime.stop(startedSessionId).catch(() => {});
+        return { ok: false, error: 'WALLPAPER_ENGINE_START_SUPERSEDED', sessionId: startedSessionId };
+      }
+      let embedded;
+      try {
+        embedded = await wallpaperEngineRuntime.embedActiveWindow(startedSessionId, {
+          hostWindowId: nativeWindowHandleDecimal(mainWindow),
+          hostExecutable: process.execPath,
+          cornerRadius: hostCornerRadius,
+          desktopIconLayering: fullDesktopIconLayeringDesired('wallpaper-engine-embed'),
+        });
+      } catch (embeddingError) {
+        clearWallpaperEngineCaptureGrant(startedSessionId);
+        await wallpaperEngineRuntime.stop(startedSessionId).catch(() => {});
+        return {
+          ok: false,
+          error: embeddingError && (embeddingError.code || embeddingError.message) || 'WALLPAPER_ENGINE_WINDOW_ISOLATION_FAILED',
+          capturePrepared: false,
+          sessionId: startedSessionId,
+        };
+      }
+      if (operation !== wallpaperEngineCaptureOperation) {
+        await wallpaperEngineRuntime.stop(startedSessionId).catch(() => {});
+        return { ok: false, error: 'WALLPAPER_ENGINE_START_SUPERSEDED', sessionId: startedSessionId };
+      }
+      // Adaptive pixel calibration can relaunch the WE pop-out and replace its
+      // HWND/sourceId. Build the one-shot grant only after embedding has settled
+      // so the renderer never captures the stale pre-calibration window.
+      const grant = createWallpaperEngineCaptureGrant({ ...result, ...embedded }, operation);
+      if (!grant) {
+        await wallpaperEngineRuntime.stop(startedSessionId).catch(() => {});
+        return { ok: false, error: 'WALLPAPER_ENGINE_CAPTURE_UNAVAILABLE', sessionId: startedSessionId };
+      }
+      const embeddedDesktop = fullDesktopModeRuntime.getStatus('wallpaper-engine-embed-finished');
+      if (mainWindow && !mainWindow.isDestroyed() && embeddedDesktop.enabled !== true) {
+        try { mainWindow.moveTop(); } catch (_) { }
+        try { mainWindow.focus(); } catch (_) { }
+      } else if (embeddedDesktop.enabled === true && embeddedDesktop.interactive === true) {
+        fullDesktopModeRuntime.ensureIconLayerOrder().catch((error) => {
+          console.warn('[FullDesktopMode] WE coexistence z-order refresh failed:', error && error.message || error);
+        });
+      }
+      if (operation !== wallpaperEngineCaptureOperation) {
+        clearWallpaperEngineCaptureGrant(grant.sessionId);
+        await wallpaperEngineRuntime.stop(grant.sessionId).catch(() => {});
+        return { ok: false, error: 'WALLPAPER_ENGINE_START_SUPERSEDED', sessionId: grant.sessionId };
+      }
+      // Native Scene mode is composed by DWM, not captured as a Chromium video.
+      // The renderer keeps this one-shot grant only for the readiness ACK; the
+      // runtime starts a click-through live surface underneath the transparent
+      // BrowserWindow and leaves the exact WE source aligned behind it.
+      return { ...result, ...embedded, capturePrepared: true, captureMode: 'dwm-thumbnail' };
+    } catch (error) {
+      if (startedSessionId) {
+        clearWallpaperEngineCaptureGrant(startedSessionId);
+        await wallpaperEngineRuntime.stop(startedSessionId).catch(() => {});
+      } else if (wallpaperEngineCaptureGrant && wallpaperEngineCaptureGrant.operation === operation) {
+        clearWallpaperEngineCaptureGrant();
+      }
+      return { ok: false, error: error.code || error.message || 'WALLPAPER_ENGINE_SCENE_START_FAILED', sessionId: startedSessionId };
+    }
+  });
+
+  ipcMain.handle('mineradio-wallpaper-engine-capture-result', async (event, payload = {}) => {
+    if (!isTrustedWallpaperEngineIpc(event)) return { ok: false, error: 'WALLPAPER_ENGINE_UNTRUSTED_CALLER' };
+    const sessionId = String(payload && payload.sessionId || '');
+    if (!/^[a-f0-9]{24}$/i.test(sessionId)) return { ok: false, error: 'WALLPAPER_ENGINE_SESSION_INVALID' };
+    const matched = clearWallpaperEngineCaptureGrant(sessionId);
+    let confirmed = false;
+    if (matched && payload && payload.ok === true && typeof wallpaperEngineRuntime.confirmCaptureReady === 'function') {
+      confirmed = await wallpaperEngineRuntime.confirmCaptureReady(sessionId).catch(() => false);
+    }
+    if (matched && !confirmed) {
+      wallpaperEngineHostBoundsFollowupReason = '';
+      await wallpaperEngineRuntime.stop(sessionId).catch(() => {});
+    }
+    if (matched && confirmed && wallpaperEngineHostVisibilityResumePending) {
+      finishWallpaperEngineVisibleHostResume(mainWindow);
+    }
+    if (matched && confirmed && wallpaperEngineHostBoundsFollowupReason) {
+      const followupReason = wallpaperEngineHostBoundsFollowupReason;
+      wallpaperEngineHostBoundsFollowupReason = '';
+      setTimeout(() => {
+        if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.isMinimized()) return;
+        scheduleWallpaperEngineHostBoundsRestart(mainWindow, followupReason);
+      }, 90);
+    }
+    if (matched && confirmed) {
+      syncWallpaperEngineDesktopIconLayering('wallpaper-engine-capture-ready').catch(() => {});
+    }
+    return {
+      ok: matched && confirmed,
+      accepted: matched,
+      captureReady: confirmed,
+      error: matched && !confirmed ? 'WALLPAPER_ENGINE_DWM_SURFACE_FAILED' : '',
+    };
+  });
+
+  ipcMain.handle('mineradio-wallpaper-engine-prepare-glass-capture', async (event, payload = {}) => {
+    if (!isTrustedWallpaperEngineIpc(event)) return { ok: false, error: 'WALLPAPER_ENGINE_UNTRUSTED_CALLER' };
+    const sessionId = String(payload && payload.sessionId || '');
+    if (!/^[a-f0-9]{24}$/i.test(sessionId)) return { ok: false, error: 'WALLPAPER_ENGINE_SESSION_INVALID' };
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.isMinimized()
+      || wallpaperEngineHostVisibilitySuspended) {
+      return { ok: false, error: 'WALLPAPER_GLASS_CAPTURE_HOST_HIDDEN' };
+    }
+    const captureOperation = wallpaperEngineCaptureOperation;
+    const glassOperation = ++wallpaperEngineGlassCaptureOperation;
+    try {
+      const status = wallpaperEngineRuntime.getStatus();
+      if (!status || status.active !== true || status.sessionId !== sessionId
+        || status.captureMode !== 'dwm-thumbnail'
+        || status.dwmGlassSurfaceReady !== true || status.dwmGlassSurfaceActive !== true) {
+        return { ok: false, error: 'WALLPAPER_ENGINE_DWM_GLASS_SURFACE_UNAVAILABLE' };
+      }
+      const source = await wallpaperEngineRuntime.getDwmGlassCaptureSource(sessionId, {
+        timeoutMs: 1800,
+        pollIntervalMs: 60,
+      });
+      if (captureOperation !== wallpaperEngineCaptureOperation
+        || glassOperation !== wallpaperEngineGlassCaptureOperation) {
+        return { ok: false, error: 'WALLPAPER_ENGINE_START_SUPERSEDED' };
+      }
+      if (wallpaperEngineCaptureGrant && wallpaperEngineCaptureGrant.kind !== 'dwm-glass') {
+        return { ok: false, error: 'WALLPAPER_GLASS_CAPTURE_GRANT_BUSY' };
+      }
+      clearWallpaperEngineCaptureGrant();
+      const grant = createWallpaperEngineCaptureGrant({ sessionId, sourceId: source.id }, glassOperation, {
+        kind: 'dwm-glass',
+        captureSource: source,
+      });
+      if (!grant) return { ok: false, error: 'WALLPAPER_GLASS_CAPTURE_SOURCE_INVALID' };
+      const prepared = await prepareWallpaperEngineRendererGlassCapture(sessionId, payload && payload.fps, source.id);
+      const current = wallpaperEngineRuntime.getStatus();
+      if (captureOperation !== wallpaperEngineCaptureOperation
+        || glassOperation !== wallpaperEngineGlassCaptureOperation
+        || !current || current.active !== true || current.sessionId !== sessionId) {
+        return { ok: false, error: 'WALLPAPER_ENGINE_START_SUPERSEDED' };
+      }
+      return {
+        ok: !!(prepared && prepared.ok === true),
+        capturePrepared: !!(prepared && prepared.ok === true),
+        captureMode: 'dwm-glass-svg-sampler',
+        error: String(prepared && prepared.error || ''),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: String(error && (error.code || error.message || error.name) || error || 'WALLPAPER_GLASS_CAPTURE_PREPARE_FAILED').slice(0, 500),
+      };
+    } finally {
+      if (wallpaperEngineCaptureGrant
+        && wallpaperEngineCaptureGrant.kind === 'dwm-glass'
+        && wallpaperEngineCaptureGrant.operation === glassOperation) {
+        clearWallpaperEngineCaptureGrant(sessionId);
+      }
+    }
+  });
+
+  ipcMain.handle('mineradio-wallpaper-engine-activate-dwm-surface', async (event, payload = {}) => {
+    if (!isTrustedWallpaperEngineIpc(event)) return { ok: false, error: 'WALLPAPER_ENGINE_UNTRUSTED_CALLER' };
+    const sessionId = String(payload && payload.sessionId || '');
+    if (!/^[a-f0-9]{24}$/i.test(sessionId)) return { ok: false, error: 'WALLPAPER_ENGINE_SESSION_INVALID' };
+    try {
+      const result = await wallpaperEngineRuntime.activateDwmSurface(sessionId);
+      return {
+        ok: !!(result && result.dwmSurfaceActive === true),
+        active: !!(result && result.dwmSurfaceActive === true),
+        captureMode: 'dwm-thumbnail',
+        error: result && result.dwmSurfaceActive === true ? '' : 'WALLPAPER_ENGINE_DWM_SURFACE_FAILED',
+      };
+    } catch (error) {
+      return { ok: false, active: false, error: String(error && (error.code || error.message) || error || 'WALLPAPER_ENGINE_DWM_SURFACE_FAILED') };
+    }
+  });
+
+  ipcMain.on('mineradio-wallpaper-engine-glass-surface', (event, payload = {}) => {
+    if (!isTrustedWallpaperEngineIpc(event) || typeof wallpaperEngineRuntime.updateGlassSurface !== 'function') return;
+    const sessionId = String(payload && payload.sessionId || '');
+    if (!/^[a-f0-9]{24}$/i.test(sessionId)) return;
+    if (payload.active === true && (!mainWindow
+      || mainWindow.isDestroyed()
+      || !mainWindow.isVisible()
+      || mainWindow.isMinimized()
+      || wallpaperEngineHostVisibilitySuspended)) return;
+    try { wallpaperEngineRuntime.updateGlassSurface(sessionId, payload); } catch (_) { }
+  });
+
+  ipcMain.on('mineradio-wallpaper-engine-visual-settings', (event, payload = {}) => {
+    if (!isTrustedWallpaperEngineIpc(event) || typeof wallpaperEngineRuntime.updateDwmVisualSettings !== 'function') return;
+    const sessionId = String(payload && payload.sessionId || '');
+    if (!/^[a-f0-9]{24}$/i.test(sessionId)) return;
+    const opacity = Number(payload.opacity);
+    const positionX = Number(payload.positionX);
+    const positionY = Number(payload.positionY);
+    const scale = Number(payload.scale);
+    if (![opacity, positionX, positionY, scale].every(Number.isFinite)) return;
+    wallpaperEngineRuntime.updateDwmVisualSettings(sessionId, { opacity, positionX, positionY, scale });
+  });
+
+  ipcMain.on('mineradio-wallpaper-engine-pointer-activity', (event, payload = {}) => {
+    if (!isTrustedWallpaperEngineIpc(event)
+      || !mainWindow
+      || mainWindow.isDestroyed()
+      || !mainWindow.isVisible()
+      || mainWindow.isMinimized()
+      || wallpaperEngineHostVisibilitySuspended) return;
+    const sessionId = String(payload && payload.sessionId || '');
+    if (!/^[a-f0-9]{24}$/i.test(sessionId)) return;
+    const rawXUnit = payload && payload.xUnit;
+    const rawYUnit = payload && payload.yUnit;
+    const xUnit = Math.round(rawXUnit);
+    const yUnit = Math.round(rawYUnit);
+    if (typeof rawXUnit !== 'number' || typeof rawYUnit !== 'number'
+      || !Number.isFinite(xUnit) || !Number.isFinite(yUnit)
+      || xUnit < 0 || xUnit > 65535 || yUnit < 0 || yUnit > 65535) return;
+    const status = wallpaperEngineRuntime.getStatus();
+    if (!status
+      || status.active !== true
+      || status.sourceWindowParked !== true
+      || String(status.sessionId || '') !== sessionId
+      || typeof wallpaperEngineRuntime.noteHostPointerActivity !== 'function') return;
+    try {
+      wallpaperEngineRuntime.noteHostPointerActivity({ sessionId, xUnit, yUnit });
+    } catch (_) { }
+  });
+
+  ipcMain.handle('mineradio-wallpaper-engine-stop-scene', async (event, payload = {}) => {
+    try {
+      if (!isTrustedWallpaperEngineIpc(event)) return { ok: false, error: 'WALLPAPER_ENGINE_UNTRUSTED_CALLER' };
+      const sessionId = String(payload.sessionId || '');
+      const stopAll = payload && payload.all === true || !sessionId;
+      // Invalidate pending preparation before awaiting the old source shutdown.
+      // Otherwise a new start can begin during the close wait and then be
+      // incorrectly superseded when this stop handler resumes.
+      if (stopAll) {
+        wallpaperEngineCaptureOperation += 1;
+        cancelWallpaperEngineHostBoundsRestart();
+        clearWallpaperEngineCaptureGrant();
+      }
+      const result = await wallpaperEngineRuntime.stop(stopAll ? '' : sessionId);
+      const current = wallpaperEngineRuntime.getStatus();
+      if (!stopAll && (!current.active || (wallpaperEngineCaptureGrant && wallpaperEngineCaptureGrant.sessionId === sessionId))) {
+        clearWallpaperEngineCaptureGrant(sessionId);
+      }
+      return result;
+    } catch (error) {
+      return { ok: false, error: error.code || error.message || 'WALLPAPER_ENGINE_SCENE_STOP_FAILED' };
+    }
+  });
+  // ===== Wallpaper Engine 集成编排段结束 =====
+
   let win = null;
   let tray = null;
   let library = store.load('library.json', { songs: [], scannedAt: 0 });
@@ -656,6 +1887,35 @@ function main() {
     win.on('unmaximize', pushMaxState);
     try { win.setHasShadow(true); } catch { /* 平台不支持则忽略 */ } // 无边框窗口系统投影（Windows/macOS）
     win.webContents.setBackgroundThrottling(false); // 最小化/后台时保持渲染：任务栏缩略图实时更新
+    mainWindow = win; // WE 编排段沿用 MR 的 mainWindow 命名
+    // ===== WE 宿主生命周期钩子（Ported from Mineradio 2.2.0, GPL-3.0, desktop/main.js:5640-5875）=====
+    win.webContents.on('did-navigate', () => { stopWallpaperEngineRuntimeForRenderer('main-frame-navigation'); });
+    win.webContents.on('destroyed', () => { stopWallpaperEngineRuntimeForRenderer('webcontents-destroyed'); });
+    win.webContents.on('render-process-gone', (_e, details) => {
+      Promise.resolve(stopWallpaperEngineRuntimeForRenderer(`render-process-gone:${details && details.reason || 'unknown'}`)).catch(() => {});
+    });
+    win.on('minimize', () => { if (fullDesktopModeHostVisibilityTransitionDepth <= 0) suspendWallpaperEngineForHiddenHost(win, 'minimize'); });
+    win.on('restore', () => { if (fullDesktopModeHostVisibilityTransitionDepth <= 0) resumeWallpaperEngineForVisibleHost(win, 'restore'); });
+    win.on('show', () => { resumeWallpaperEngineForVisibleHost(win, 'show'); });
+    win.on('hide', () => { suspendWallpaperEngineForHiddenHost(win, 'hide'); });
+    win.on('move', () => { scheduleWallpaperEngineHostBoundsRestart(win, 'move'); });
+    win.on('resize', () => { scheduleWallpaperEngineHostBoundsRestart(win, 'resize'); });
+    win.on('enter-full-screen', () => {
+      windowFullscreenActive = true;
+      setTimeout(() => scheduleWallpaperEngineHostBoundsRestart(win, 'enter-full-screen'), 40);
+    });
+    win.on('leave-full-screen', () => {
+      windowFullscreenActive = false;
+      setTimeout(() => scheduleWallpaperEngineHostBoundsRestart(win, 'leave-full-screen'), 50);
+    });
+    win.on('enter-html-full-screen', () => {
+      htmlFullscreenActive = true;
+      setTimeout(() => scheduleWallpaperEngineHostBoundsRestart(win, 'enter-html-full-screen'), 40);
+    });
+    win.on('leave-html-full-screen', () => {
+      htmlFullscreenActive = false;
+      setTimeout(() => scheduleWallpaperEngineHostBoundsRestart(win, 'leave-html-full-screen'), 50);
+    });
     win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
     win.on('close', (e) => {
       if (!app.isQuitting) {
@@ -940,6 +2200,8 @@ function main() {
           positionLyricWin();
           hideLyricFromTaskbar();
         }
+        // WE 活动会话跟随显示器布局变化（Ported from Mineradio，display-metrics-changed → bounds restart）
+        scheduleWallpaperEngineHostBoundsRestart(win, evName);
       });
     } catch { /* 忽略 */ }
   });
@@ -3917,6 +5179,13 @@ function main() {
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null); // 移除默认菜单栏（File/Edit/View/Window）
     startStreamServer(); // v1.4.2 本地流代理（失败只影响 streamUrl，前端自动回退直连直链）
+    // WE 媒体协议（mineradio-wallpaper:// 壁纸封面/预览流）+ 会话权限处理器（Ported from Mineradio）
+    try {
+      await wallpaperEngineLibrary.installProtocol(protocol);
+    } catch (error) {
+      console.warn('[Wallpaper Engine] local media protocol unavailable:', error && error.message || error);
+    }
+    try { configureLocalAppPermissions(); } catch (error) { console.warn('[Wallpaper Engine] permission handlers unavailable:', error && error.message || error); }
     // B 站 CDN 热链保护：<audio> 发不了自定义头，用 webRequest 统一补 Referer（音视频直链/封面必备）
     try {
       session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['*://*.bilivideo.com/*', '*://*.akamaized.net/*', '*://*.bilitv.com/*'] }, (details, callback) => {
@@ -4234,8 +5503,33 @@ function main() {
     // 常驻托盘，不退出
   });
 
-  app.on('will-quit', () => {
+  let weQuitCleanupDone = false;
+  app.on('will-quit', (e) => {
     globalShortcut.unregisterAll();
     if (tray) tray.destroy();
+    // WE 收尾（Ported from Mineradio desktop/main.js:6030-6052 简化：无全桌面模式部分）：
+    // 关停壁纸进程/DWM 助手后再真正退出，15s 上限防卡死退出
+    if (weQuitCleanupDone) return;
+    e.preventDefault();
+    const cleanupTimeout = setTimeout(() => {
+      console.warn('[Shutdown] WE runtime cleanup exceeded 15000ms; continuing application exit.');
+      weQuitCleanupDone = true;
+      app.quit();
+    }, 15000);
+    Promise.resolve()
+      .then(() => fullDesktopModeRuntime.dispose('app-quit'))
+      .catch(() => {})
+      .then(() => wallpaperEngineRuntime.dispose())
+      .then((result) => {
+        if (result && result.ok === false) {
+          console.warn('[Wallpaper Engine] dispose incomplete:', result.reason || 'WALLPAPER_ENGINE_WINDOW_CLOSE_FAILED');
+        }
+      })
+      .catch((error) => console.warn('[Wallpaper Engine] dispose failed:', error && error.message || error))
+      .finally(() => {
+        clearTimeout(cleanupTimeout);
+        weQuitCleanupDone = true;
+        app.quit();
+      });
   });
 }

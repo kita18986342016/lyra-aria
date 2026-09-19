@@ -181,5 +181,37 @@ contextBridge.exposeInMainWorld('api', {
   accountsSwitch: (id) => ipcRenderer.invoke('accounts:switch', id),
   accountsCreate: (name) => ipcRenderer.invoke('accounts:create', name),
   accountsDelete: (id) => ipcRenderer.invoke('accounts:delete', id),
-  onAccountChanged: (cb) => ipcRenderer.on('account:changed', () => cb())
+  onAccountChanged: (cb) => ipcRenderer.on('account:changed', () => cb()),
+
+  // Wallpaper Engine 集成（Ported from Mineradio 2.2.0, GPL-3.0, desktop/preload.js:19-42；MR 桥名 desktopWindow，此处并入 api）
+  listWallpaperEngineProjects: (payload) => ipcRenderer.invoke('mineradio-wallpaper-engine-list', payload || {}),
+  getWallpaperEngineProjectDetails: (id) => ipcRenderer.invoke('mineradio-wallpaper-engine-project-details', String(id || '')),
+  openWallpaperEngineProjectDetails: (id, target) => ipcRenderer.invoke('mineradio-wallpaper-engine-open-project-details', {
+    id: String(id || ''),
+    target: target === 'workshop' ? 'workshop' : 'we',
+  }),
+  chooseWallpaperEngineDirectory: () => ipcRenderer.invoke('mineradio-wallpaper-engine-choose-directory'),
+  chooseWallpaperEngineProjectFile: () => ipcRenderer.invoke('mineradio-wallpaper-engine-choose-project-file'),
+  removeWallpaperEngineDirectory: (rootId) => ipcRenderer.invoke('mineradio-wallpaper-engine-remove-directory', String(rootId || '')),
+  getWallpaperEngineRuntimeStatus: (payload) => ipcRenderer.invoke('mineradio-wallpaper-engine-runtime-status', payload || {}),
+  startWallpaperEngineScene: (payload) => ipcRenderer.invoke('mineradio-wallpaper-engine-start-scene', payload || {}),
+  reportWallpaperEngineCaptureResult: (payload) => ipcRenderer.invoke('mineradio-wallpaper-engine-capture-result', payload || {}),
+  prepareWallpaperEngineGlassCapture: (payload) => ipcRenderer.invoke('mineradio-wallpaper-engine-prepare-glass-capture', payload || {}),
+  activateWallpaperEngineDwmSurface: (payload) => ipcRenderer.invoke('mineradio-wallpaper-engine-activate-dwm-surface', payload || {}),
+  updateWallpaperEngineGlassSurface: (payload) => ipcRenderer.send('mineradio-wallpaper-engine-glass-surface', payload || {}),
+  updateWallpaperEngineVisualSettings: (payload) => ipcRenderer.send('mineradio-wallpaper-engine-visual-settings', payload || {}),
+  reportWallpaperEnginePointerActivity: (payload) => ipcRenderer.send('mineradio-wallpaper-engine-pointer-activity', payload || {}),
+  stopWallpaperEngineScene: (payload) => ipcRenderer.invoke('mineradio-wallpaper-engine-stop-scene', payload || {}),
+  onWallpaperEngineHostBoundsChanged: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload || {});
+    ipcRenderer.on('mineradio-wallpaper-engine-host-bounds-changed', listener);
+    return () => ipcRenderer.removeListener('mineradio-wallpaper-engine-host-bounds-changed', listener);
+  },
+  onWallpaperModeState: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload || {});
+    ipcRenderer.on('mineradio-wallpaper-runtime-state', listener);
+    return () => ipcRenderer.removeListener('mineradio-wallpaper-runtime-state', listener);
+  }
 });
