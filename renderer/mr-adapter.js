@@ -12,8 +12,7 @@ var SKULL_PRESET_INDEX = 7;            // MR 00-core-stores.js:104；保持 fx.p
 var skullParticleGroup = null;         // MR 14:2087 守卫引用（骷髅不在移植范围）
 var shelfManager = null;               // MR 14:2100 守卫引用（3D 歌单架不移植）
 var skullBeatFlash = 0;                // MR 14:2064 骷髅预设专用，恒 0
-var particles = null, bloomParticles = null, floatGroup = null, backCoverGroup = null;
-// MR 14:11453 守卫引用：封面粒子组（未移植模块），falsy → 歌词布局走世界原点分支（MR 同款兜底）
+
 var shelfDetailOpen = false;           // MR 14:2089 守卫引用
 var clamp01 = function (v) { return Math.max(0, Math.min(1, v)); };
 var clampRange = function (v, min, max) { return Math.max(min, Math.min(max, v)); };
@@ -72,25 +71,7 @@ var normalizeLyricTextureClarity = function (v) {      // MR 04:54（尾部分�
 };
 // 全局 uniforms 子集（MR 00-pointer-cover-particles.js:326-364 中歌词链触碰的字段：
 // uTime/uPixel/uBass/uBeat/uEnergy，统计见移植记录；封面纹理族字段属于未移植的粒子模块）
-var uniforms = {
-  uTime: { value: 0 }, uBass: { value: 0 }, uMid: { value: 0 }, uTreble: { value: 0 },
-  uBeat: { value: 0 }, uEnergy: { value: 0 }, uPixel: { value: 1 },
-};
-var dotTexture = null;                 // THREE 加载后由 makeDotTexture 创建（MR 00:197-210 原样）
-function makeDotTexture() {            // MR 00-pointer-cover-particles.js:197-210 原样照抄
-  var cv = document.createElement('canvas'); cv.width = cv.height = 64;
-  var ctx = cv.getContext('2d');
-  var g = ctx.createRadialGradient(32, 32, 0, 32, 32, 31);
-  g.addColorStop(0.00, 'rgba(255,255,255,0.96)');
-  g.addColorStop(0.42, 'rgba(255,255,255,0.78)');
-  g.addColorStop(0.72, 'rgba(255,255,255,0.22)');
-  g.addColorStop(1.00, 'rgba(255,255,255,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 64, 64);
-  var tex = new THREE.CanvasTexture(cv);
-  tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
-  return tex;
-}
+
 
 // 偏好读取函数瘦身版：原函数在 MR 05-playback/00,01,02,06 与 03-beat/03（依赖其设置 UI 助手体系，
 // 不在本移植范围），此处仅保留默认空值契约——本播放器不消费这些 MR 偏好（键名与 MR 相同以避免误读用户旧数据）
@@ -141,6 +122,23 @@ function updatePerformanceControls() {}
 function updateDesktopLyricsControls() {}
 function updateVisualTintControls() {}
 function updateBgColorControls() {}
+// 封面 URL 助手（05-playback/01-cover-custom-map.js 原样；coverProxySrc 适配：本项目无 /api/cover 代理，
+// http(s) 远端封面直接用原 URL——粒子纹理无需 CORS，仅取色读像素走本地封面 dataURL 路径）
+function isInlineCoverSrc(src) {
+  return typeof src === 'string' && (
+    /^data:image\//i.test(src) ||
+    /^blob:/i.test(src) ||
+    /^mineradio-local:\/\/cover\//i.test(src));
+}
+function isProxyableCoverUrl(url) { return /^https?:\/\//i.test(String(url || '')); }
+function coverProxySrc(url, cacheBust) {
+  // 本地流服务器新增 /api/cover 端点（等价 MR server.js 同名能力）；端口从当前音频 src 提取
+  if (!isProxyableCoverUrl(url)) return '';
+  var m = /127\.0\.0\.1:(\d+)/.exec((window.audio && window.audio.src) || '');
+  var port = m ? m[1] : '30000';
+  return 'http://127.0.0.1:' + port + '/api/cover?url=' + encodeURIComponent(url) + (cacheBust ? '&v=' + Date.now() : '');
+}
+function coverUrlWithSize(url, size) { return url || ''; }
 function bindColorLabPicker() {} // ColorLab 弹窗（未复制其 HTML），色轮预设网格已由 buildLyricColorControls 构建
 function syncFxUniforms() {}     // 封面粒子 uniforms 同步（未移植层）；歌词键直接读 fx，不受影响
 function bindColorLabRows() {}   // ColorLab 行绑定（同上，弹窗 HTML 未复制）
@@ -321,6 +319,13 @@ function mrFrame(now) {
   mrAnalyzeFrame(now, dt);
   // MR 全局契约：playing 标志（00-core-stores 声明），tickLyricsParticles 依赖
   playing = !!(MrStage.audioEl && !MrStage.audioEl.paused && !MrStage.audioEl.ended);
+  // 以下照搬 11-main-loop.js:575-600 的视觉每帧段
+  updateParticlePointerFrame();
+  uniforms.uVinylSpin.value = (uniforms.uVinylSpin.value + dt * (0.40 + smoothBass * 0.09) * (isFinite(fx.speed) ? Math.max(0.05, fx.speed) : 1)) % (Math.PI * 2);
+  uniforms.uBurstAmt.value *= 0.90;
+  if (typeof updateBackgroundStarRiverState === 'function') updateBackgroundStarRiverState(dt, false);
+  updateRipples(dt);
+  updateFloatLayer(dt);
   updateCinema(dt); updateFreeCamera(dt); updateCamera();
   if (typeof applySkullCameraPose === 'function') applySkullCameraPose(dt);
   var stepDt = MrStage.gates ? consumeFrameGate(MrStage.gates.stageLyrics, now, dt, playing ? 45 : 24, false, 'stage-lyrics') : dt;
@@ -402,6 +407,11 @@ function mrRefreshPalette(coverSrc) {
   if (!bootedGuard() || typeof updateLyricPaletteFromCover !== 'function') return;
   var src = coverSrc || (document.getElementById('pCoverImg') || {}).src;
   if (!src) return;
+  // 双通道：封面粒子管线（MR 03-beat/05 原函数）+ 歌词取色（MR 07 原函数）
+  try {
+    if (typeof loadCoverFromUrl === 'function') loadCoverFromUrl(src, { deferHeavy: true, timeout: 1700 });
+    if (typeof applyCoverDataUrl === 'function' && src.indexOf('data:') === 0) applyCoverDataUrl(src, { deferHeavy: true });
+  } catch { /* 粒子封面失败不影响歌词 */ }
   var img = new Image();
   img.onload = function () {
     try {
@@ -500,6 +510,11 @@ window.LyricStage3D = {
   setLrc: mrSetLrc,
   refreshPalette: mrRefreshPalette,
   setAudio: function (el) { MrStage.audioEl = el; window.audio = el; },
+  reveal: function () { // MR 05-playback/13:1152 同款：进入舞台时粒子渐入 + 封面装载
+    if (typeof tweenParticleAlpha === 'function') tweenParticleAlpha(uniforms.uAlpha.value || 0, 1.0, 220);
+    var img = document.getElementById('pCoverImg');
+    if (img && img.src && typeof loadCoverFromUrl === 'function') loadCoverFromUrl(img.src, { deferHeavy: true });
+  },
   active: function () { return MrStage.booted && MrStage.mounted; },
   failed: function () { return MrStage.failed; },
   markFailed: function () { MrStage.failed = true; },

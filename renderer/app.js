@@ -4425,6 +4425,7 @@
       await LyricStage3D.mount(host);
       LyricStage3D.setLrc(state.lrc, state.wordSegs, lyrTransOn() ? state.translatedLrc : null); // 挂载期间歌词可能已加载
       LyricStage3D.refreshPalette();
+      LyricStage3D.reveal();
     } catch (e) {
       LyricStage3D.markFailed();
       toast('3D 舞台不可用（初始化失败）');
