@@ -613,6 +613,15 @@ function currentLyricFallbackText() {
   return lyricFallbackTextForSong(currentLyricSong() || {});
 }
 
+// fx 面板 WE 行按钮（7b22ce2 随 MR 面板 HTML 复制进来，onclick 指向 MR 未 vendor 的
+// 07-fx/03-wallpaper-engine-library.js 抽屉 UI）。主进程能力本次已就绪（06c8ce1），
+// 壁纸库抽屉 UI 未搬——此处先接成明确提示，避免点击静默 ReferenceError。
+function openWallpaperEngineLibrary() {
+  if (typeof showToast === 'function') showToast('Wallpaper Engine 壁纸库界面即将上线（主进程集成已就绪）');
+}
+function deactivateWallpaperEngineBackground() {}
+function setWallpaperEngineVisualSetting() {}
+
 function queueItemKey(song) {
   if (!song) return '';
   if (song.id != null && song.id !== '') return 'song:' + song.id;
