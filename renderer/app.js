@@ -4396,6 +4396,37 @@
   function lyrTransOn() {
     return (localStorage.getItem('mp_lyrtrans') || '1') === '1';
   }
+  // ---------- 3D 歌词舞台（v1.4.2 第二期） ----------
+  // 开关/面板打开=挂载，关闭=完整卸载并释放 WebGL 资源（MR LOW_SPEC 纪律：不可见即不渲染）；
+  // 挂载失败（无 WebGL）置 failed 并回退 DOM 歌词；three.js 首次开启才懒加载。
+  function stage3dOn() {
+    return (localStorage.getItem('mp_stage3d') || '0') === '1';
+  }
+  let stage3dMounting = false;
+  async function syncStage3d() {
+    const panel = $('#lyricPanel');
+    const host = $('#stage3dHost');
+    const want = stage3dOn() && !panel.classList.contains('hidden') && !LyricStage3D.failed();
+    const on = want && LyricStage3D.active();
+    panel.classList.toggle('stage3d-on', on);
+    host.classList.toggle('hidden', !on);
+    if (!want) {
+      if (LyricStage3D.active()) LyricStage3D.unmount();
+      return;
+    }
+    if (LyricStage3D.active()) { LyricStage3D.resize(); return; }
+    if (stage3dMounting) return;
+    stage3dMounting = true;
+    try {
+      await LyricStage3D.mount(host);
+      lastLyricIdx = -1; // 挂载完成 → 下一帧强制重喂当前行
+    } catch (e) {
+      LyricStage3D.markFailed();
+      toast('3D 舞台不可用（WebGL 初始化失败），已回退普通歌词');
+    }
+    stage3dMounting = false;
+    syncStage3d(); // mount 落地后再同步一次 stage3d-on 显隐
+  }
   // 找原文第 i 行对应的翻译行：优先时间 ±0.35s 匹配；无时间戳或匹配不中时按行序兜底（翻译行数与原文一致）
   function transForLine(i) {
     if (!state.translatedLrc || !state.lrc || !state.lrc[i]) return null;
@@ -4639,6 +4670,19 @@
       // v1.4.2：无逐字时 smoothstep 平滑扫（+20ms 提前量，MR 同款）；有逐字时 p 仅作兜底显示域
       const p = words ? Math.min(1, Math.max(0, (t - line.t) / dur)) : LyricKaraoke.lineProgress(t, line.t, dur);
       applyKaraokeP(els[idx], p, words, t);
+      // 3D 舞台喂同一套算法产出：逐字=wordFrontPx 像素前缘，LRC=lineProgress（shader 内 mix+feather 扫色）
+      if (LyricStage3D.active()) {
+        const sp = (words && els[idx]._kwBuilt) ? (LyricKaraoke.wordFrontPx(els[idx]._kwBuilt, t) || p) : p;
+        LyricStage3D.update({
+          now: performance.now(), playing: !audio.paused,
+          prev: idx > 0 ? (state.lrc[idx - 1].text || '') : '',
+          text: line.text || '',
+          next: next ? (next.text || '') : '',
+          progress: sp, hasNative: !!words,
+        });
+      }
+    } else if (LyricStage3D.active() && !$('#lyricPanel').classList.contains('hidden')) {
+      LyricStage3D.update({ now: performance.now(), playing: !audio.paused, prev: '', text: '', next: '', progress: 0, hasNative: false });
     }
   }
 
@@ -6170,6 +6214,14 @@
         if (!$('#pageDetail').classList.contains('hidden')) renderDetailLyrics();
       }
     });
+    // 3D 歌词舞台开关（localStorage mp_stage3d，默认关；开=懒加载 three.js 并挂载，关=完整卸载释放资源）
+    $('#stStage3d').checked = stage3dOn();
+    $('#stStage3d').addEventListener('change', (e) => {
+      try { localStorage.setItem('mp_stage3d', e.target.checked ? '1' : '0'); } catch { /* 忽略 */ }
+      if (e.target.checked) LyricStage3D.resetFailed(); // 重新开启允许重试挂载
+      syncStage3d();
+    });
+    window.addEventListener('resize', () => LyricStage3D.resize());
     // 下载目录保存（回车/失焦）
     const saveDlDir = () => {
       const v = ($('#stDlDir').value || '').trim();
@@ -6514,8 +6566,9 @@
         if (!state.lrc && s) loadLyrics(s.id);
         updateLyricHighlight();
       }
+      syncStage3d(); // 3D 舞台：面板开=挂载/恢复，关=卸载释放
     });
-    $('#btnCloseLyric').addEventListener('click', () => $('#lyricPanel').classList.add('hidden'));
+    $('#btnCloseLyric').addEventListener('click', () => { $('#lyricPanel').classList.add('hidden'); syncStage3d(); });
 
     // 播放队列面板
     $('#btnQueue').addEventListener('click', () => {

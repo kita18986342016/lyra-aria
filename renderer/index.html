@@ -141,6 +141,7 @@
             <div class="st-group">歌词</div>
             <div class="st-row"><span class="st-label">歌词字号</span><input type="range" id="stFs" min="11" max="20" step="1" value="17"><span id="stFsVal" class="st-val"></span></div>
             <div class="st-row st-row-sw"><span class="st-label">歌词翻译</span><label class="st-switch"><input type="checkbox" id="stLyrTrans" checked><span class="st-slider"></span></label></div>
+            <div class="st-row st-row-sw"><span class="st-label">3D 歌词舞台</span><label class="st-switch"><input type="checkbox" id="stStage3d"><span class="st-slider"></span></label></div>
             <div class="st-group">桌面歌词</div>
             <div class="st-row st-row-sw"><span class="st-label">显示</span><label class="st-switch"><input type="checkbox" id="stLyric"><span class="st-slider"></span></label></div>
             <div class="st-row"><span class="st-label">字号</span><input type="range" id="stLyrFs" min="14" max="64" step="1" value="28"><span id="stLyrFsVal" class="st-val"></span></div>
@@ -528,6 +529,7 @@
     <aside id="lyricPanel" class="hidden">
       <div class="lyric-head"><span>歌词</span><button id="btnCloseLyric"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
       <div id="lyricBox"></div>
+      <div id="stage3dHost" class="hidden"></div>
       <div id="lyricSettings">
         <div class="ls-title">歌词显示 <label class="switch"><input type="checkbox" id="lsToggle"><span></span></label></div>
         <div class="ls-row"><span class="ls-label">模式</span>
@@ -689,6 +691,7 @@
   </div>
 
   <script src="karaoke.js"></script>
+  <script src="stage3d.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

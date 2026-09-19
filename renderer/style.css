@@ -829,6 +829,11 @@ html[data-skin] .fav-btn { opacity: .62; color: var(--text); } /* 皮肤下未�
 #btnCloseLyric svg { width: 15px; height: 15px; }
 #lyricBox { flex: 1; overflow-y: auto; padding: 10px 22px 60px; font-size: var(--lyric-fs, 17px); line-height: 1.75; position: relative; scroll-behavior: smooth; font-family: "Microsoft YaHei UI", "MiSans", "HarmonyOS Sans SC", "OPPO Sans", "Alibaba PuHuiTi 3.0", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei", "Segoe UI", sans-serif; letter-spacing: .01em; }
 
+/* ========== 3D 歌词舞台（v1.4.2 第二期） ========== */
+#stage3dHost { flex: 1; position: relative; overflow: hidden; }
+#stage3dHost .stage3d-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#lyricPanel.stage3d-on #lyricBox { visibility: hidden; }
+
 /* ========== 播放队列抽屉 ========== */
 #queuePanel {
   width: 300px; flex-shrink: 0;
