@@ -4616,6 +4616,1084 @@ function disposeLyricMesh(mesh) {
 }
 ;
 
+// ==================== 02-visual/04-visual-settings-persistence.js ====================
+function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  var max = Math.max(r, g, b), min = Math.min(r, g, b);
+  var h = 0, s = 0, l = (max + min) / 2;
+  if (max !== min) {
+    var d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h /= 6;
+  }
+  return { h: h, s: s, l: l };
+}
+function hslToRgb(h, s, l) {
+  function hue2rgb(p, q, t) {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  }
+  var r, g, b;
+  if (s === 0) r = g = b = l;
+  else {
+    var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    var p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1 / 3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1 / 3);
+  }
+  return { r: Math.round(r * 255), g: Math.round(g * 255), b: Math.round(b * 255) };
+}
+function rgbCss(c, a) {
+  if (a == null) return 'rgb(' + c.r + ',' + c.g + ',' + c.b + ')';
+  return 'rgba(' + c.r + ',' + c.g + ',' + c.b + ',' + a + ')';
+}
+function clampRange(v, min, max) { return Math.max(min, Math.min(max, v)); }
+function normalizeCoverResolution(v) {
+  return clampRange(Number(v) || 1, 0.75, 1.55);
+}
+function normalizePerformanceBackgroundMode(v, liveKeepFallback) {
+  var value = String(v || '');
+  if (value === 'keep' || liveKeepFallback === true) return 'keep';
+  if (value === 'release') return 'release';
+  return 'auto';
+}
+function normalizePerformanceQuality(v) {
+  var value = String(v || '');
+  return /^(eco|balanced|high|ultra)$/.test(value) ? value : fxDefaults.performanceQuality;
+}
+function normalizeLyricTextureClarity(v) {
+  var value = Number(v);
+  if (!isFinite(value)) value = Number(fxDefaults.lyricTextureClarity) || 1;
+  // Compatibility with the short-lived 1 / 1.25 / 1.5 experiment.  New
+  // archives store the user-facing raster multiplier directly as 1..4.
+  if (Math.abs(value - 1.25) < 0.001) return 2;
+  if (Math.abs(value - 1.5) < 0.001) return 4;
+  return clampRange(Math.round(value), 1, 4);
+}
+function layoutNumber(value, fallback, min, max) {
+  var n = Number(value);
+  if (!isFinite(n)) n = Number(fallback);
+  if (!isFinite(n)) n = min;
+  return clampRange(n, min, max);
+}
+function layoutInteger(value, fallback, min, max) {
+  return Math.round(layoutNumber(value, fallback, min, max));
+}
+function coverParticleGridForResolution(v) {
+  var grid = Math.round(118 * normalizeCoverResolution(v));
+  grid = Math.max(88, Math.min(183, grid));
+  return grid % 2 ? grid : grid + 1;
+}
+function coverParticleCountLabel(v) {
+  var grid = coverParticleGridForResolution(v);
+  return grid + 'x' + grid;
+}
+function coverTextureSizeForResolution(v) {
+  v = normalizeCoverResolution(v);
+  if (v >= 1.32) return 512;
+  if (v >= 1.10) return 384;
+  return 256;
+}
+var currentFxAutosaveDiskTimer = null;
+var currentFxAutosaveDiskPayload = null;
+var currentFxAutosaveBootAt = Date.now();
+var currentFxAutosaveUserDirty = false;
+var currentFxAutosaveLastUserReason = '';
+function plainCurrentFxAutosavePayload(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+function currentFxAutosaveTimestamp(raw) {
+  raw = plainCurrentFxAutosavePayload(raw);
+  if (!raw) return 0;
+  var n = Number(raw.autosavedAt || raw.savedAt || 0);
+  return isFinite(n) ? n : 0;
+}
+function parseCurrentFxAutosaveText(rawText) {
+  if (!rawText) return null;
+  try {
+    return plainCurrentFxAutosavePayload(JSON.parse(rawText));
+  } catch (e) {
+    return null;
+  }
+}
+function repairCurrentFxAutosaveLocalMirror(payload) {
+  payload = plainCurrentFxAutosavePayload(payload);
+  if (!payload) return;
+  try {
+    localStorage.setItem(CURRENT_FX_AUTOSAVE_STORE_KEY, JSON.stringify(payload));
+    try { localStorage.removeItem(LYRIC_LAYOUT_STORE_KEY); } catch (cleanupError) { }
+  } catch (e) { }
+}
+function readDesktopCurrentFxAutosaveRaw() {
+  try {
+    var bridge = window.desktopWindow;
+    if (!bridge || typeof bridge.readCurrentFxAutosaveSync !== 'function') return null;
+    var result = bridge.readCurrentFxAutosaveSync();
+    return plainCurrentFxAutosavePayload(result && result.payload);
+  } catch (e) {
+    console.warn('[FxAutosave] desktop read failed:', e);
+    return null;
+  }
+}
+function chooseCurrentFxAutosaveRaw(localRaw, diskRaw) {
+  if (localRaw && diskRaw) {
+    var localHasUserVisual = currentFxAutosaveHasUserVisualState(localRaw);
+    var diskHasUserVisual = currentFxAutosaveHasUserVisualState(diskRaw);
+    if (diskHasUserVisual && !localHasUserVisual) {
+      repairCurrentFxAutosaveLocalMirror(diskRaw);
+      return diskRaw;
+    }
+    if (localHasUserVisual && !diskHasUserVisual) return localRaw;
+    if (currentFxAutosaveTimestamp(diskRaw) >= currentFxAutosaveTimestamp(localRaw)) {
+      repairCurrentFxAutosaveLocalMirror(diskRaw);
+      return diskRaw;
+    }
+    return localRaw;
+  }
+  if (diskRaw) {
+    repairCurrentFxAutosaveLocalMirror(diskRaw);
+    return diskRaw;
+  }
+  return localRaw;
+}
+function readCurrentFxAutosaveStorageRaw() {
+  var localRaw = null;
+  try {
+    var rawText = localStorage.getItem(CURRENT_FX_AUTOSAVE_STORE_KEY);
+    if (!rawText) rawText = localStorage.getItem(LYRIC_LAYOUT_STORE_KEY);
+    localRaw = parseCurrentFxAutosaveText(rawText);
+  } catch (e) { }
+  var diskRaw = readDesktopCurrentFxAutosaveRaw();
+  return chooseCurrentFxAutosaveRaw(localRaw, diskRaw);
+}
+function readCurrentFxAutosaveRaw() {
+  var storedRaw = readCurrentFxAutosaveStorageRaw();
+  if (storedRaw) return storedRaw;
+  return packagedDefaultLyricLayoutRaw();
+}
+function normalizeSavedLyricDisplayMode(mode) {
+  mode = String(mode || 'single');
+  return /^(single|dual|triple|cinema|custom)$/.test(mode) ? mode : 'single';
+}
+function normalizeSavedLyricTranslationMode(mode) {
+  mode = String(mode || 'off');
+  return /^(off|current|dual|multi)$/.test(mode) ? mode : 'off';
+}
+function normalizeSavedLyricMotionStyle(style) {
+  style = String(style || 'float');
+  return /^(glass|smooth|float|quick|shine|glitch)$/.test(style) ? style : 'float';
+}
+function readSavedLyricLayoutCriticalFallback(raw, err) {
+  raw = plainCurrentFxAutosavePayload(raw);
+  if (err) {
+    try {
+      console.warn('[FxAutosave] startup layout read fallback:', err);
+    } catch (logError) { }
+  }
+  if (!raw) return {};
+  return {
+    lyricColorMode: raw.lyricColorMode === 'custom' ? 'custom' : 'auto',
+    lyricColor: normalizeHexColor(raw.lyricColor || fxDefaults.lyricColor || '#a9b8c8', fxDefaults.lyricColor || '#a9b8c8'),
+    lyricHighlightMode: raw.lyricHighlightMode === 'custom' ? 'custom' : 'auto',
+    lyricHighlightColor: normalizeHexColor(raw.lyricHighlightColor || fxDefaults.lyricHighlightColor || '#fac900', fxDefaults.lyricHighlightColor || '#fac900'),
+    lyricGlowLinked: raw.lyricGlowLinked !== false,
+    lyricGlowColor: normalizeHexColor(raw.lyricGlowColor || fxDefaults.lyricGlowColor || '#008aff', fxDefaults.lyricGlowColor || '#008aff'),
+    lyricDisplayMode: normalizeSavedLyricDisplayMode(raw.lyricDisplayMode || fxDefaults.lyricDisplayMode),
+    lyricTranslationMode: normalizeSavedLyricTranslationMode(raw.lyricTranslationMode || fxDefaults.lyricTranslationMode),
+    lyricMotionStyle: normalizeSavedLyricMotionStyle(raw.lyricMotionStyle || fxDefaults.lyricMotionStyle),
+    lyricVerticalFloat: raw.lyricVerticalFloat !== false,
+    lyricCustomLineCount: layoutInteger(raw.lyricCustomLineCount, fxDefaults.lyricCustomLineCount, 1, 10),
+    controlGlassChromaticOffset: layoutNumber(raw.controlGlassChromaticOffset, fxDefaults.controlGlassChromaticOffset, 30, 140)
+  };
+}
+function readSavedLyricLayout() {
+  var raw = null;
+  try {
+    raw = readCurrentFxAutosaveRaw();
+    var savedPreset = clampRange(Number(raw.preset) || 0, 0, MAX_VISUAL_PRESET_INDEX);
+    if (savedPreset === 3 && raw.visualPresetSchema !== VISUAL_PRESET_SCHEMA) {
+      savedPreset = 5;
+    }
+    var savedBgColor = normalizeHexColor(raw.backgroundColor || '#000000', '#000000');
+    var savedBgOpacity = clampRange(raw.backgroundOpacity == null ? fxDefaults.backgroundOpacity : Number(raw.backgroundOpacity), 0, 1);
+    var savedWindowBgOpacity = clampRange(raw.windowBackgroundOpacity == null ? fxDefaults.windowBackgroundOpacity : Number(raw.windowBackgroundOpacity), 0, 1);
+    var savedBgGlassOpacity = clampRange(raw.backgroundGlassOpacity == null ? fxDefaults.backgroundGlassOpacity : Number(raw.backgroundGlassOpacity), 0, 1);
+    var savedBgCropX = layoutNumber(raw.backgroundMediaCropX, fxDefaults.backgroundMediaCropX, 0, 100);
+    var savedBgCropY = layoutNumber(raw.backgroundMediaCropY, fxDefaults.backgroundMediaCropY, 0, 100);
+    var savedBgZoom = layoutNumber(raw.backgroundMediaZoom, fxDefaults.backgroundMediaZoom, 1, 2.8);
+    var savedGlassOffset = layoutNumber(raw.controlGlassChromaticOffset, fxDefaults.controlGlassChromaticOffset, 30, 140);
+    var savedPlaylistPanelGlassBlur = clampRange(raw.playlistPanelGlassBlur == null ? fxDefaults.playlistPanelGlassBlur : Number(raw.playlistPanelGlassBlur), 14, 60);
+    var savedPlaylistPanelGlassDensity = clampRange(raw.playlistPanelGlassDensity == null ? fxDefaults.playlistPanelGlassDensity : Number(raw.playlistPanelGlassDensity), 0.55, 1);
+    var savedPlaylistPanelOpenDuration = clampRange(raw.playlistPanelOpenDuration == null ? fxDefaults.playlistPanelOpenDuration : Number(raw.playlistPanelOpenDuration), 0.08, 0.72);
+    var savedPlaylistPanelCloseDuration = clampRange(raw.playlistPanelCloseDuration == null ? fxDefaults.playlistPanelCloseDuration : Number(raw.playlistPanelCloseDuration), 0.06, 0.48);
+    var savedBgMode = /^(cover|custom)$/.test(String(raw.backgroundColorMode || '')) ? String(raw.backgroundColorMode) : '';
+    var savedBgCustom = savedBgMode
+      ? savedBgMode === 'custom'
+      : (raw.backgroundColorCustom === true || (raw.backgroundColorCustom !== false && savedBgColor !== '#000000') || savedBgOpacity < 1);
+    var savedBgMedia = normalizeCustomBackgroundMedia(raw.backgroundMedia || raw.backgroundImage);
+    var savedBgAlbumCover = raw.backgroundAlbumCover === true || !!(savedBgMedia && savedBgMedia.type === 'album');
+    var desktopLyricsSchemaReady = raw.desktopLyricsSchema === 'desktop-lyrics-v3';
+    var savedShelfCameraMode = normalizeShelfCameraMode(raw.shelfCameraMode || fxDefaults.shelfCameraMode);
+    var savedShelfAngleManual = raw.shelfAngleYManual === true;
+    var savedShelfAngle = savedShelfAngleManual
+      ? clampRange(raw.shelfAngleY == null ? shelfDefaultAngleForCameraMode(savedShelfCameraMode) : Number(raw.shelfAngleY), -30, 30)
+      : shelfDefaultAngleForCameraMode(savedShelfCameraMode);
+    var savedShelfMode = /^(off|side|stage)$/.test(String(raw.shelf || '')) ? raw.shelf : fxDefaults.shelf;
+    var savedShelfPresence = savedShelfMode === 'off' ? 'auto' : normalizeShelfPresence(raw.shelfPresence || fxDefaults.shelfPresence);
+    var savedShelfPinnedOpen = savedShelfMode === 'side' && savedShelfPresence === 'always' && raw.shelfPinnedOpen === true;
+    return {
+      preset: savedPreset,
+      intensity: layoutNumber(raw.intensity, fxDefaults.intensity, 0.2, 1.6),
+      cinemaShake: layoutNumber(raw.cinemaShake, fxDefaults.cinemaShake, 0, 1.8),
+      depth: layoutNumber(raw.depth, fxDefaults.depth, 0.2, 1.8),
+      point: layoutNumber(raw.point, fxDefaults.point, 0.5, 2.2),
+      speed: layoutNumber(raw.speed, fxDefaults.speed, 0.2, 2.5),
+      twist: layoutNumber(raw.twist, fxDefaults.twist, 0, 0.6),
+      color: layoutNumber(raw.color, fxDefaults.color, 0.5, 2.0),
+      scatter: layoutNumber(raw.scatter, fxDefaults.scatter, 0, 0.5),
+      bgFade: layoutNumber(raw.bgFade, fxDefaults.bgFade, 0, 1.2),
+      bloomStrength: layoutNumber(raw.bloomStrength, fxDefaults.bloomStrength, 0, 1.6),
+      lyricGlowStrength: layoutNumber(raw.lyricGlowStrength, fxDefaults.lyricGlowStrength, 0, 0.85),
+      lyricBackgroundAdapt: layoutNumber(raw.lyricBackgroundAdapt, fxDefaults.lyricBackgroundAdapt, 0, 1),
+      lyricScale: layoutNumber(raw.lyricScale, 1, 0.35, 1.65),
+      lyricOffsetX: layoutNumber(raw.lyricOffsetX, 0, -4.0, 4.0),
+      lyricOffsetY: layoutNumber(raw.lyricOffsetY, 0, -2.4, 2.7),
+      lyricOffsetZ: layoutNumber(raw.lyricOffsetZ, 0, -3.2, 3.2),
+      lyricTiltX: layoutNumber(raw.lyricTiltX, 0, -84, 84),
+      lyricTiltY: layoutNumber(raw.lyricTiltY, 0, -84, 84),
+      lyricCameraLock: !!raw.lyricCameraLock,
+      lyricColorMode: raw.lyricColorMode === 'custom' ? 'custom' : 'auto',
+      lyricColor: normalizeHexColor(raw.lyricColor || '#a9b8c8'),
+      lyricHighlightMode: raw.lyricHighlightMode === 'custom' ? 'custom' : 'auto',
+      lyricHighlightColor: normalizeHexColor(raw.lyricHighlightColor || '#fff0b8'),
+      lyricGlowLinked: raw.lyricGlowLinked !== false,
+      lyricGlowColor: normalizeHexColor(raw.lyricGlowColor || '#9db8cf'),
+      lyricDisplayMode: normalizeSavedLyricDisplayMode(raw.lyricDisplayMode || fxDefaults.lyricDisplayMode),
+      lyricTranslationMode: normalizeSavedLyricTranslationMode(raw.lyricTranslationMode || fxDefaults.lyricTranslationMode),
+      lyricMotionStyle: normalizeSavedLyricMotionStyle(raw.lyricMotionStyle || fxDefaults.lyricMotionStyle),
+      lyricVerticalFloat: raw.lyricVerticalFloat !== false,
+      lyricCustomLineCount: layoutInteger(raw.lyricCustomLineCount, fxDefaults.lyricCustomLineCount, 1, 10),
+      lyricGlitchCameraBind: !!raw.lyricGlitchCameraBind,
+      lyricGlitchIntensity: layoutNumber(raw.lyricGlitchIntensity, fxDefaults.lyricGlitchIntensity, 0, 1.5),
+      lyricGlitchSlice: layoutNumber(raw.lyricGlitchSlice, fxDefaults.lyricGlitchSlice, 0, 1.4),
+      lyricGlitchChroma: layoutNumber(raw.lyricGlitchChroma, fxDefaults.lyricGlitchChroma, 0, 1.6),
+      lyricGlitchRate: layoutNumber(raw.lyricGlitchRate, fxDefaults.lyricGlitchRate, 0.45, 2.2),
+      lyricGlitchJitter: layoutNumber(raw.lyricGlitchJitter, fxDefaults.lyricGlitchJitter, 0, 1.8),
+      lyricContextOpacity: layoutNumber(raw.lyricContextOpacity, fxDefaults.lyricContextOpacity, 0.25, 1),
+      lyricContextSpread: layoutNumber(raw.lyricContextSpread, fxDefaults.lyricContextSpread, 0.60, 2.40),
+      lyricTranslationGap: layoutNumber(raw.lyricTranslationGap, fxDefaults.lyricTranslationGap, 0.28, 2.20),
+      lyricTranslationScale: layoutNumber(raw.lyricTranslationScale, fxDefaults.lyricTranslationScale, 0.46, 1.12),
+      lyricTranslationOpacity: layoutNumber(raw.lyricTranslationOpacity, fxDefaults.lyricTranslationOpacity, 0.20, 1),
+      lyricEdgeFade: layoutNumber(raw.lyricEdgeFade, fxDefaults.lyricEdgeFade, 0, 1),
+      lyricMotionSoftness: layoutNumber(raw.lyricMotionSoftness, fxDefaults.lyricMotionSoftness, 0.15, 1.2),
+      lyricFont: normalizeLyricFontKey(raw.lyricFont),
+      lyricLetterSpacing: layoutNumber(raw.lyricLetterSpacing, 0, -0.04, 0.18),
+      lyricLineHeight: layoutNumber(raw.lyricLineHeight, 1, 0.72, 1.80),
+      lyricWeight: layoutInteger(raw.lyricWeight, 900, 500, 900),
+      lyricTextureClarity: normalizeLyricTextureClarity(raw.lyricTextureClarity),
+      lyricGlow: raw.lyricGlow !== false,
+      lyricGlowBeat: raw.lyricGlowBeat !== false,
+      lyricGlowParticles: !!raw.lyricGlowParticles,
+      lyricVerticalFloat: raw.lyricVerticalFloat !== false,
+      backgroundStarRiver: raw.backgroundStarRiver !== false,
+      lyricPauseHold: raw.lyricPauseHold !== false,
+      floatLayer: raw.floatLayer === true,
+      cinema: raw.cinema !== false,
+      bloom: raw.bloom === true,
+      edge: raw.edge === true,
+      aiDepth: raw.aiDepth === true,
+      particleLyrics: raw.particleLyrics !== false,
+      backCover: raw.backCover === true,
+      visualTintMode: raw.visualTintMode === 'custom' ? 'custom' : 'auto',
+      visualTintColor: normalizeHexColor(raw.visualTintColor || '#9db8cf'),
+      uiAccentColor: normalizeHexColor(
+        raw.uiAccentColor || fxDefaults.uiAccentColor || '#ffffff',
+        fxDefaults.uiAccentColor || '#ffffff'
+      ),
+      homeAccentColor: normalizeHexColor(raw.homeAccentColor || '#00f5d4'),
+      homeIconColor: normalizeHexColor(raw.homeIconColor || fxDefaults.homeIconColor || '#f4d28a', '#f4d28a'),
+      visualIconColor: normalizeHexColor(raw.visualIconColor || fxDefaults.visualIconColor || '#7fd8ff', '#7fd8ff'),
+      backgroundColorMode: savedBgCustom ? 'custom' : 'cover',
+      backgroundColor: savedBgColor,
+      backgroundOpacity: savedBgOpacity,
+      windowBackgroundOpacity: savedWindowBgOpacity,
+      backgroundGlassOpacity: savedBgGlassOpacity,
+      controlGlassChromaticOffset: savedGlassOffset,
+      playlistPanelGlassBlur: savedPlaylistPanelGlassBlur,
+      playlistPanelGlassDensity: savedPlaylistPanelGlassDensity,
+      playlistPanelOpenDuration: savedPlaylistPanelOpenDuration,
+      playlistPanelCloseDuration: savedPlaylistPanelCloseDuration,
+      backgroundColorCustom: savedBgCustom,
+      backgroundImage: savedBgAlbumCover ? '' : normalizeCustomBackgroundImage(raw.backgroundImage),
+      backgroundMedia: savedBgAlbumCover ? null : savedBgMedia,
+      backgroundAlbumCover: savedBgAlbumCover,
+      backgroundMediaCropX: savedBgCropX,
+      backgroundMediaCropY: savedBgCropY,
+      backgroundMediaZoom: savedBgZoom,
+      desktopLyrics: raw.desktopLyrics === true,
+      desktopLyricsSize: clampRange(Number(raw.desktopLyricsSize) || fxDefaults.desktopLyricsSize, 0.72, 1.55),
+      desktopLyricsOpacity: clampRange(raw.desktopLyricsOpacity == null ? fxDefaults.desktopLyricsOpacity : Number(raw.desktopLyricsOpacity), 0.28, 1),
+      desktopLyricsY: clampRange(raw.desktopLyricsY == null ? fxDefaults.desktopLyricsY : Number(raw.desktopLyricsY), 0.08, 0.92),
+      desktopLyricsClickThrough: desktopLyricsSchemaReady ? raw.desktopLyricsClickThrough === true : fxDefaults.desktopLyricsClickThrough,
+      desktopLyricsCinema: desktopLyricsSchemaReady ? raw.desktopLyricsCinema !== false : fxDefaults.desktopLyricsCinema,
+      desktopLyricsHighlight: desktopLyricsSchemaReady ? raw.desktopLyricsHighlight === true : fxDefaults.desktopLyricsHighlight,
+      desktopLyricsFps: desktopLyricsSchemaReady ? normalizeDesktopLyricsFps(raw.desktopLyricsFps) : fxDefaults.desktopLyricsFps,
+      performanceBackground: normalizePerformanceBackgroundMode(raw.performanceBackground, raw.liveBackgroundKeep === true),
+      performanceQuality: normalizePerformanceQuality(raw.performanceQuality),
+      foregroundFpsMode: normalizeForegroundFpsMode(raw.foregroundFpsMode === 'adaptive' ? 'vsync' : raw.foregroundFpsMode),
+      memoryAutoTrimApp: raw.memoryAutoTrimApp !== false,
+      memoryAutoTrimOnBackground: raw.memoryAutoTrimOnBackground !== false,
+      memoryAutoSystemTrim: raw.memoryAutoSystemTrim === true,
+      memorySystemAutoElevate: raw.memorySystemAutoElevate === true,
+      memorySystemIntervalMin: clampRange(Math.round(raw.memorySystemIntervalMin == null ? fxDefaults.memorySystemIntervalMin : Number(raw.memorySystemIntervalMin)), 5, 180),
+      memorySystemThresholdPercent: clampRange(Math.round(raw.memorySystemThresholdPercent == null ? fxDefaults.memorySystemThresholdPercent : Number(raw.memorySystemThresholdPercent)), 50, 98),
+      memorySystemMask: clampRange(Math.round(raw.memorySystemMask == null ? fxDefaults.memorySystemMask : Number(raw.memorySystemMask)), 1, 29),
+      memorySafetyRevision: fxDefaults.memorySafetyRevision,
+      liveBackgroundKeep: normalizePerformanceBackgroundMode(raw.performanceBackground, raw.liveBackgroundKeep === true) === 'keep',
+      sonicGroundAmplitude: clampRange(raw.sonicGroundAmplitude == null ? fxDefaults.sonicGroundAmplitude : Number(raw.sonicGroundAmplitude), 0, 100),
+      sonicGroundMotionSpeed: clampRange(raw.sonicGroundMotionSpeed == null ? fxDefaults.sonicGroundMotionSpeed : Number(raw.sonicGroundMotionSpeed), 0, 100),
+      sonicGroundDensity: clampRange(raw.sonicGroundDensity == null ? fxDefaults.sonicGroundDensity : Number(raw.sonicGroundDensity), 0, 100),
+      sonicGroundRange: clampRange(raw.sonicGroundRange == null ? fxDefaults.sonicGroundRange : Number(raw.sonicGroundRange), 0, 100),
+      sonicGroundLower: clampRange(raw.sonicGroundLower == null ? fxDefaults.sonicGroundLower : Number(raw.sonicGroundLower), 0, 100),
+      sonicGroundDepth: clampRange(raw.sonicGroundDepth == null ? fxDefaults.sonicGroundDepth : Number(raw.sonicGroundDepth), 0, 100),
+      sonicGroundAutoRotate: clampRange(raw.sonicGroundAutoRotate == null ? fxDefaults.sonicGroundAutoRotate : Number(raw.sonicGroundAutoRotate), 0, 100),
+      sonicGroundColorMode: raw.sonicGroundColorMode === 'custom' ? 'custom' : 'cover',
+      sonicGroundBaseColor: normalizeHexColor(raw.sonicGroundBaseColor || fxDefaults.sonicGroundBaseColor, fxDefaults.sonicGroundBaseColor),
+      sonicGroundCoolColor: normalizeHexColor(raw.sonicGroundCoolColor || fxDefaults.sonicGroundCoolColor, fxDefaults.sonicGroundCoolColor),
+      sonicGroundWarmColor: normalizeHexColor(raw.sonicGroundWarmColor || fxDefaults.sonicGroundWarmColor, fxDefaults.sonicGroundWarmColor),
+      sonicGroundAccentColor: normalizeHexColor(raw.sonicGroundAccentColor || fxDefaults.sonicGroundAccentColor, fxDefaults.sonicGroundAccentColor),
+      sonicGroundGlow: clampRange(raw.sonicGroundGlow == null ? fxDefaults.sonicGroundGlow : Number(raw.sonicGroundGlow), 0, 100),
+      sonicGroundSubBass: clampRange(raw.sonicGroundSubBass == null ? fxDefaults.sonicGroundSubBass : Number(raw.sonicGroundSubBass), 0, 100),
+      sonicGroundBass: clampRange(raw.sonicGroundBass == null ? fxDefaults.sonicGroundBass : Number(raw.sonicGroundBass), 0, 100),
+      sonicGroundLowMid: clampRange(raw.sonicGroundLowMid == null ? fxDefaults.sonicGroundLowMid : Number(raw.sonicGroundLowMid), 0, 100),
+      sonicGroundMid: clampRange(raw.sonicGroundMid == null ? fxDefaults.sonicGroundMid : Number(raw.sonicGroundMid), 0, 100),
+      sonicGroundHighMid: clampRange(raw.sonicGroundHighMid == null ? fxDefaults.sonicGroundHighMid : Number(raw.sonicGroundHighMid), 0, 100),
+      sonicGroundPresence: clampRange(raw.sonicGroundPresence == null ? fxDefaults.sonicGroundPresence : Number(raw.sonicGroundPresence), 0, 100),
+      sonicGroundBrilliance: clampRange(raw.sonicGroundBrilliance == null ? fxDefaults.sonicGroundBrilliance : Number(raw.sonicGroundBrilliance), 0, 100),
+      sonicGroundAir: clampRange(raw.sonicGroundAir == null ? fxDefaults.sonicGroundAir : Number(raw.sonicGroundAir), 0, 100),
+      sonicGroundFloatingEnabled: raw.sonicGroundFloatingEnabled !== false,
+      sonicGroundFloatingIntensity: clampRange(raw.sonicGroundFloatingIntensity == null ? fxDefaults.sonicGroundFloatingIntensity : Number(raw.sonicGroundFloatingIntensity), 0, 100),
+      sonicGroundFloatingMinSize: clampRange(raw.sonicGroundFloatingMinSize == null ? fxDefaults.sonicGroundFloatingMinSize : Number(raw.sonicGroundFloatingMinSize), 0, 100),
+      sonicGroundFloatingMaxSize: clampRange(raw.sonicGroundFloatingMaxSize == null ? fxDefaults.sonicGroundFloatingMaxSize : Number(raw.sonicGroundFloatingMaxSize), 0, 100),
+      sonicGroundFloatingSpeed: clampRange(raw.sonicGroundFloatingSpeed == null ? fxDefaults.sonicGroundFloatingSpeed : Number(raw.sonicGroundFloatingSpeed), 0, 100),
+      sonicGroundFloatingCount: clampRange(raw.sonicGroundFloatingCount == null ? fxDefaults.sonicGroundFloatingCount : Number(raw.sonicGroundFloatingCount), 0, 100),
+      sonicAudioMonitorEnabled: raw.sonicAudioMonitorEnabled !== false,
+      sonicAudioAutoTrack: raw.sonicAudioAutoTrack !== false,
+      sonicAudioSensitivity: clampRange(raw.sonicAudioSensitivity == null ? fxDefaults.sonicAudioSensitivity : Number(raw.sonicAudioSensitivity), 0, 100),
+      sonicAudioBandStart: clampRange(raw.sonicAudioBandStart == null ? fxDefaults.sonicAudioBandStart : Number(raw.sonicAudioBandStart), 0, 510),
+      sonicAudioBandEnd: clampRange(raw.sonicAudioBandEnd == null ? fxDefaults.sonicAudioBandEnd : Number(raw.sonicAudioBandEnd), 2, 512),
+      sonicAudioThreshold: clampRange(raw.sonicAudioThreshold == null ? fxDefaults.sonicAudioThreshold : Number(raw.sonicAudioThreshold), 0, 100),
+      sonicAudioPulseStrength: clampRange(raw.sonicAudioPulseStrength == null ? fxDefaults.sonicAudioPulseStrength : Number(raw.sonicAudioPulseStrength), 0, 100),
+      sonicWorkshopInputGain: clampRange(raw.sonicWorkshopInputGain == null ? fxDefaults.sonicWorkshopInputGain : Number(raw.sonicWorkshopInputGain), 40, 100),
+      sonicWorkshopAudioIntensity: clampRange(raw.sonicWorkshopAudioIntensity == null ? fxDefaults.sonicWorkshopAudioIntensity : Number(raw.sonicWorkshopAudioIntensity), 0.3, 2.5),
+      sonicWorkshopResponseRange: clampRange(raw.sonicWorkshopResponseRange == null ? fxDefaults.sonicWorkshopResponseRange : Number(raw.sonicWorkshopResponseRange), 0.3, 2),
+      sonicWorkshopPeakIntensity: clampRange(raw.sonicWorkshopPeakIntensity == null ? fxDefaults.sonicWorkshopPeakIntensity : Number(raw.sonicWorkshopPeakIntensity), 0, 1.4),
+      sonicWorkshopColorMode: raw.sonicWorkshopColorMode === 'custom' ? 'custom' : 'cover',
+      sonicWorkshopTheme: /^(coral-mirage|ocean-deep|arctic-blue|arctic-aurora|emerald-forest|cyber-forest|minimal-mono|minimal-monochrome|neon-tokyo|golden-hour|ember-fire|crimson|crimson-sunset|aurora|violet-dream)$/.test(String(raw.sonicWorkshopTheme || '')) ? raw.sonicWorkshopTheme : fxDefaults.sonicWorkshopTheme,
+      sonicWorkshopCustomColor: normalizeHexColor(raw.sonicWorkshopCustomColor || fxDefaults.sonicWorkshopCustomColor || '#cb6c89', fxDefaults.sonicWorkshopCustomColor || '#cb6c89'),
+      sonicWorkshopBaseColorMode: raw.sonicWorkshopBaseColorMode === 'custom' ? 'custom' : 'cover',
+      sonicWorkshopBaseColor: normalizeHexColor(raw.sonicWorkshopBaseColor || fxDefaults.sonicWorkshopBaseColor || '#16060f', fxDefaults.sonicWorkshopBaseColor || '#16060f'),
+      sonicWorkshopWarmColorMode: raw.sonicWorkshopWarmColorMode === 'custom' ? 'custom' : 'cover',
+      sonicWorkshopWarmColor: normalizeHexColor(raw.sonicWorkshopWarmColor || fxDefaults.sonicWorkshopWarmColor || '#cb6c89', fxDefaults.sonicWorkshopWarmColor || '#cb6c89'),
+      sonicWorkshopCoolColorMode: raw.sonicWorkshopCoolColorMode === 'custom' ? 'custom' : 'cover',
+      sonicWorkshopCoolColor: normalizeHexColor(raw.sonicWorkshopCoolColor || fxDefaults.sonicWorkshopCoolColor || '#99c4ff', fxDefaults.sonicWorkshopCoolColor || '#99c4ff'),
+      sonicWorkshopRippleColorMode: raw.sonicWorkshopRippleColorMode === 'custom' ? 'custom' : 'cover',
+      sonicWorkshopRippleColor: normalizeHexColor(raw.sonicWorkshopRippleColor || fxDefaults.sonicWorkshopRippleColor || '#f8d8ff', fxDefaults.sonicWorkshopRippleColor || '#f8d8ff'),
+      sonicWorkshopPeakColorMode: raw.sonicWorkshopPeakColorMode === 'custom' ? 'custom' : 'cover',
+      sonicWorkshopPeakColor: normalizeHexColor(raw.sonicWorkshopPeakColor || fxDefaults.sonicWorkshopPeakColor || '#99c4ff', fxDefaults.sonicWorkshopPeakColor || '#99c4ff'),
+      wallpaperMode: false,
+      wallpaperOpacity: clampRange(raw.wallpaperOpacity == null ? fxDefaults.wallpaperOpacity : Number(raw.wallpaperOpacity), 0.35, 1),
+      wallpaperFps: normalizeWallpaperFps(raw.wallpaperFps),
+      coverResolution: normalizeCoverResolution(raw.coverResolution),
+      shelf: savedShelfMode,
+      shelfPinnedOpen: savedShelfPinnedOpen,
+      shelfCameraMode: savedShelfCameraMode,
+      shelfPresence: savedShelfPresence,
+      shelfShowPodcasts: raw.shelfShowPodcasts !== false,
+      shelfMergeCollections: raw.shelfMergeCollections === true,
+      shelfSize: clampRange(raw.shelfSize == null ? fxDefaults.shelfSize : Number(raw.shelfSize), 0.65, 1.45),
+      shelfOffsetX: clampRange(raw.shelfOffsetX == null ? fxDefaults.shelfOffsetX : Number(raw.shelfOffsetX), -1.2, 1.2),
+      shelfOffsetY: clampRange(raw.shelfOffsetY == null ? fxDefaults.shelfOffsetY : Number(raw.shelfOffsetY), -0.9, 0.9),
+      shelfOffsetZ: clampRange(raw.shelfOffsetZ == null ? fxDefaults.shelfOffsetZ : Number(raw.shelfOffsetZ), -0.9, 0.9),
+      shelfAngleY: savedShelfAngle,
+      shelfAngleYManual: savedShelfAngleManual,
+      shelfOpacity: clampRange(raw.shelfOpacity == null ? fxDefaults.shelfOpacity : Number(raw.shelfOpacity), 0.25, 1),
+      shelfBgOpacity: clampRange(raw.shelfBgOpacity == null ? fxDefaults.shelfBgOpacity : Number(raw.shelfBgOpacity), 0.25, 0.98),
+      shelfAccentColor: normalizeHexColor(raw.shelfAccentColor || fxDefaults.shelfAccentColor, fxDefaults.shelfAccentColor),
+      shelfDetailOffsetX: clampRange(raw.shelfDetailOffsetX == null ? fxDefaults.shelfDetailOffsetX : Number(raw.shelfDetailOffsetX), -4.8, 4.8),
+      shelfDetailOffsetY: clampRange(raw.shelfDetailOffsetY == null ? fxDefaults.shelfDetailOffsetY : Number(raw.shelfDetailOffsetY), -3.6, 3.6),
+      shelfDetailOffsetZ: clampRange(raw.shelfDetailOffsetZ == null ? fxDefaults.shelfDetailOffsetZ : Number(raw.shelfDetailOffsetZ), -3.6, 3.6),
+      shelfDetailScale: clampRange(raw.shelfDetailScale == null ? fxDefaults.shelfDetailScale : Number(raw.shelfDetailScale), 0.72, 1.35),
+      shelfDetailAngleX: clampRange(raw.shelfDetailAngleX == null ? fxDefaults.shelfDetailAngleX : Number(raw.shelfDetailAngleX), -24, 24),
+      shelfDetailAngleY: clampRange(raw.shelfDetailAngleY == null ? fxDefaults.shelfDetailAngleY : Number(raw.shelfDetailAngleY), -28, 28),
+      shelfDetailRowGap: clampRange(raw.shelfDetailRowGap == null ? fxDefaults.shelfDetailRowGap : Number(raw.shelfDetailRowGap), 0.72, 1.32),
+      shelfDetailOpenDuration: clampRange(raw.shelfDetailOpenDuration == null ? fxDefaults.shelfDetailOpenDuration : Number(raw.shelfDetailOpenDuration), 0.12, 1.2),
+      shelfDetailCloseDuration: clampRange(raw.shelfDetailCloseDuration == null ? fxDefaults.shelfDetailCloseDuration : Number(raw.shelfDetailCloseDuration), 0.08, 0.8),
+      shelfDetailRowDuration: clampRange(raw.shelfDetailRowDuration == null ? fxDefaults.shelfDetailRowDuration : Number(raw.shelfDetailRowDuration), 0.16, 1.6),
+      shelfDetailIntroStrength: clampRange(raw.shelfDetailIntroStrength == null ? fxDefaults.shelfDetailIntroStrength : Number(raw.shelfDetailIntroStrength), 0, 1.8),
+      shelfDetailParallax: clampRange(raw.shelfDetailParallax == null ? fxDefaults.shelfDetailParallax : Number(raw.shelfDetailParallax), 0, 1.8),
+      shelfSummonOpenDuration: clampRange(raw.shelfSummonOpenDuration == null ? fxDefaults.shelfSummonOpenDuration : Number(raw.shelfSummonOpenDuration), 0.08, 2),
+      shelfSummonCloseDuration: clampRange(raw.shelfSummonCloseDuration == null ? fxDefaults.shelfSummonCloseDuration : Number(raw.shelfSummonCloseDuration), 0.08, 1.6),
+      shelfSummonSlide: clampRange(raw.shelfSummonSlide == null ? fxDefaults.shelfSummonSlide : Number(raw.shelfSummonSlide), 0, 4),
+      shelfSummonStagger: clampRange(raw.shelfSummonStagger == null ? fxDefaults.shelfSummonStagger : Number(raw.shelfSummonStagger), 0, 3),
+      shelfSummonScale: clampRange(raw.shelfSummonScale == null ? fxDefaults.shelfSummonScale : Number(raw.shelfSummonScale), 0, 3),
+      shelfSummonParallax: clampRange(raw.shelfSummonParallax == null ? fxDefaults.shelfSummonParallax : Number(raw.shelfSummonParallax), 0, 2.5),
+      shelfCameraEnterSpeed: clampRange(raw.shelfCameraEnterSpeed == null ? fxDefaults.shelfCameraEnterSpeed : Number(raw.shelfCameraEnterSpeed), 0.2, 1.5),
+      shelfCameraExitSpeed: clampRange(raw.shelfCameraExitSpeed == null ? fxDefaults.shelfCameraExitSpeed : Number(raw.shelfCameraExitSpeed), 0.2, 1.5),
+      cam: /^(off|gesture)$/.test(String(raw.cam || '')) ? raw.cam : fxDefaults.cam,
+      gesturePlayerActions: raw.gesturePlayerActions !== false,
+      gestureHandOverlay: raw.gestureHandOverlay !== false,
+      gestureSensitivity: /^(steady|balanced|quick)$/.test(String(raw.gestureSensitivity || '')) ? raw.gestureSensitivity : fxDefaults.gestureSensitivity
+    };
+  } catch (e) {
+    return readSavedLyricLayoutCriticalFallback(raw, e);
+  }
+}
+function persistCurrentFxAutosaveDisk(payload, syncDisk) {
+  try {
+    var bridge = window.desktopWindow;
+    if (!bridge) return;
+    if (syncDisk && typeof bridge.saveCurrentFxAutosaveSync === 'function') {
+      bridge.saveCurrentFxAutosaveSync(payload);
+      return;
+    }
+    if (typeof bridge.saveCurrentFxAutosave === 'function') {
+      bridge.saveCurrentFxAutosave(payload).catch(function (e) {
+        console.warn('[FxAutosave] async disk write failed:', e);
+      });
+    }
+  } catch (e) {
+    console.warn('[FxAutosave] disk write failed:', e);
+  }
+}
+function queueCurrentFxAutosaveDiskWrite(payload) {
+  currentFxAutosaveDiskPayload = payload;
+  if (currentFxAutosaveDiskTimer) clearTimeout(currentFxAutosaveDiskTimer);
+  currentFxAutosaveDiskTimer = setTimeout(function () {
+    currentFxAutosaveDiskTimer = null;
+    var next = currentFxAutosaveDiskPayload;
+    currentFxAutosaveDiskPayload = null;
+    if (next) persistCurrentFxAutosaveDisk(next, false);
+  }, 220);
+}
+function writeCurrentFxAutosavePayload(payload, opts) {
+  opts = opts || {};
+  payload = plainCurrentFxAutosavePayload(payload);
+  if (!payload) return false;
+  var localOk = true;
+  try {
+    localStorage.setItem(CURRENT_FX_AUTOSAVE_STORE_KEY, JSON.stringify(payload));
+    try { localStorage.removeItem(LYRIC_LAYOUT_STORE_KEY); } catch (cleanupError) { }
+  } catch (localError) {
+    localOk = false;
+    console.warn('[FxAutosave] localStorage write failed, disk mirror will be used:', localError);
+  }
+  if (opts.syncDisk) {
+    if (currentFxAutosaveDiskTimer) {
+      clearTimeout(currentFxAutosaveDiskTimer);
+      currentFxAutosaveDiskTimer = null;
+    }
+    currentFxAutosaveDiskPayload = null;
+    persistCurrentFxAutosaveDisk(payload, true);
+  } else {
+    queueCurrentFxAutosaveDiskWrite(payload);
+  }
+  return localOk;
+}
+function markCurrentFxAutosaveUserDirty(reason) {
+  currentFxAutosaveUserDirty = true;
+  currentFxAutosaveLastUserReason = String(reason || currentFxAutosaveLastUserReason || 'user');
+}
+function currentFxAutosaveSaveReason(opts, fallback) {
+  opts = opts || {};
+  if (opts.reason) return String(opts.reason).slice(0, 80);
+  if (opts.user === true && currentFxAutosaveLastUserReason) return String(currentFxAutosaveLastUserReason).slice(0, 80);
+  return String(fallback || 'save').slice(0, 80);
+}
+function currentFxAutosaveTouchedKeys(reason, payload) {
+  reason = String(reason || '').trim();
+  payload = plainCurrentFxAutosavePayload(payload) || {};
+  var map = {
+    archiveApply: null,
+    resetFx: null,
+    preset: ['preset'],
+    lyricFont: ['lyricFont'],
+    lyricFontRemove: ['lyricFont'],
+    lyricColorAuto: ['lyricColorMode', 'lyricColor'],
+    lyricColorCustom: ['lyricColorMode', 'lyricColor'],
+    lyricHighlightAuto: ['lyricHighlightMode', 'lyricHighlightColor'],
+    lyricHighlightCustom: ['lyricHighlightMode', 'lyricHighlightColor'],
+    lyricGlowLinked: ['lyricGlowLinked', 'lyricGlowColor'],
+    lyricGlowColor: ['lyricGlowLinked', 'lyricGlowColor'],
+    lyricDisplayMode: ['lyricDisplayMode'],
+    lyricTranslationMode: ['lyricTranslationMode'],
+    lyricMotionStyle: ['lyricMotionStyle'],
+    lyricVerticalFloat: ['lyricVerticalFloat'],
+    lyricGlitchCameraBind: ['lyricGlitchCameraBind'],
+    backgroundColor: ['backgroundColorMode', 'backgroundColor', 'backgroundColorCustom'],
+    backgroundColorCover: ['backgroundColorMode', 'backgroundColor', 'backgroundColorCustom'],
+    backgroundOpacity: ['backgroundOpacity', 'backgroundColorMode', 'backgroundColorCustom'],
+    windowBackgroundOpacity: ['windowBackgroundOpacity'],
+    backgroundGlassOpacity: ['backgroundGlassOpacity'],
+    backgroundImage: ['backgroundImage', 'backgroundMedia', 'backgroundAlbumCover'],
+    backgroundMedia: ['backgroundImage', 'backgroundMedia', 'backgroundAlbumCover'],
+    backgroundAlbumCover: ['backgroundAlbumCover', 'backgroundImage', 'backgroundMedia'],
+    backgroundMediaCrop: ['backgroundMediaCropX', 'backgroundMediaCropY', 'backgroundMediaZoom'],
+    visualTintAuto: ['visualTintMode', 'visualTintColor'],
+    visualTintReset: ['visualTintMode', 'visualTintColor'],
+    visualTintColor: ['visualTintMode', 'visualTintColor'],
+    uiAccentColor: ['uiAccentColor'],
+    homeAccentColor: ['homeAccentColor'],
+    homeIconColor: ['homeIconColor'],
+    visualIconColor: ['visualIconColor'],
+    sonicGroundColorAuto: ['sonicGroundColorMode', 'sonicGroundBaseColor', 'sonicGroundCoolColor', 'sonicGroundWarmColor', 'sonicGroundAccentColor'],
+    sonicGroundBaseColor: ['sonicGroundColorMode', 'sonicGroundBaseColor'],
+    sonicGroundCoolColor: ['sonicGroundColorMode', 'sonicGroundCoolColor'],
+    sonicGroundWarmColor: ['sonicGroundColorMode', 'sonicGroundWarmColor'],
+    sonicGroundAccentColor: ['sonicGroundColorMode', 'sonicGroundAccentColor'],
+    sonicWorkshopColorMode: ['sonicWorkshopColorMode', 'sonicWorkshopTheme', 'sonicWorkshopCustomColor'],
+    sonicWorkshopTheme: ['sonicWorkshopColorMode', 'sonicWorkshopTheme', 'sonicWorkshopCustomColor'],
+    sonicWorkshopCustomColor: ['sonicWorkshopColorMode', 'sonicWorkshopTheme', 'sonicWorkshopCustomColor'],
+    sonicWorkshopRegionColors: ['sonicWorkshopColorMode', 'sonicWorkshopTheme', 'sonicWorkshopCustomColor', 'sonicWorkshopBaseColorMode', 'sonicWorkshopBaseColor', 'sonicWorkshopWarmColorMode', 'sonicWorkshopWarmColor', 'sonicWorkshopCoolColorMode', 'sonicWorkshopCoolColor', 'sonicWorkshopRippleColorMode', 'sonicWorkshopRippleColor', 'sonicWorkshopPeakColorMode', 'sonicWorkshopPeakColor'],
+    sonicWorkshopBaseColor: ['sonicWorkshopBaseColorMode', 'sonicWorkshopBaseColor'],
+    sonicWorkshopWarmColor: ['sonicWorkshopWarmColorMode', 'sonicWorkshopWarmColor'],
+    sonicWorkshopCoolColor: ['sonicWorkshopCoolColorMode', 'sonicWorkshopCoolColor'],
+    sonicWorkshopRippleColor: ['sonicWorkshopRippleColorMode', 'sonicWorkshopRippleColor'],
+    sonicWorkshopPeakColor: ['sonicWorkshopPeakColorMode', 'sonicWorkshopPeakColor'],
+    shelfMode: ['shelf', 'shelfPinnedOpen', 'shelfPresence'],
+    shelfPinnedOpen: ['shelfPinnedOpen', 'shelfPresence'],
+    shelfCameraMode: ['shelfCameraMode', 'shelfAngleY', 'shelfAngleYManual'],
+    shelfPresence: ['shelfPresence', 'shelfPinnedOpen'],
+    shelfAccentColor: ['shelfAccentColor'],
+    desktopLyrics: ['desktopLyrics'],
+    desktopLyricsClickThrough: ['desktopLyricsClickThrough'],
+    desktopLyricsFps: ['desktopLyricsFps'],
+    performanceBackground: ['performanceBackground', 'liveBackgroundKeep'],
+    performanceQuality: ['performanceQuality'],
+    liveBackgroundKeep: ['performanceBackground', 'liveBackgroundKeep'],
+    memorySystemMask: ['memorySystemMask'],
+    memorySystemIntervalMin: ['memorySystemIntervalMin'],
+    memorySystemThresholdPercent: ['memorySystemThresholdPercent']
+  };
+  if (Object.prototype.hasOwnProperty.call(map, reason)) return map[reason];
+  if (reason.indexOf('reset:') === 0) {
+    var resetKey = reason.slice(6);
+    if (resetKey === 'shelfAngleY') return ['shelfAngleY', 'shelfAngleYManual'];
+    return Object.prototype.hasOwnProperty.call(payload, resetKey) ? [resetKey] : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, reason)) {
+    if (reason === 'lyricCustomLineCount') return ['lyricCustomLineCount', 'lyricDisplayMode'];
+    if (reason === 'backgroundOpacity') return map.backgroundOpacity;
+    if (reason === 'controlGlassChromaticOffset') return ['controlGlassChromaticOffset'];
+    return [reason];
+  }
+  return null;
+}
+function scopeCurrentFxAutosavePayload(payload, opts) {
+  opts = opts || {};
+  payload = plainCurrentFxAutosavePayload(payload);
+  if (!payload || opts.user !== true || opts.force === true) return payload;
+  var keys = currentFxAutosaveTouchedKeys(currentFxAutosaveSaveReason(opts, ''), payload);
+  if (!keys || !keys.length) return payload;
+  var base = plainCurrentFxAutosavePayload(readCurrentFxAutosaveStorageRaw()) || {};
+  var scoped = Object.assign({}, base, {
+    currentAutosaveSchema: CURRENT_FX_AUTOSAVE_SCHEMA,
+    autosavedAt: payload.autosavedAt || Date.now(),
+    autosaveUser: true,
+    autosaveReason: payload.autosaveReason || currentFxAutosaveSaveReason(opts, 'scoped'),
+    visualPresetSchema: payload.visualPresetSchema || base.visualPresetSchema || VISUAL_PRESET_SCHEMA,
+    desktopLyricsSchema: payload.desktopLyricsSchema || base.desktopLyricsSchema || 'desktop-lyrics-v3'
+  });
+  keys.forEach(function (key) {
+    if (Object.prototype.hasOwnProperty.call(payload, key)) scoped[key] = payload[key];
+  });
+  return scoped;
+}
+function currentFxAutosaveHasUserVisualState(raw) {
+  raw = plainCurrentFxAutosavePayload(raw);
+  if (!raw) return false;
+  if (raw.autosaveUser === true) return true;
+  if (raw.lyricColorMode === 'custom' || raw.lyricHighlightMode === 'custom') return true;
+  if (raw.lyricGlowLinked === false) return true;
+  if (normalizeHexColor(raw.lyricColor || fxDefaults.lyricColor, fxDefaults.lyricColor) !== normalizeHexColor(fxDefaults.lyricColor, '#a9b8c8')) return true;
+  if (normalizeHexColor(raw.lyricHighlightColor || fxDefaults.lyricHighlightColor, fxDefaults.lyricHighlightColor) !== normalizeHexColor(fxDefaults.lyricHighlightColor, '#fac900')) return true;
+  if (normalizeHexColor(raw.lyricGlowColor || fxDefaults.lyricGlowColor, fxDefaults.lyricGlowColor) !== normalizeHexColor(fxDefaults.lyricGlowColor, '#008aff')) return true;
+  if (layoutNumber(raw.controlGlassChromaticOffset, fxDefaults.controlGlassChromaticOffset, 30, 140) !== layoutNumber(fxDefaults.controlGlassChromaticOffset, 90, 30, 140)) return true;
+  return false;
+}
+function currentFxAutosavePayloadLooksDefaultCritical(payload) {
+  payload = plainCurrentFxAutosavePayload(payload);
+  if (!payload) return true;
+  return (payload.lyricColorMode !== 'custom')
+    && (payload.lyricHighlightMode !== 'custom')
+    && payload.lyricGlowLinked !== false
+    && normalizeHexColor(payload.lyricColor || fxDefaults.lyricColor, fxDefaults.lyricColor) === normalizeHexColor(fxDefaults.lyricColor, '#a9b8c8')
+    && normalizeHexColor(payload.lyricHighlightColor || fxDefaults.lyricHighlightColor, fxDefaults.lyricHighlightColor) === normalizeHexColor(fxDefaults.lyricHighlightColor, '#fac900')
+    && normalizeHexColor(payload.lyricGlowColor || fxDefaults.lyricGlowColor, fxDefaults.lyricGlowColor) === normalizeHexColor(fxDefaults.lyricGlowColor, '#008aff')
+    && layoutNumber(payload.controlGlassChromaticOffset, fxDefaults.controlGlassChromaticOffset, 30, 140) === layoutNumber(fxDefaults.controlGlassChromaticOffset, 90, 30, 140);
+}
+function shouldSkipCurrentFxAutosaveWrite(payload, opts) {
+  opts = opts || {};
+  if (opts.force === true || opts.user === true) return false;
+  var storedRaw = readCurrentFxAutosaveStorageRaw();
+  if (currentFxAutosaveHasUserVisualState(storedRaw) && currentFxAutosavePayloadLooksDefaultCritical(payload)) return true;
+  if (currentFxAutosaveUserDirty) return false;
+  return Date.now() - currentFxAutosaveBootAt < 7000;
+}
+function saveCurrentFxAutosavePatch(patch, opts) {
+  opts = opts || {};
+  patch = plainCurrentFxAutosavePayload(patch);
+  if (!patch) return false;
+  if (opts.user === true) markCurrentFxAutosaveUserDirty(opts.reason || 'patch');
+  var base = readCurrentFxAutosaveRaw();
+  var payload = Object.assign({}, plainCurrentFxAutosavePayload(base) || {}, patch, {
+    currentAutosaveSchema: CURRENT_FX_AUTOSAVE_SCHEMA,
+    autosavedAt: Date.now(),
+    autosaveUser: opts.user === true,
+    autosaveReason: currentFxAutosaveSaveReason(opts, 'patch')
+  });
+  if (!payload.visualPresetSchema) payload.visualPresetSchema = VISUAL_PRESET_SCHEMA;
+  if (!payload.desktopLyricsSchema) payload.desktopLyricsSchema = 'desktop-lyrics-v3';
+  payload = scopeCurrentFxAutosavePayload(payload, opts);
+  if (shouldSkipCurrentFxAutosaveWrite(payload, opts)) return false;
+  return writeCurrentFxAutosavePayload(payload, opts);
+}
+function currentFxAutosaveCriticalPatch() {
+  if (!fx) return {};
+  return {
+    lyricColorMode: fx.lyricColorMode === 'custom' ? 'custom' : 'auto',
+    lyricColor: normalizeHexColor(fx.lyricColor || '#a9b8c8'),
+    lyricHighlightMode: fx.lyricHighlightMode === 'custom' ? 'custom' : 'auto',
+    lyricHighlightColor: normalizeHexColor(fx.lyricHighlightColor || '#fff0b8'),
+    lyricGlowLinked: fx.lyricGlowLinked !== false,
+    lyricGlowColor: normalizeHexColor(fx.lyricGlowColor || '#9db8cf'),
+    lyricDisplayMode: normalizeSavedLyricDisplayMode(fx.lyricDisplayMode || fxDefaults.lyricDisplayMode),
+    lyricTranslationMode: normalizeSavedLyricTranslationMode(fx.lyricTranslationMode || fxDefaults.lyricTranslationMode),
+    lyricMotionStyle: normalizeSavedLyricMotionStyle(fx.lyricMotionStyle || fxDefaults.lyricMotionStyle),
+    lyricCustomLineCount: layoutInteger(fx.lyricCustomLineCount, fxDefaults.lyricCustomLineCount, 1, 10),
+    lyricGlitchCameraBind: !!fx.lyricGlitchCameraBind,
+    lyricGlitchIntensity: layoutNumber(fx.lyricGlitchIntensity, fxDefaults.lyricGlitchIntensity, 0, 1.5),
+    lyricGlitchSlice: layoutNumber(fx.lyricGlitchSlice, fxDefaults.lyricGlitchSlice, 0, 1.4),
+    lyricGlitchChroma: layoutNumber(fx.lyricGlitchChroma, fxDefaults.lyricGlitchChroma, 0, 1.6),
+    lyricGlitchRate: layoutNumber(fx.lyricGlitchRate, fxDefaults.lyricGlitchRate, 0.45, 2.2),
+    lyricGlitchJitter: layoutNumber(fx.lyricGlitchJitter, fxDefaults.lyricGlitchJitter, 0, 1.8),
+    lyricContextOpacity: layoutNumber(fx.lyricContextOpacity, fxDefaults.lyricContextOpacity, 0.25, 1),
+    lyricContextSpread: layoutNumber(fx.lyricContextSpread, fxDefaults.lyricContextSpread, 0.60, 2.40),
+    lyricTranslationGap: layoutNumber(fx.lyricTranslationGap, fxDefaults.lyricTranslationGap, 0.28, 2.20),
+    lyricTranslationScale: layoutNumber(fx.lyricTranslationScale, fxDefaults.lyricTranslationScale, 0.46, 1.12),
+    lyricTranslationOpacity: layoutNumber(fx.lyricTranslationOpacity, fxDefaults.lyricTranslationOpacity, 0.20, 1),
+    lyricEdgeFade: layoutNumber(fx.lyricEdgeFade, fxDefaults.lyricEdgeFade, 0, 1),
+    lyricMotionSoftness: layoutNumber(fx.lyricMotionSoftness, fxDefaults.lyricMotionSoftness, 0.15, 1.2),
+    lyricFont: normalizeLyricFontKey(fx.lyricFont),
+    lyricLetterSpacing: layoutNumber(fx.lyricLetterSpacing, 0, -0.04, 0.18),
+    lyricLineHeight: layoutNumber(fx.lyricLineHeight, 1, 0.72, 1.80),
+    lyricWeight: layoutInteger(fx.lyricWeight, 900, 500, 900),
+    lyricTextureClarity: normalizeLyricTextureClarity(fx.lyricTextureClarity),
+    foregroundFpsMode: normalizeForegroundFpsMode(fx.foregroundFpsMode),
+    lyricGlow: !!fx.lyricGlow,
+    lyricGlowBeat: !!fx.lyricGlowBeat,
+    lyricGlowParticles: !!fx.lyricGlowParticles,
+    lyricVerticalFloat: fx.lyricVerticalFloat !== false,
+    lyricPauseHold: fx.lyricPauseHold !== false,
+    controlGlassChromaticOffset: layoutNumber(fx.controlGlassChromaticOffset, fxDefaults.controlGlassChromaticOffset, 30, 140),
+    shelf: /^(off|side|stage)$/.test(String(fx.shelf || '')) ? fx.shelf : fxDefaults.shelf,
+    shelfPinnedOpen: fx.shelf === 'side' && normalizeShelfPresence(fx.shelfPresence || fxDefaults.shelfPresence) === 'always' && fx.shelfPinnedOpen === true,
+    shelfCameraMode: normalizeShelfCameraMode(fx.shelfCameraMode || fxDefaults.shelfCameraMode),
+    shelfPresence: fx.shelf === 'off' ? 'auto' : normalizeShelfPresence(fx.shelfPresence || fxDefaults.shelfPresence),
+    shelfShowPodcasts: fx.shelfShowPodcasts !== false,
+    shelfMergeCollections: fx.shelfMergeCollections === true,
+    shelfSize: clampRange(fx.shelfSize == null ? fxDefaults.shelfSize : Number(fx.shelfSize), 0.65, 1.45),
+    shelfOffsetX: clampRange(fx.shelfOffsetX == null ? fxDefaults.shelfOffsetX : Number(fx.shelfOffsetX), -1.2, 1.2),
+    shelfOffsetY: clampRange(fx.shelfOffsetY == null ? fxDefaults.shelfOffsetY : Number(fx.shelfOffsetY), -0.9, 0.9),
+    shelfOffsetZ: clampRange(fx.shelfOffsetZ == null ? fxDefaults.shelfOffsetZ : Number(fx.shelfOffsetZ), -0.9, 0.9),
+    shelfAngleY: clampRange(fx.shelfAngleY == null ? fxDefaults.shelfAngleY : Number(fx.shelfAngleY), -30, 30),
+    shelfAngleYManual: fx.shelfAngleYManual === true,
+    shelfOpacity: clampRange(fx.shelfOpacity == null ? fxDefaults.shelfOpacity : Number(fx.shelfOpacity), 0.25, 1),
+    shelfBgOpacity: clampRange(fx.shelfBgOpacity == null ? fxDefaults.shelfBgOpacity : Number(fx.shelfBgOpacity), 0.25, 0.98),
+    shelfAccentColor: normalizeHexColor(fx.shelfAccentColor || fxDefaults.shelfAccentColor, fxDefaults.shelfAccentColor)
+  };
+}
+function saveLyricLayout(opts) {
+  opts = opts || {};
+  if (opts.user === true) markCurrentFxAutosaveUserDirty(opts.reason || 'layout');
+  try {
+    if (lyricLayoutSaveTimer) {
+      clearTimeout(lyricLayoutSaveTimer);
+      lyricLayoutSaveTimer = null;
+      lyricLayoutSaveOpts = null;
+    }
+    var presetForSave = startupVisualPreviewActive && !playing && currentIdx < 0
+      ? playbackVisualPreset
+      : clampRange(Number(fx.preset) || 0, 0, presetMeta.length - 1);
+    var autosavePayload = {
+      currentAutosaveSchema: CURRENT_FX_AUTOSAVE_SCHEMA,
+      autosavedAt: Date.now(),
+      autosaveUser: opts.user === true,
+      autosaveReason: currentFxAutosaveSaveReason(opts, 'layout'),
+      visualPresetSchema: VISUAL_PRESET_SCHEMA,
+      desktopLyricsSchema: 'desktop-lyrics-v3',
+      preset: presetForSave,
+      intensity: layoutNumber(fx.intensity, fxDefaults.intensity, 0.2, 1.6),
+      cinemaShake: layoutNumber(fx.cinemaShake, fxDefaults.cinemaShake, 0, 1.8),
+      depth: layoutNumber(fx.depth, fxDefaults.depth, 0.2, 1.8),
+      point: layoutNumber(fx.point, fxDefaults.point, 0.5, 2.2),
+      speed: layoutNumber(fx.speed, fxDefaults.speed, 0.2, 2.5),
+      twist: layoutNumber(fx.twist, fxDefaults.twist, 0, 0.6),
+      color: layoutNumber(fx.color, fxDefaults.color, 0.5, 2.0),
+      scatter: layoutNumber(fx.scatter, fxDefaults.scatter, 0, 0.5),
+      bgFade: layoutNumber(fx.bgFade, fxDefaults.bgFade, 0, 1.2),
+      bloomStrength: layoutNumber(fx.bloomStrength, fxDefaults.bloomStrength, 0, 1.6),
+      lyricGlowStrength: layoutNumber(fx.lyricGlowStrength, fxDefaults.lyricGlowStrength, 0, 0.85),
+      lyricBackgroundAdapt: layoutNumber(fx.lyricBackgroundAdapt, fxDefaults.lyricBackgroundAdapt, 0, 1),
+      lyricScale: layoutNumber(fx.lyricScale, 1, 0.35, 1.65),
+      lyricOffsetX: layoutNumber(fx.lyricOffsetX, 0, -4.0, 4.0),
+      lyricOffsetY: layoutNumber(fx.lyricOffsetY, 0, -2.4, 2.7),
+      lyricOffsetZ: layoutNumber(fx.lyricOffsetZ, 0, -3.2, 3.2),
+      lyricTiltX: layoutNumber(fx.lyricTiltX, 0, -84, 84),
+      lyricTiltY: layoutNumber(fx.lyricTiltY, 0, -84, 84),
+      lyricCameraLock: !!fx.lyricCameraLock,
+      lyricColorMode: fx.lyricColorMode === 'custom' ? 'custom' : 'auto',
+      lyricColor: normalizeHexColor(fx.lyricColor || '#a9b8c8'),
+      lyricHighlightMode: fx.lyricHighlightMode === 'custom' ? 'custom' : 'auto',
+      lyricHighlightColor: normalizeHexColor(fx.lyricHighlightColor || '#fff0b8'),
+      lyricGlowLinked: fx.lyricGlowLinked !== false,
+      lyricGlowColor: normalizeHexColor(fx.lyricGlowColor || '#9db8cf'),
+      lyricDisplayMode: normalizeSavedLyricDisplayMode(fx.lyricDisplayMode || fxDefaults.lyricDisplayMode),
+      lyricTranslationMode: normalizeSavedLyricTranslationMode(fx.lyricTranslationMode || fxDefaults.lyricTranslationMode),
+      lyricMotionStyle: normalizeSavedLyricMotionStyle(fx.lyricMotionStyle || fxDefaults.lyricMotionStyle),
+      lyricCustomLineCount: layoutInteger(fx.lyricCustomLineCount, fxDefaults.lyricCustomLineCount, 1, 10),
+      lyricGlitchCameraBind: !!fx.lyricGlitchCameraBind,
+      lyricGlitchIntensity: layoutNumber(fx.lyricGlitchIntensity, fxDefaults.lyricGlitchIntensity, 0, 1.5),
+      lyricGlitchSlice: layoutNumber(fx.lyricGlitchSlice, fxDefaults.lyricGlitchSlice, 0, 1.4),
+      lyricGlitchChroma: layoutNumber(fx.lyricGlitchChroma, fxDefaults.lyricGlitchChroma, 0, 1.6),
+      lyricGlitchRate: layoutNumber(fx.lyricGlitchRate, fxDefaults.lyricGlitchRate, 0.45, 2.2),
+      lyricGlitchJitter: layoutNumber(fx.lyricGlitchJitter, fxDefaults.lyricGlitchJitter, 0, 1.8),
+      lyricContextOpacity: layoutNumber(fx.lyricContextOpacity, fxDefaults.lyricContextOpacity, 0.25, 1),
+      lyricContextSpread: layoutNumber(fx.lyricContextSpread, fxDefaults.lyricContextSpread, 0.60, 2.40),
+      lyricTranslationGap: layoutNumber(fx.lyricTranslationGap, fxDefaults.lyricTranslationGap, 0.28, 2.20),
+      lyricTranslationScale: layoutNumber(fx.lyricTranslationScale, fxDefaults.lyricTranslationScale, 0.46, 1.12),
+      lyricTranslationOpacity: layoutNumber(fx.lyricTranslationOpacity, fxDefaults.lyricTranslationOpacity, 0.20, 1),
+      lyricEdgeFade: layoutNumber(fx.lyricEdgeFade, fxDefaults.lyricEdgeFade, 0, 1),
+      lyricMotionSoftness: layoutNumber(fx.lyricMotionSoftness, fxDefaults.lyricMotionSoftness, 0.15, 1.2),
+      lyricFont: normalizeLyricFontKey(fx.lyricFont),
+      lyricLetterSpacing: layoutNumber(fx.lyricLetterSpacing, 0, -0.04, 0.18),
+      lyricLineHeight: layoutNumber(fx.lyricLineHeight, 1, 0.72, 1.80),
+      lyricWeight: layoutInteger(fx.lyricWeight, 900, 500, 900),
+      lyricTextureClarity: normalizeLyricTextureClarity(fx.lyricTextureClarity),
+      lyricGlow: !!fx.lyricGlow,
+      lyricGlowBeat: !!fx.lyricGlowBeat,
+      lyricGlowParticles: !!fx.lyricGlowParticles,
+      lyricVerticalFloat: fx.lyricVerticalFloat !== false,
+      backgroundStarRiver: fx.backgroundStarRiver !== false,
+      lyricPauseHold: fx.lyricPauseHold !== false,
+      floatLayer: !!fx.floatLayer,
+      cinema: !!fx.cinema,
+      bloom: !!fx.bloom,
+      edge: !!fx.edge,
+      aiDepth: !!fx.aiDepth,
+      particleLyrics: fx.particleLyrics !== false,
+      backCover: !!fx.backCover,
+      visualTintMode: fx.visualTintMode === 'custom' ? 'custom' : 'auto',
+      visualTintColor: normalizeHexColor(fx.visualTintColor || '#9db8cf'),
+      uiAccentColor: normalizeHexColor(
+        fx.uiAccentColor || fxDefaults.uiAccentColor || '#ffffff',
+        fxDefaults.uiAccentColor || '#ffffff'
+      ),
+      homeAccentColor: normalizeHexColor(fx.homeAccentColor || '#00f5d4'),
+      homeIconColor: normalizeHexColor(fx.homeIconColor || '#f4d28a', '#f4d28a'),
+      visualIconColor: normalizeHexColor(fx.visualIconColor || '#7fd8ff', '#7fd8ff'),
+      backgroundColorMode: fx.backgroundColorMode === 'custom' || fx.backgroundColorCustom ? 'custom' : 'cover',
+      backgroundColor: normalizeHexColor(fx.backgroundColor || '#000000', '#000000'),
+      backgroundOpacity: clampRange(fx.backgroundOpacity == null ? fxDefaults.backgroundOpacity : Number(fx.backgroundOpacity), 0, 1),
+      windowBackgroundOpacity: clampRange(fx.windowBackgroundOpacity == null ? fxDefaults.windowBackgroundOpacity : Number(fx.windowBackgroundOpacity), 0, 1),
+      backgroundGlassOpacity: clampRange(fx.backgroundGlassOpacity == null ? fxDefaults.backgroundGlassOpacity : Number(fx.backgroundGlassOpacity), 0, 1),
+      controlGlassChromaticOffset: layoutNumber(fx.controlGlassChromaticOffset, fxDefaults.controlGlassChromaticOffset, 30, 140),
+      playlistPanelGlassBlur: clampRange(fx.playlistPanelGlassBlur == null ? fxDefaults.playlistPanelGlassBlur : Number(fx.playlistPanelGlassBlur), 14, 60),
+      playlistPanelGlassDensity: clampRange(fx.playlistPanelGlassDensity == null ? fxDefaults.playlistPanelGlassDensity : Number(fx.playlistPanelGlassDensity), 0.55, 1),
+      playlistPanelOpenDuration: clampRange(fx.playlistPanelOpenDuration == null ? fxDefaults.playlistPanelOpenDuration : Number(fx.playlistPanelOpenDuration), 0.08, 0.72),
+      playlistPanelCloseDuration: clampRange(fx.playlistPanelCloseDuration == null ? fxDefaults.playlistPanelCloseDuration : Number(fx.playlistPanelCloseDuration), 0.06, 0.48),
+      backgroundColorCustom: fx.backgroundColorMode === 'custom' || !!fx.backgroundColorCustom,
+      backgroundImage: fx.backgroundAlbumCover === true ? '' : normalizeCustomBackgroundImage(fx.backgroundImage),
+      backgroundMedia: fx.backgroundAlbumCover === true ? null : normalizeCustomBackgroundMedia(fx.backgroundMedia || fx.backgroundImage),
+      backgroundAlbumCover: fx.backgroundAlbumCover === true,
+      backgroundMediaCropX: clampRange(fx.backgroundMediaCropX == null ? fxDefaults.backgroundMediaCropX : Number(fx.backgroundMediaCropX), 0, 100),
+      backgroundMediaCropY: clampRange(fx.backgroundMediaCropY == null ? fxDefaults.backgroundMediaCropY : Number(fx.backgroundMediaCropY), 0, 100),
+      backgroundMediaZoom: clampRange(fx.backgroundMediaZoom == null ? fxDefaults.backgroundMediaZoom : Number(fx.backgroundMediaZoom), 1, 2.8),
+      desktopLyrics: !!fx.desktopLyrics,
+      desktopLyricsSize: clampRange(Number(fx.desktopLyricsSize) || fxDefaults.desktopLyricsSize, 0.72, 1.55),
+      desktopLyricsOpacity: clampRange(fx.desktopLyricsOpacity == null ? fxDefaults.desktopLyricsOpacity : Number(fx.desktopLyricsOpacity), 0.28, 1),
+      desktopLyricsY: clampRange(fx.desktopLyricsY == null ? fxDefaults.desktopLyricsY : Number(fx.desktopLyricsY), 0.08, 0.92),
+      desktopLyricsClickThrough: fx.desktopLyricsClickThrough === true,
+      desktopLyricsCinema: fx.desktopLyricsCinema !== false,
+      desktopLyricsHighlight: fx.desktopLyricsHighlight === true,
+      desktopLyricsFps: normalizeDesktopLyricsFps(fx.desktopLyricsFps),
+      performanceBackground: normalizePerformanceBackgroundMode(fx.performanceBackground, fx.liveBackgroundKeep === true),
+      performanceQuality: normalizePerformanceQuality(fx.performanceQuality),
+      foregroundFpsMode: normalizeForegroundFpsMode(fx.foregroundFpsMode),
+      memoryAutoTrimApp: fx.memoryAutoTrimApp !== false,
+      memoryAutoTrimOnBackground: fx.memoryAutoTrimOnBackground !== false,
+      memoryAutoSystemTrim: fx.memoryAutoSystemTrim === true,
+      memorySystemAutoElevate: fx.memorySystemAutoElevate === true,
+      memorySystemIntervalMin: clampRange(Math.round(fx.memorySystemIntervalMin == null ? fxDefaults.memorySystemIntervalMin : Number(fx.memorySystemIntervalMin)), 5, 180),
+      memorySystemThresholdPercent: clampRange(Math.round(fx.memorySystemThresholdPercent == null ? fxDefaults.memorySystemThresholdPercent : Number(fx.memorySystemThresholdPercent)), 50, 98),
+      memorySystemMask: clampRange(Math.round(fx.memorySystemMask == null ? fxDefaults.memorySystemMask : Number(fx.memorySystemMask)), 1, 29),
+      memorySafetyRevision: fxDefaults.memorySafetyRevision,
+      liveBackgroundKeep: normalizePerformanceBackgroundMode(fx.performanceBackground, fx.liveBackgroundKeep === true) === 'keep',
+      sonicGroundAmplitude: clampRange(fx.sonicGroundAmplitude == null ? fxDefaults.sonicGroundAmplitude : Number(fx.sonicGroundAmplitude), 0, 100),
+      sonicGroundMotionSpeed: clampRange(fx.sonicGroundMotionSpeed == null ? fxDefaults.sonicGroundMotionSpeed : Number(fx.sonicGroundMotionSpeed), 0, 100),
+      sonicGroundDensity: clampRange(fx.sonicGroundDensity == null ? fxDefaults.sonicGroundDensity : Number(fx.sonicGroundDensity), 0, 100),
+      sonicGroundRange: clampRange(fx.sonicGroundRange == null ? fxDefaults.sonicGroundRange : Number(fx.sonicGroundRange), 0, 100),
+      sonicGroundLower: clampRange(fx.sonicGroundLower == null ? fxDefaults.sonicGroundLower : Number(fx.sonicGroundLower), 0, 100),
+      sonicGroundDepth: clampRange(fx.sonicGroundDepth == null ? fxDefaults.sonicGroundDepth : Number(fx.sonicGroundDepth), 0, 100),
+      sonicGroundAutoRotate: clampRange(fx.sonicGroundAutoRotate == null ? fxDefaults.sonicGroundAutoRotate : Number(fx.sonicGroundAutoRotate), 0, 100),
+      sonicGroundColorMode: fx.sonicGroundColorMode === 'custom' ? 'custom' : 'cover',
+      sonicGroundBaseColor: normalizeHexColor(fx.sonicGroundBaseColor || fxDefaults.sonicGroundBaseColor, fxDefaults.sonicGroundBaseColor),
+      sonicGroundCoolColor: normalizeHexColor(fx.sonicGroundCoolColor || fxDefaults.sonicGroundCoolColor, fxDefaults.sonicGroundCoolColor),
+      sonicGroundWarmColor: normalizeHexColor(fx.sonicGroundWarmColor || fxDefaults.sonicGroundWarmColor, fxDefaults.sonicGroundWarmColor),
+      sonicGroundAccentColor: normalizeHexColor(fx.sonicGroundAccentColor || fxDefaults.sonicGroundAccentColor, fxDefaults.sonicGroundAccentColor),
+      sonicGroundGlow: clampRange(fx.sonicGroundGlow == null ? fxDefaults.sonicGroundGlow : Number(fx.sonicGroundGlow), 0, 100),
+      sonicGroundSubBass: clampRange(fx.sonicGroundSubBass == null ? fxDefaults.sonicGroundSubBass : Number(fx.sonicGroundSubBass), 0, 100),
+      sonicGroundBass: clampRange(fx.sonicGroundBass == null ? fxDefaults.sonicGroundBass : Number(fx.sonicGroundBass), 0, 100),
+      sonicGroundLowMid: clampRange(fx.sonicGroundLowMid == null ? fxDefaults.sonicGroundLowMid : Number(fx.sonicGroundLowMid), 0, 100),
+      sonicGroundMid: clampRange(fx.sonicGroundMid == null ? fxDefaults.sonicGroundMid : Number(fx.sonicGroundMid), 0, 100),
+      sonicGroundHighMid: clampRange(fx.sonicGroundHighMid == null ? fxDefaults.sonicGroundHighMid : Number(fx.sonicGroundHighMid), 0, 100),
+      sonicGroundPresence: clampRange(fx.sonicGroundPresence == null ? fxDefaults.sonicGroundPresence : Number(fx.sonicGroundPresence), 0, 100),
+      sonicGroundBrilliance: clampRange(fx.sonicGroundBrilliance == null ? fxDefaults.sonicGroundBrilliance : Number(fx.sonicGroundBrilliance), 0, 100),
+      sonicGroundAir: clampRange(fx.sonicGroundAir == null ? fxDefaults.sonicGroundAir : Number(fx.sonicGroundAir), 0, 100),
+      sonicGroundFloatingEnabled: fx.sonicGroundFloatingEnabled !== false,
+      sonicGroundFloatingIntensity: clampRange(fx.sonicGroundFloatingIntensity == null ? fxDefaults.sonicGroundFloatingIntensity : Number(fx.sonicGroundFloatingIntensity), 0, 100),
+      sonicGroundFloatingMinSize: clampRange(fx.sonicGroundFloatingMinSize == null ? fxDefaults.sonicGroundFloatingMinSize : Number(fx.sonicGroundFloatingMinSize), 0, 100),
+      sonicGroundFloatingMaxSize: clampRange(fx.sonicGroundFloatingMaxSize == null ? fxDefaults.sonicGroundFloatingMaxSize : Number(fx.sonicGroundFloatingMaxSize), 0, 100),
+      sonicGroundFloatingSpeed: clampRange(fx.sonicGroundFloatingSpeed == null ? fxDefaults.sonicGroundFloatingSpeed : Number(fx.sonicGroundFloatingSpeed), 0, 100),
+      sonicGroundFloatingCount: clampRange(fx.sonicGroundFloatingCount == null ? fxDefaults.sonicGroundFloatingCount : Number(fx.sonicGroundFloatingCount), 0, 100),
+      sonicAudioMonitorEnabled: fx.sonicAudioMonitorEnabled !== false,
+      sonicAudioAutoTrack: fx.sonicAudioAutoTrack !== false,
+      sonicAudioSensitivity: clampRange(fx.sonicAudioSensitivity == null ? fxDefaults.sonicAudioSensitivity : Number(fx.sonicAudioSensitivity), 0, 100),
+      sonicAudioBandStart: clampRange(fx.sonicAudioBandStart == null ? fxDefaults.sonicAudioBandStart : Number(fx.sonicAudioBandStart), 0, 510),
+      sonicAudioBandEnd: clampRange(fx.sonicAudioBandEnd == null ? fxDefaults.sonicAudioBandEnd : Number(fx.sonicAudioBandEnd), 2, 512),
+      sonicAudioThreshold: clampRange(fx.sonicAudioThreshold == null ? fxDefaults.sonicAudioThreshold : Number(fx.sonicAudioThreshold), 0, 100),
+      sonicAudioPulseStrength: clampRange(fx.sonicAudioPulseStrength == null ? fxDefaults.sonicAudioPulseStrength : Number(fx.sonicAudioPulseStrength), 0, 100),
+      sonicWorkshopInputGain: clampRange(fx.sonicWorkshopInputGain == null ? fxDefaults.sonicWorkshopInputGain : Number(fx.sonicWorkshopInputGain), 40, 100),
+      sonicWorkshopAudioIntensity: clampRange(fx.sonicWorkshopAudioIntensity == null ? fxDefaults.sonicWorkshopAudioIntensity : Number(fx.sonicWorkshopAudioIntensity), 0.3, 2.5),
+      sonicWorkshopResponseRange: clampRange(fx.sonicWorkshopResponseRange == null ? fxDefaults.sonicWorkshopResponseRange : Number(fx.sonicWorkshopResponseRange), 0.3, 2),
+      sonicWorkshopPeakIntensity: clampRange(fx.sonicWorkshopPeakIntensity == null ? fxDefaults.sonicWorkshopPeakIntensity : Number(fx.sonicWorkshopPeakIntensity), 0, 1.4),
+      sonicWorkshopColorMode: fx.sonicWorkshopColorMode === 'custom' ? 'custom' : 'cover',
+      sonicWorkshopTheme: /^(coral-mirage|ocean-deep|arctic-blue|arctic-aurora|emerald-forest|cyber-forest|minimal-mono|minimal-monochrome|neon-tokyo|golden-hour|ember-fire|crimson|crimson-sunset|aurora|violet-dream)$/.test(String(fx.sonicWorkshopTheme || '')) ? fx.sonicWorkshopTheme : fxDefaults.sonicWorkshopTheme,
+      sonicWorkshopCustomColor: normalizeHexColor(fx.sonicWorkshopCustomColor || fxDefaults.sonicWorkshopCustomColor || '#cb6c89', fxDefaults.sonicWorkshopCustomColor || '#cb6c89'),
+      sonicWorkshopBaseColorMode: fx.sonicWorkshopBaseColorMode === 'custom' ? 'custom' : 'cover',
+      sonicWorkshopBaseColor: normalizeHexColor(fx.sonicWorkshopBaseColor || fxDefaults.sonicWorkshopBaseColor || '#16060f', fxDefaults.sonicWorkshopBaseColor || '#16060f'),
+      sonicWorkshopWarmColorMode: fx.sonicWorkshopWarmColorMode === 'custom' ? 'custom' : 'cover',
+      sonicWorkshopWarmColor: normalizeHexColor(fx.sonicWorkshopWarmColor || fxDefaults.sonicWorkshopWarmColor || '#cb6c89', fxDefaults.sonicWorkshopWarmColor || '#cb6c89'),
+      sonicWorkshopCoolColorMode: fx.sonicWorkshopCoolColorMode === 'custom' ? 'custom' : 'cover',
+      sonicWorkshopCoolColor: normalizeHexColor(fx.sonicWorkshopCoolColor || fxDefaults.sonicWorkshopCoolColor || '#99c4ff', fxDefaults.sonicWorkshopCoolColor || '#99c4ff'),
+      sonicWorkshopRippleColorMode: fx.sonicWorkshopRippleColorMode === 'custom' ? 'custom' : 'cover',
+      sonicWorkshopRippleColor: normalizeHexColor(fx.sonicWorkshopRippleColor || fxDefaults.sonicWorkshopRippleColor || '#f8d8ff', fxDefaults.sonicWorkshopRippleColor || '#f8d8ff'),
+      sonicWorkshopPeakColorMode: fx.sonicWorkshopPeakColorMode === 'custom' ? 'custom' : 'cover',
+      sonicWorkshopPeakColor: normalizeHexColor(fx.sonicWorkshopPeakColor || fxDefaults.sonicWorkshopPeakColor || '#99c4ff', fxDefaults.sonicWorkshopPeakColor || '#99c4ff'),
+      wallpaperMode: false,
+      wallpaperOpacity: clampRange(fx.wallpaperOpacity == null ? fxDefaults.wallpaperOpacity : Number(fx.wallpaperOpacity), 0.35, 1),
+      wallpaperFps: normalizeWallpaperFps(fx.wallpaperFps),
+      coverResolution: normalizeCoverResolution(fx.coverResolution),
+      shelf: /^(off|side|stage)$/.test(String(fx.shelf || '')) ? fx.shelf : fxDefaults.shelf,
+      shelfPinnedOpen: fx.shelf === 'side' && normalizeShelfPresence(fx.shelfPresence || fxDefaults.shelfPresence) === 'always' && fx.shelfPinnedOpen === true,
+      shelfCameraMode: normalizeShelfCameraMode(fx.shelfCameraMode || fxDefaults.shelfCameraMode),
+      shelfPresence: fx.shelf === 'off' ? 'auto' : normalizeShelfPresence(fx.shelfPresence || fxDefaults.shelfPresence),
+      shelfShowPodcasts: fx.shelfShowPodcasts !== false,
+      shelfMergeCollections: fx.shelfMergeCollections === true,
+      shelfSize: clampRange(fx.shelfSize == null ? fxDefaults.shelfSize : Number(fx.shelfSize), 0.65, 1.45),
+      shelfOffsetX: clampRange(fx.shelfOffsetX == null ? fxDefaults.shelfOffsetX : Number(fx.shelfOffsetX), -1.2, 1.2),
+      shelfOffsetY: clampRange(fx.shelfOffsetY == null ? fxDefaults.shelfOffsetY : Number(fx.shelfOffsetY), -0.9, 0.9),
+      shelfOffsetZ: clampRange(fx.shelfOffsetZ == null ? fxDefaults.shelfOffsetZ : Number(fx.shelfOffsetZ), -0.9, 0.9),
+      shelfAngleY: clampRange(fx.shelfAngleY == null ? fxDefaults.shelfAngleY : Number(fx.shelfAngleY), -30, 30),
+      shelfAngleYManual: fx.shelfAngleYManual === true,
+      shelfOpacity: clampRange(fx.shelfOpacity == null ? fxDefaults.shelfOpacity : Number(fx.shelfOpacity), 0.25, 1),
+      shelfBgOpacity: clampRange(fx.shelfBgOpacity == null ? fxDefaults.shelfBgOpacity : Number(fx.shelfBgOpacity), 0.25, 0.98),
+      shelfAccentColor: normalizeHexColor(fx.shelfAccentColor || fxDefaults.shelfAccentColor, fxDefaults.shelfAccentColor),
+      shelfDetailOffsetX: clampRange(fx.shelfDetailOffsetX == null ? fxDefaults.shelfDetailOffsetX : Number(fx.shelfDetailOffsetX), -4.8, 4.8),
+      shelfDetailOffsetY: clampRange(fx.shelfDetailOffsetY == null ? fxDefaults.shelfDetailOffsetY : Number(fx.shelfDetailOffsetY), -3.6, 3.6),
+      shelfDetailOffsetZ: clampRange(fx.shelfDetailOffsetZ == null ? fxDefaults.shelfDetailOffsetZ : Number(fx.shelfDetailOffsetZ), -3.6, 3.6),
+      shelfDetailScale: clampRange(fx.shelfDetailScale == null ? fxDefaults.shelfDetailScale : Number(fx.shelfDetailScale), 0.72, 1.35),
+      shelfDetailAngleX: clampRange(fx.shelfDetailAngleX == null ? fxDefaults.shelfDetailAngleX : Number(fx.shelfDetailAngleX), -24, 24),
+      shelfDetailAngleY: clampRange(fx.shelfDetailAngleY == null ? fxDefaults.shelfDetailAngleY : Number(fx.shelfDetailAngleY), -28, 28),
+      shelfDetailRowGap: clampRange(fx.shelfDetailRowGap == null ? fxDefaults.shelfDetailRowGap : Number(fx.shelfDetailRowGap), 0.72, 1.32),
+      shelfDetailOpenDuration: clampRange(fx.shelfDetailOpenDuration == null ? fxDefaults.shelfDetailOpenDuration : Number(fx.shelfDetailOpenDuration), 0.12, 1.2),
+      shelfDetailCloseDuration: clampRange(fx.shelfDetailCloseDuration == null ? fxDefaults.shelfDetailCloseDuration : Number(fx.shelfDetailCloseDuration), 0.08, 0.8),
+      shelfDetailRowDuration: clampRange(fx.shelfDetailRowDuration == null ? fxDefaults.shelfDetailRowDuration : Number(fx.shelfDetailRowDuration), 0.16, 1.6),
+      shelfDetailIntroStrength: clampRange(fx.shelfDetailIntroStrength == null ? fxDefaults.shelfDetailIntroStrength : Number(fx.shelfDetailIntroStrength), 0, 1.8),
+      shelfDetailParallax: clampRange(fx.shelfDetailParallax == null ? fxDefaults.shelfDetailParallax : Number(fx.shelfDetailParallax), 0, 1.8),
+      shelfSummonOpenDuration: clampRange(fx.shelfSummonOpenDuration == null ? fxDefaults.shelfSummonOpenDuration : Number(fx.shelfSummonOpenDuration), 0.08, 2),
+      shelfSummonCloseDuration: clampRange(fx.shelfSummonCloseDuration == null ? fxDefaults.shelfSummonCloseDuration : Number(fx.shelfSummonCloseDuration), 0.08, 1.6),
+      shelfSummonSlide: clampRange(fx.shelfSummonSlide == null ? fxDefaults.shelfSummonSlide : Number(fx.shelfSummonSlide), 0, 4),
+      shelfSummonStagger: clampRange(fx.shelfSummonStagger == null ? fxDefaults.shelfSummonStagger : Number(fx.shelfSummonStagger), 0, 3),
+      shelfSummonScale: clampRange(fx.shelfSummonScale == null ? fxDefaults.shelfSummonScale : Number(fx.shelfSummonScale), 0, 3),
+      shelfSummonParallax: clampRange(fx.shelfSummonParallax == null ? fxDefaults.shelfSummonParallax : Number(fx.shelfSummonParallax), 0, 2.5),
+      shelfCameraEnterSpeed: clampRange(fx.shelfCameraEnterSpeed == null ? fxDefaults.shelfCameraEnterSpeed : Number(fx.shelfCameraEnterSpeed), 0.2, 1.5),
+      shelfCameraExitSpeed: clampRange(fx.shelfCameraExitSpeed == null ? fxDefaults.shelfCameraExitSpeed : Number(fx.shelfCameraExitSpeed), 0.2, 1.5),
+      cam: /^(off|gesture)$/.test(String(fx.cam || '')) ? fx.cam : fxDefaults.cam,
+      gesturePlayerActions: fx.gesturePlayerActions !== false,
+      gestureHandOverlay: fx.gestureHandOverlay !== false,
+      gestureSensitivity: /^(steady|balanced|quick)$/.test(String(fx.gestureSensitivity || '')) ? fx.gestureSensitivity : fxDefaults.gestureSensitivity
+    };
+    autosavePayload = scopeCurrentFxAutosavePayload(autosavePayload, opts);
+    if (shouldSkipCurrentFxAutosaveWrite(autosavePayload, opts)) return;
+    writeCurrentFxAutosavePayload(autosavePayload, opts);
+  } catch (e) {
+    console.warn('[FxAutosave] full save failed:', e);
+    try {
+      saveCurrentFxAutosavePatch(currentFxAutosaveCriticalPatch(), { syncDisk: opts.syncDisk === true, user: opts.user === true, reason: currentFxAutosaveSaveReason(opts, 'fallback') });
+    } catch (fallbackError) {
+      console.warn('[FxAutosave] fallback save failed:', fallbackError);
+    }
+  }
+}
+var lyricLayoutSaveTimer = null;
+var lyricLayoutSaveOpts = null;
+function flushLyricLayoutSave(reason) {
+  var pendingOpts = lyricLayoutSaveOpts ? Object.assign({}, lyricLayoutSaveOpts) : {};
+  try {
+    saveLyricLayout(Object.assign({}, pendingOpts, {
+      syncDisk: true,
+      reason: pendingOpts.reason || String(reason || 'flush')
+    }));
+  } catch (e) { }
+}
+function scheduleLyricLayoutSave(delay, opts) {
+  delay = Math.max(80, Math.round(Number(delay) || 280));
+  opts = opts || {};
+  lyricLayoutSaveOpts = Object.assign({}, lyricLayoutSaveOpts || {}, opts);
+  if (lyricLayoutSaveTimer) clearTimeout(lyricLayoutSaveTimer);
+  lyricLayoutSaveTimer = setTimeout(function () {
+    lyricLayoutSaveTimer = null;
+    var nextOpts = lyricLayoutSaveOpts || {};
+    lyricLayoutSaveOpts = null;
+    saveLyricLayout(nextOpts);
+  }, delay);
+}
+window.addEventListener('beforeunload', flushLyricLayoutSave);
+window.addEventListener('pagehide', flushLyricLayoutSave);
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) flushLyricLayoutSave();
+});
+function normalizeHexColor(value, fallback) {
+  var hex = String(value || '').trim();
+  if (/^#[0-9a-f]{3}$/i.test(hex)) {
+    hex = '#' + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2) + hex.charAt(3) + hex.charAt(3);
+  }
+  fallback = /^#[0-9a-f]{6}$/i.test(String(fallback || '')) ? String(fallback).toLowerCase() : '#a9b8c8';
+  return /^#[0-9a-f]{6}$/i.test(hex) ? hex.toLowerCase() : fallback;
+}
+function normalizeDesktopLyricsFps(value) {
+  var n = Number(value);
+  if (!isFinite(n) || n <= 0) return 0;
+  if (n <= 26) return 24;
+  if (n <= 45) return 30;
+  if (n <= 90) return 60;
+  return 120;
+}
+function normalizeShelfCameraMode(value) {
+  return String(value || '') === 'static' ? 'static' : 'dynamic';
+}
+function shelfDefaultAngleForCameraMode(mode) {
+  return normalizeShelfCameraMode(mode) === 'static' ? -15 : 0;
+}
+function applyShelfCameraDefaultAngle(force) {
+  if (!fx) return;
+  fx.shelfCameraMode = normalizeShelfCameraMode(fx.shelfCameraMode || fxDefaults.shelfCameraMode);
+  if (force || fx.shelfAngleYManual !== true) {
+    fx.shelfAngleYManual = false;
+    fx.shelfAngleY = shelfDefaultAngleForCameraMode(fx.shelfCameraMode);
+  } else {
+    fx.shelfAngleY = Math.round(clampRange(Number(fx.shelfAngleY) || 0, -30, 30));
+  }
+}
+function normalizeShelfPresence(value) {
+  return String(value || '') === 'always' ? 'always' : 'auto';
+}
+function normalizedShelfNumber(key, fallback, min, max) {
+  var value = fx && fx[key] != null ? Number(fx[key]) : fallback;
+  if (!isFinite(value)) value = fallback;
+  return clampRange(value, min, max);
+}
+function shelfDetailSettings() {
+  return {
+    x: normalizedShelfNumber('shelfDetailOffsetX', fxDefaults.shelfDetailOffsetX, -4.8, 4.8),
+    y: normalizedShelfNumber('shelfDetailOffsetY', fxDefaults.shelfDetailOffsetY, -3.6, 3.6),
+    z: normalizedShelfNumber('shelfDetailOffsetZ', fxDefaults.shelfDetailOffsetZ, -3.6, 3.6),
+    scale: normalizedShelfNumber('shelfDetailScale', fxDefaults.shelfDetailScale, 0.72, 1.35),
+    rx: normalizedShelfNumber('shelfDetailAngleX', fxDefaults.shelfDetailAngleX, -24, 24) * Math.PI / 180,
+    ry: normalizedShelfNumber('shelfDetailAngleY', fxDefaults.shelfDetailAngleY, -28, 28) * Math.PI / 180,
+    rowGap: normalizedShelfNumber('shelfDetailRowGap', fxDefaults.shelfDetailRowGap, 0.72, 1.32),
+    openDuration: normalizedShelfNumber('shelfDetailOpenDuration', fxDefaults.shelfDetailOpenDuration, 0.12, 1.2),
+    closeDuration: normalizedShelfNumber('shelfDetailCloseDuration', fxDefaults.shelfDetailCloseDuration, 0.08, 0.8),
+    rowDuration: normalizedShelfNumber('shelfDetailRowDuration', fxDefaults.shelfDetailRowDuration, 0.16, 1.6),
+    intro: normalizedShelfNumber('shelfDetailIntroStrength', fxDefaults.shelfDetailIntroStrength, 0, 1.8),
+    parallax: normalizedShelfNumber('shelfDetailParallax', fxDefaults.shelfDetailParallax, 0, 1.8)
+  };
+}
+function shelfSummonSettings() {
+  return {
+    openDuration: normalizedShelfNumber('shelfSummonOpenDuration', fxDefaults.shelfSummonOpenDuration, 0.08, 2),
+    closeDuration: normalizedShelfNumber('shelfSummonCloseDuration', fxDefaults.shelfSummonCloseDuration, 0.08, 1.6),
+    slide: normalizedShelfNumber('shelfSummonSlide', fxDefaults.shelfSummonSlide, 0, 4),
+    stagger: normalizedShelfNumber('shelfSummonStagger', fxDefaults.shelfSummonStagger, 0, 3),
+    scale: normalizedShelfNumber('shelfSummonScale', fxDefaults.shelfSummonScale, 0, 3),
+    parallax: normalizedShelfNumber('shelfSummonParallax', fxDefaults.shelfSummonParallax, 0, 2.5),
+    cameraEnterSpeed: normalizedShelfNumber('shelfCameraEnterSpeed', fxDefaults.shelfCameraEnterSpeed, 0.2, 1.5),
+    cameraExitSpeed: normalizedShelfNumber('shelfCameraExitSpeed', fxDefaults.shelfCameraExitSpeed, 0.2, 1.5)
+  };
+}
+function durationEaseFactor(seconds, dt) {
+  seconds = Math.max(0.016, Number(seconds) || 0.016);
+  dt = Math.max(1 / 240, Number(dt) || 1 / 60);
+  return clampRange(1 - Math.exp(-dt / seconds), 0.001, 1);
+}
+function shelfSettings() {
+  var angleDeg = fx && fx.shelfAngleYManual === true
+    ? normalizedShelfNumber('shelfAngleY', shelfDefaultAngleForCameraMode(fx.shelfCameraMode), -30, 30)
+    : shelfDefaultAngleForCameraMode(fx && fx.shelfCameraMode);
+  return {
+    size: normalizedShelfNumber('shelfSize', fxDefaults.shelfSize, 0.65, 1.45),
+    x: normalizedShelfNumber('shelfOffsetX', fxDefaults.shelfOffsetX, -1.2, 1.2),
+    y: normalizedShelfNumber('shelfOffsetY', fxDefaults.shelfOffsetY, -0.9, 0.9),
+    z: normalizedShelfNumber('shelfOffsetZ', fxDefaults.shelfOffsetZ, -0.9, 0.9),
+    angle: angleDeg * Math.PI / 180,
+    opacity: normalizedShelfNumber('shelfOpacity', fxDefaults.shelfOpacity, 0.25, 1),
+    bgOpacity: normalizedShelfNumber('shelfBgOpacity', fxDefaults.shelfBgOpacity, 0.25, 0.98),
+    accent: normalizeHexColor((fx && fx.shelfAccentColor) || fxDefaults.shelfAccentColor, fxDefaults.shelfAccentColor)
+  };
+}
+function shelfAlwaysVisible() {
+  return !!(fx && normalizeShelfPresence(fx.shelfPresence) === 'always');
+}
+function shouldUseShelfDynamicCamera(type) {
+  if (!/^shelf-/.test(String(type || ''))) return true;
+  return !(fx && normalizeShelfCameraMode(fx.shelfCameraMode) === 'static');
+}
+function shelfAccentHex() {
+  return normalizeHexColor((fx && fx.shelfAccentColor) || fxDefaults.shelfAccentColor, fxDefaults.shelfAccentColor);
+}
+function shelfAccentRgba(alpha, fallback) {
+  var rgb = hexToRgb(shelfAccentHex());
+  if (!rgb) return fallback || 'rgba(244,210,138,' + alpha + ')';
+  return 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',' + alpha + ')';
+}
+function rgbToHexColor(r, g, b) {
+  function part(v) {
+    return Math.max(0, Math.min(255, Math.round(v || 0))).toString(16).padStart(2, '0');
+  }
+  return '#' + part(r) + part(g) + part(b);
+}
+;
+
 // ==================== 02-visual/05-lyrics-fonts-texture.js ====================
 function builtinLyricFontKeyPattern() {
   return /^(sans|hei|song|bold-song|stone-song|kai-song|serif-en|gothic|editorial|humanist|round|mono|display)$/;
@@ -12468,4 +13546,6454 @@ function disposeLyricsParticles() {
 
 // ============================================================
 //  涟漪触发系统 — 3×3 九宫格 + bass 上升沿
+;
+
+// ==================== 07-fx/00-preset-archive-data.js ====================
+// ============================================================
+var presetMeta = [
+  { name: 'emily专辑封面', desc: '封面粒子 · 快速入场' },
+  { name: '滚筒', desc: '隧道 · 沉浸感' },
+  { name: '星球', desc: '星球 · 雕塑感' },
+  { name: '虚空', desc: '无粒子 · 自定义背景' },
+  { name: '唱片', desc: '唱片 · 圆形封面' },
+  { name: '星河', desc: '壁纸粒子 · 音乐律动' },
+  { name: '安魂', desc: '骷髅·YUI7W', descHtml: '骷髅·<span class="pc-yui7w">YUI7W</span>' },
+  { name: '音域回响', nameHtml: '音域回响 <span class="pc-name-en">Sonic-Topography</span>', desc: '作者 Ajin', descHtml: '作者 <span class="pc-author-ajin">Ajin</span>' },
+  { name: '音域回响', nameHtml: '音域回响 <span class="pc-name-en">Wallpaper Engine</span>', desc: '作者 CmzYa' },
+  { name: '月蚀圣环', nameHtml: '月蚀圣环 <span class="pc-name-en">ECLIPSE HALO</span>', desc: '黑曜轨道 · 冷金日冕', premiumVisual: true, accent: '#e8c98d', accent2: '#8fd8ff' },
+  { name: '雨幕霓虹', nameHtml: '雨幕霓虹 <span class="pc-name-en">NEON DRIZZLE</span>', desc: '城市雨丝 · 色谱残光', premiumVisual: true, accent: '#67efff', accent2: '#ff6bb5' },
+  { name: '折光蝶群', nameHtml: '折光蝶群 <span class="pc-name-en">PRISM FLOCK</span>', desc: '折纸翼阵 · 光谱迁徙', premiumVisual: true, accent: '#f0d7ff', accent2: '#75e6d1' },
+  { name: '深海绽放', nameHtml: '深海绽放 <span class="pc-name-en">ABYSSAL BLOOM</span>', desc: '生物荧光 · 潮汐花冠', premiumVisual: true, accent: '#75f0d0', accent2: '#8178ff' },
+];
+var presetIcons = [
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 14c3-2 5-2 8 0s5 2 8 0M3 10c3-2 5-2 8 0s5 2 8 0M3 18c3-2 5-2 8 0s5 2 8 0"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/><path d="M5 12a7 7 0 0 0 14 0"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7"/><path d="M8.8 8.8l6.4 6.4"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.4"/><path d="M16.5 5.2c2.1.9 3.4 2.4 4 4.5"/><path d="M18.8 3.2l1.5 4.8"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 15c2.2-4.4 4.4-4.4 6.6 0s4.4 4.4 6.6 0S20.6 10.6 23 15"/><path d="M3 9c2.2 2.2 4.4 2.2 6.6 0s4.4-2.2 6.6 0S20.6 11.2 23 9"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.2h4v6.2h4.2v3.8H14v7.6h-4v-7.6H5.8V9.4H10z"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18c2-3 4-3 6 0s4 3 6 0 4-3 6 0"/><path d="M3 12c2-2.5 4-2.5 6 0s4 2.5 6 0 4-2.5 6 0"/><path d="M3 6c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/><circle cx="18" cy="5" r="1.2" fill="currentColor"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18h18"/><path d="M5 15c1.4-4 2.8-4 4.2 0s2.8 4 4.2 0 2.8-4 4.6 0"/><path d="M4 10c2-2 4-2 6 0s4 2 6 0 3-2 4 0"/><path d="M7 6h10"/><circle cx="18.2" cy="5.8" r="1.35" fill="currentColor"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.45"><ellipse cx="12" cy="12" rx="9" ry="3.8" transform="rotate(-18 12 12)"/><ellipse cx="12" cy="12" rx="6.3" ry="2.2" transform="rotate(24 12 12)"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"><path d="M5 3v8M9 2v15M13 5v8M17 2v18M21 6v9"/><path d="M4 19c4-3 8 3 16-1" opacity=".7"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"><path d="M12 12 3 6l3 9 6-3 6 3 3-9-9 6Z"/><path d="M12 12V4M6 15l3 4 3-7 3 7 3-4"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"><path d="M12 20c-1-5-7-5-7-10 4 0 6 2 7 5 1-3 3-5 7-5 0 5-6 5-7 10Z"/><path d="M12 15c-3-3-2-7 0-11 2 4 3 8 0 11Z"/><circle cx="12" cy="15" r="1.2" fill="currentColor" stroke="none"/></svg>',
+];
+var presetDisplayOrder = [0, 9, 10, 11, 12, 6, 7, 8, 5, 4, 2, 1, 3];
+var lyricColorPresets = [
+  { name: '雾蓝', color: '#a9b8c8' },
+  { name: '银蓝', color: '#9db8cf' },
+  { name: '冰川', color: '#7ec8d8' },
+  { name: '青绿', color: '#66d2b5' },
+  { name: '松针', color: '#7fa894' },
+  { name: '月白', color: '#d7d2c4' },
+  { name: '岩金', color: '#c3ae7c' },
+  { name: '琥珀', color: '#d9a45f' },
+  { name: '暮粉', color: '#c78aa4' },
+  { name: '玫红', color: '#d76a8d' },
+  { name: '烟紫', color: '#9b83d3' },
+  { name: '电紫', color: '#8d70ff' },
+  { name: '靛蓝', color: '#5e78d8' },
+  { name: '海蓝', color: '#3c9fe0' },
+  { name: '霓青', color: '#28c5c3' },
+  { name: '夜绿', color: '#245c49' },
+  { name: '酒红', color: '#6d1f35' },
+  { name: '墨黑', color: '#111318' },
+];
+var USER_FX_ARCHIVE_STORE_KEY = 'mineradio-user-fx-archives-v1';
+var USER_FX_ARCHIVE_EXPORT_TYPE = 'mineradio-user-fx-archive';
+var USER_FX_ARCHIVE_SCHEMA = 1;
+var USER_FX_SHARE_PREFIX = 'MR2';
+var USER_FX_SHARE_VERSION = 1;
+var USER_FX_SHARE_PAYLOAD_TYPE = 'ufa';
+var USER_FX_SHARE_CODEC_GZIP = 'G';
+var USER_FX_SHARE_CODEC_JSON = 'J';
+var USER_FX_SHARE_COMPACT_DELTA = 'd';
+var USER_FX_SHARE_COMPACT_FULL = 'f';
+var USER_FX_SHARE_KEYS = [
+  'visualPresetSchema',
+  'preset',
+  'intensity',
+  'cinemaShake',
+  'depth',
+  'coverResolution',
+  'point',
+  'speed',
+  'twist',
+  'color',
+  'scatter',
+  'bgFade',
+  'bloomStrength',
+  'lyricGlowStrength',
+  'lyricBackgroundAdapt',
+  'lyricScale',
+  'lyricOffsetX',
+  'lyricOffsetY',
+  'lyricOffsetZ',
+  'lyricTiltX',
+  'lyricTiltY',
+  'lyricCameraLock',
+  'lyricColorMode',
+  'lyricColor',
+  'lyricHighlightMode',
+  'lyricHighlightColor',
+  'lyricGlowLinked',
+  'lyricGlowColor',
+  'lyricDisplayMode',
+  'lyricTranslationMode',
+  'lyricMotionStyle',
+  'lyricCustomLineCount',
+  'lyricGlitchCameraBind',
+  'lyricGlitchIntensity',
+  'lyricGlitchSlice',
+  'lyricGlitchChroma',
+  'lyricGlitchRate',
+  'lyricGlitchJitter',
+  'lyricContextOpacity',
+  'lyricContextSpread',
+  'lyricTranslationGap',
+  'lyricTranslationScale',
+  'lyricTranslationOpacity',
+  'lyricEdgeFade',
+  'lyricMotionSoftness',
+  'lyricFont',
+  'lyricLetterSpacing',
+  'lyricLineHeight',
+  'lyricWeight',
+  'visualTintMode',
+  'visualTintColor',
+  'uiAccentColor',
+  'homeAccentColor',
+  'homeIconColor',
+  'visualIconColor',
+  'backgroundColorMode',
+  'backgroundColor',
+  'backgroundOpacity',
+  'backgroundAlbumCover',
+  'backgroundMediaCropX',
+  'backgroundMediaCropY',
+  'backgroundMediaZoom',
+  'controlGlassChromaticOffset',
+  'playlistPanelGlassBlur',
+  'playlistPanelGlassDensity',
+  'playlistPanelOpenDuration',
+  'playlistPanelCloseDuration',
+  'backgroundColorCustom',
+  'floatLayer',
+  'cinema',
+  'edge',
+  'aiDepth',
+  'bloom',
+  'lyricGlow',
+  'lyricGlowBeat',
+  'lyricGlowParticles',
+  'lyricVerticalFloat',
+  'lyricPauseHold',
+  'desktopLyrics',
+  'desktopLyricsSize',
+  'desktopLyricsOpacity',
+  'desktopLyricsY',
+  'desktopLyricsClickThrough',
+  'desktopLyricsCinema',
+  'desktopLyricsHighlight',
+  'desktopLyricsFps',
+  'performanceBackground',
+  'performanceQuality',
+  'foregroundFpsMode',
+  'memoryAutoTrimApp',
+  'memoryAutoTrimOnBackground',
+  'memoryAutoSystemTrim',
+  'memorySystemAutoElevate',
+  'memorySystemIntervalMin',
+  'memorySystemThresholdPercent',
+  'memorySystemMask',
+  'memorySafetyRevision',
+  'liveBackgroundKeep',
+  'sonicGroundAmplitude',
+  'sonicGroundMotionSpeed',
+  'sonicGroundDensity',
+  'sonicGroundRange',
+  'sonicGroundLower',
+  'sonicGroundDepth',
+  'sonicGroundAutoRotate',
+  'sonicGroundColorMode',
+  'sonicGroundBaseColor',
+  'sonicGroundCoolColor',
+  'sonicGroundWarmColor',
+  'sonicGroundAccentColor',
+  'sonicGroundGlow',
+  'sonicGroundSubBass',
+  'sonicGroundBass',
+  'sonicGroundLowMid',
+  'sonicGroundMid',
+  'sonicGroundHighMid',
+  'sonicGroundPresence',
+  'sonicGroundBrilliance',
+  'sonicGroundAir',
+  'sonicGroundFloatingEnabled',
+  'sonicGroundFloatingIntensity',
+  'sonicGroundFloatingMinSize',
+  'sonicGroundFloatingMaxSize',
+  'sonicGroundFloatingSpeed',
+  'sonicGroundFloatingCount',
+  'sonicAudioMonitorEnabled',
+  'sonicAudioAutoTrack',
+  'sonicAudioSensitivity',
+  'sonicAudioBandStart',
+  'sonicAudioBandEnd',
+  'sonicAudioThreshold',
+  'sonicAudioPulseStrength',
+  'sonicWorkshopInputGain',
+  'sonicWorkshopAudioIntensity',
+  'sonicWorkshopResponseRange',
+  'sonicWorkshopPeakIntensity',
+  'sonicWorkshopColorMode',
+  'sonicWorkshopTheme',
+  'sonicWorkshopCustomColor',
+  'sonicWorkshopBaseColorMode',
+  'sonicWorkshopBaseColor',
+  'sonicWorkshopWarmColorMode',
+  'sonicWorkshopWarmColor',
+  'sonicWorkshopCoolColorMode',
+  'sonicWorkshopCoolColor',
+  'sonicWorkshopRippleColorMode',
+  'sonicWorkshopRippleColor',
+  'sonicWorkshopPeakColorMode',
+  'sonicWorkshopPeakColor',
+  'particleLyrics',
+  'backCover',
+  'shelf',
+  'shelfPinnedOpen',
+  'shelfCameraMode',
+  'shelfPresence',
+  'shelfShowPodcasts',
+  'shelfMergeCollections',
+  'shelfSize',
+  'shelfOffsetX',
+  'shelfOffsetY',
+  'shelfOffsetZ',
+  'shelfAngleY',
+  'shelfAngleYManual',
+  'shelfOpacity',
+  'shelfBgOpacity',
+  'shelfAccentColor',
+  'shelfDetailOffsetX',
+  'shelfDetailOffsetY',
+  'shelfDetailOffsetZ',
+  'shelfDetailScale',
+  'shelfDetailAngleX',
+  'shelfDetailAngleY',
+  'shelfDetailRowGap',
+  'shelfDetailOpenDuration',
+  'shelfDetailCloseDuration',
+  'shelfDetailRowDuration',
+  'shelfDetailIntroStrength',
+  'shelfDetailParallax',
+  'shelfSummonOpenDuration',
+  'shelfSummonCloseDuration',
+  'shelfSummonSlide',
+  'shelfSummonStagger',
+  'shelfSummonScale',
+  'shelfSummonParallax',
+  'shelfCameraEnterSpeed',
+  'shelfCameraExitSpeed',
+  'cam',
+  'cameraViewSaved',
+  'cameraViewMode',
+  'cameraOrbitTheta',
+  'cameraOrbitPhi',
+  'cameraOrbitRadius',
+  'cameraFreePositionX',
+  'cameraFreePositionY',
+  'cameraFreePositionZ',
+  'cameraFreeYaw',
+  'cameraFreePitch',
+  'cameraFreeRoll',
+  'cameraFreeFov',
+  'visualRotationSaved',
+  'visualRotationX',
+  'visualRotationY',
+  'windowBackgroundOpacity',
+  'backgroundGlassOpacity',
+  'backgroundStarRiver',
+  'lyricTextureClarity',
+  // Append-only: preserve every existing MR2 field index.
+  'lyricLiveViewportFit',
+  'lyricContextHighQuality',
+  'lyricBackdropAdapt',
+  'coverBackdropAdapt',
+  'gesturePlayerActions',
+  'gestureHandOverlay',
+  'gestureSensitivity'
+];
+function defaultUserFxArchiveName(index) {
+  return '存档 ' + (index + 1);
+}
+function normalizeUserFxArchiveName(name, index) {
+  name = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!name) name = defaultUserFxArchiveName(index);
+  return name.slice(0, 18);
+}
+function archiveNumber(raw, key, fallback, min, max) {
+  var value = raw && raw[key] != null ? Number(raw[key]) : fallback;
+  if (!isFinite(value)) value = fallback;
+  return clampRange(value, min, max);
+}
+function archiveMode(raw, key, pattern, fallback) {
+  var value = String(raw && raw[key] != null ? raw[key] : fallback);
+  return pattern.test(value) ? value : fallback;
+}
+function archiveHasCameraState(raw) {
+  if (!raw || typeof raw !== 'object') return false;
+  if (raw.cameraViewSaved === true) return true;
+  var keys = [
+    'cameraViewMode',
+    'cameraOrbitTheta',
+    'cameraOrbitPhi',
+    'cameraOrbitRadius',
+    'cameraFreePositionX',
+    'cameraFreePositionY',
+    'cameraFreePositionZ',
+    'cameraFreeYaw',
+    'cameraFreePitch',
+    'cameraFreeRoll',
+    'cameraFreeFov'
+  ];
+  return keys.some(function (key) { return raw[key] != null; });
+}
+function archiveHasVisualRotationState(raw) {
+  if (!raw || typeof raw !== 'object') return false;
+  return raw.visualRotationSaved === true || raw.visualRotationX != null || raw.visualRotationY != null;
+}
+function isCameraArchiveKey(key) {
+  return /^camera(View|Orbit|Free)/.test(String(key || '')) || /^visualRotation/.test(String(key || ''));
+}
+function normalizeFxArchiveSnapshot(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  var savedPreset = clampRange(Number(raw.preset) || 0, 0, presetMeta.length - 1);
+  if (savedPreset === 3 && raw.visualPresetSchema !== VISUAL_PRESET_SCHEMA) savedPreset = 5;
+  var archiveShelfMode = archiveMode(raw, 'shelf', /^(off|side|stage)$/, fxDefaults.shelf);
+  var archiveShelfPresence = archiveShelfMode === 'off' ? 'auto' : archiveMode(raw, 'shelfPresence', /^(auto|always)$/, fxDefaults.shelfPresence);
+  var archiveShelfPinnedOpen = archiveShelfMode === 'side' && archiveShelfPresence === 'always' && raw.shelfPinnedOpen === true;
+  var archiveCameraSaved = archiveHasCameraState(raw);
+  var archiveVisualRotationSaved = archiveHasVisualRotationState(raw);
+  return {
+    visualPresetSchema: VISUAL_PRESET_SCHEMA,
+    preset: savedPreset,
+    intensity: archiveNumber(raw, 'intensity', fxDefaults.intensity, 0.2, 1.6),
+    cinemaShake: archiveNumber(raw, 'cinemaShake', fxDefaults.cinemaShake, 0, 1.8),
+    depth: archiveNumber(raw, 'depth', fxDefaults.depth, 0.2, 1.8),
+    coverResolution: normalizeCoverResolution(raw.coverResolution),
+    point: archiveNumber(raw, 'point', fxDefaults.point, 0.5, 2.2),
+    speed: archiveNumber(raw, 'speed', fxDefaults.speed, 0.2, 2.5),
+    twist: archiveNumber(raw, 'twist', fxDefaults.twist, 0, 0.6),
+    color: archiveNumber(raw, 'color', fxDefaults.color, 0.5, 2.0),
+    scatter: archiveNumber(raw, 'scatter', fxDefaults.scatter, 0, 0.5),
+    bgFade: archiveNumber(raw, 'bgFade', fxDefaults.bgFade, 0, 1.2),
+    bloomStrength: archiveNumber(raw, 'bloomStrength', fxDefaults.bloomStrength, 0, 1.6),
+    lyricGlowStrength: archiveNumber(raw, 'lyricGlowStrength', fxDefaults.lyricGlowStrength, 0, 0.85),
+    lyricBackgroundAdapt: archiveNumber(raw, 'lyricBackgroundAdapt', fxDefaults.lyricBackgroundAdapt, 0, 1),
+    lyricScale: archiveNumber(raw, 'lyricScale', fxDefaults.lyricScale, 0.35, 1.65),
+    lyricOffsetX: archiveNumber(raw, 'lyricOffsetX', fxDefaults.lyricOffsetX, -4.0, 4.0),
+    lyricOffsetY: archiveNumber(raw, 'lyricOffsetY', fxDefaults.lyricOffsetY, -2.4, 2.7),
+    lyricOffsetZ: archiveNumber(raw, 'lyricOffsetZ', fxDefaults.lyricOffsetZ, -3.2, 3.2),
+    lyricTiltX: archiveNumber(raw, 'lyricTiltX', fxDefaults.lyricTiltX, -84, 84),
+    lyricTiltY: archiveNumber(raw, 'lyricTiltY', fxDefaults.lyricTiltY, -84, 84),
+    lyricCameraLock: !!raw.lyricCameraLock,
+    lyricColorMode: raw.lyricColorMode === 'custom' ? 'custom' : 'auto',
+    lyricColor: normalizeHexColor(raw.lyricColor || fxDefaults.lyricColor),
+    lyricHighlightMode: raw.lyricHighlightMode === 'custom' ? 'custom' : 'auto',
+    lyricHighlightColor: normalizeHexColor(raw.lyricHighlightColor || fxDefaults.lyricHighlightColor),
+    lyricGlowLinked: raw.lyricGlowLinked !== false,
+    lyricGlowColor: normalizeHexColor(raw.lyricGlowColor || fxDefaults.lyricGlowColor),
+    lyricDisplayMode: normalizeLyricDisplayMode(raw.lyricDisplayMode || fxDefaults.lyricDisplayMode),
+    lyricTranslationMode: normalizeLyricTranslationMode(raw.lyricTranslationMode || fxDefaults.lyricTranslationMode),
+    lyricMotionStyle: normalizeLyricMotionStyle(raw.lyricMotionStyle || fxDefaults.lyricMotionStyle),
+    lyricCustomLineCount: archiveNumber(raw, 'lyricCustomLineCount', fxDefaults.lyricCustomLineCount, 1, 10),
+    lyricGlitchCameraBind: !!raw.lyricGlitchCameraBind,
+    lyricGlitchIntensity: archiveNumber(raw, 'lyricGlitchIntensity', fxDefaults.lyricGlitchIntensity, 0, 1.5),
+    lyricGlitchSlice: archiveNumber(raw, 'lyricGlitchSlice', fxDefaults.lyricGlitchSlice, 0, 1.4),
+    lyricGlitchChroma: archiveNumber(raw, 'lyricGlitchChroma', fxDefaults.lyricGlitchChroma, 0, 1.6),
+    lyricGlitchRate: archiveNumber(raw, 'lyricGlitchRate', fxDefaults.lyricGlitchRate, 0.45, 2.2),
+    lyricGlitchJitter: archiveNumber(raw, 'lyricGlitchJitter', fxDefaults.lyricGlitchJitter, 0, 1.8),
+    lyricContextOpacity: archiveNumber(raw, 'lyricContextOpacity', fxDefaults.lyricContextOpacity, 0.25, 1),
+    lyricContextSpread: archiveNumber(raw, 'lyricContextSpread', fxDefaults.lyricContextSpread, 0.60, 2.40),
+    lyricTranslationGap: archiveNumber(raw, 'lyricTranslationGap', fxDefaults.lyricTranslationGap, 0.28, 2.20),
+    lyricTranslationScale: archiveNumber(raw, 'lyricTranslationScale', fxDefaults.lyricTranslationScale, 0.46, 1.12),
+    lyricTranslationOpacity: archiveNumber(raw, 'lyricTranslationOpacity', fxDefaults.lyricTranslationOpacity, 0.20, 1),
+    lyricEdgeFade: archiveNumber(raw, 'lyricEdgeFade', fxDefaults.lyricEdgeFade, 0, 1),
+    lyricMotionSoftness: archiveNumber(raw, 'lyricMotionSoftness', fxDefaults.lyricMotionSoftness, 0.15, 1.2),
+    lyricFont: normalizeLyricFontKey(raw.lyricFont),
+    lyricLetterSpacing: archiveNumber(raw, 'lyricLetterSpacing', fxDefaults.lyricLetterSpacing, -0.04, 0.18),
+    lyricLineHeight: archiveNumber(raw, 'lyricLineHeight', fxDefaults.lyricLineHeight, 0.72, 1.80),
+    lyricWeight: archiveNumber(raw, 'lyricWeight', fxDefaults.lyricWeight, 500, 900),
+    lyricTextureClarity: normalizeLyricTextureClarity(raw.lyricTextureClarity),
+    lyricLiveViewportFit: raw.lyricLiveViewportFit !== false,
+    lyricContextHighQuality: raw.lyricContextHighQuality !== false,
+    lyricBackdropAdapt: raw.lyricBackdropAdapt !== false,
+    coverBackdropAdapt: raw.coverBackdropAdapt !== false,
+    visualTintMode: raw.visualTintMode === 'custom' ? 'custom' : 'auto',
+    visualTintColor: normalizeHexColor(raw.visualTintColor || fxDefaults.visualTintColor),
+    uiAccentColor: normalizeHexColor(raw.uiAccentColor || fxDefaults.uiAccentColor, fxDefaults.uiAccentColor),
+    homeAccentColor: normalizeHexColor(raw.homeAccentColor || fxDefaults.homeAccentColor, fxDefaults.homeAccentColor),
+    homeIconColor: normalizeHexColor(raw.homeIconColor || fxDefaults.homeIconColor, fxDefaults.homeIconColor),
+    visualIconColor: normalizeHexColor(raw.visualIconColor || fxDefaults.visualIconColor, fxDefaults.visualIconColor),
+    backgroundColorMode: raw.backgroundColorMode === 'custom' || raw.backgroundColorCustom ? 'custom' : 'cover',
+    backgroundColor: normalizeHexColor(raw.backgroundColor || fxDefaults.backgroundColor, fxDefaults.backgroundColor),
+    backgroundOpacity: archiveNumber(raw, 'backgroundOpacity', fxDefaults.backgroundOpacity, 0, 1),
+    backgroundAlbumCover: raw.backgroundAlbumCover === true,
+    backgroundMediaCropX: archiveNumber(raw, 'backgroundMediaCropX', fxDefaults.backgroundMediaCropX, 0, 100),
+    backgroundMediaCropY: archiveNumber(raw, 'backgroundMediaCropY', fxDefaults.backgroundMediaCropY, 0, 100),
+    backgroundMediaZoom: archiveNumber(raw, 'backgroundMediaZoom', fxDefaults.backgroundMediaZoom, 1, 2.8),
+    windowBackgroundOpacity: archiveNumber(raw, 'windowBackgroundOpacity', fxDefaults.windowBackgroundOpacity, 0, 1),
+    backgroundGlassOpacity: archiveNumber(raw, 'backgroundGlassOpacity', fxDefaults.backgroundGlassOpacity, 0, 1),
+    controlGlassChromaticOffset: archiveNumber(raw, 'controlGlassChromaticOffset', fxDefaults.controlGlassChromaticOffset, 30, 140),
+    playlistPanelGlassBlur: archiveNumber(raw, 'playlistPanelGlassBlur', fxDefaults.playlistPanelGlassBlur, 14, 60),
+    playlistPanelGlassDensity: archiveNumber(raw, 'playlistPanelGlassDensity', fxDefaults.playlistPanelGlassDensity, 0.55, 1),
+    playlistPanelOpenDuration: archiveNumber(raw, 'playlistPanelOpenDuration', fxDefaults.playlistPanelOpenDuration, 0.08, 0.72),
+    playlistPanelCloseDuration: archiveNumber(raw, 'playlistPanelCloseDuration', fxDefaults.playlistPanelCloseDuration, 0.06, 0.48),
+    backgroundColorCustom: raw.backgroundColorMode === 'custom' || !!raw.backgroundColorCustom,
+    floatLayer: !!raw.floatLayer,
+    cinema: raw.cinema !== false,
+    edge: !!raw.edge,
+    aiDepth: !!raw.aiDepth,
+    bloom: !!raw.bloom,
+    lyricGlow: raw.lyricGlow !== false,
+    lyricGlowBeat: raw.lyricGlowBeat !== false,
+    lyricGlowParticles: !!raw.lyricGlowParticles,
+    lyricVerticalFloat: raw.lyricVerticalFloat !== false,
+    backgroundStarRiver: raw.backgroundStarRiver !== false,
+    lyricPauseHold: raw.lyricPauseHold !== false,
+    desktopLyrics: !!raw.desktopLyrics,
+    desktopLyricsSize: archiveNumber(raw, 'desktopLyricsSize', fxDefaults.desktopLyricsSize, 0.72, 1.55),
+    desktopLyricsOpacity: archiveNumber(raw, 'desktopLyricsOpacity', fxDefaults.desktopLyricsOpacity, 0.28, 1),
+    desktopLyricsY: archiveNumber(raw, 'desktopLyricsY', fxDefaults.desktopLyricsY, 0.08, 0.92),
+    desktopLyricsClickThrough: raw.desktopLyricsClickThrough === true,
+    desktopLyricsCinema: raw.desktopLyricsCinema !== false,
+    desktopLyricsHighlight: raw.desktopLyricsHighlight === true,
+    desktopLyricsFps: normalizeDesktopLyricsFps(Object.prototype.hasOwnProperty.call(raw, 'desktopLyricsFps') ? raw.desktopLyricsFps : fxDefaults.desktopLyricsFps),
+    performanceBackground: normalizePerformanceBackgroundMode(raw.performanceBackground, raw.liveBackgroundKeep === true),
+    performanceQuality: normalizePerformanceQuality(raw.performanceQuality),
+    foregroundFpsMode: normalizeForegroundFpsMode(raw.foregroundFpsMode === 'adaptive' ? 'vsync' : raw.foregroundFpsMode),
+    memoryAutoTrimApp: raw.memoryAutoTrimApp !== false,
+    memoryAutoTrimOnBackground: raw.memoryAutoTrimOnBackground !== false,
+    memoryAutoSystemTrim: raw.memoryAutoSystemTrim === true,
+    memorySystemAutoElevate: raw.memorySystemAutoElevate === true,
+    memorySystemIntervalMin: archiveNumber(raw, 'memorySystemIntervalMin', fxDefaults.memorySystemIntervalMin, 5, 180),
+    memorySystemThresholdPercent: archiveNumber(raw, 'memorySystemThresholdPercent', fxDefaults.memorySystemThresholdPercent, 50, 98),
+    memorySystemMask: archiveNumber(raw, 'memorySystemMask', fxDefaults.memorySystemMask, 1, 29),
+    memorySafetyRevision: fxDefaults.memorySafetyRevision,
+    liveBackgroundKeep: normalizePerformanceBackgroundMode(raw.performanceBackground, raw.liveBackgroundKeep === true) === 'keep',
+    sonicGroundAmplitude: archiveNumber(raw, 'sonicGroundAmplitude', fxDefaults.sonicGroundAmplitude, 0, 100),
+    sonicGroundMotionSpeed: archiveNumber(raw, 'sonicGroundMotionSpeed', fxDefaults.sonicGroundMotionSpeed, 0, 100),
+    sonicGroundDensity: archiveNumber(raw, 'sonicGroundDensity', fxDefaults.sonicGroundDensity, 0, 100),
+    sonicGroundRange: archiveNumber(raw, 'sonicGroundRange', fxDefaults.sonicGroundRange, 0, 100),
+    sonicGroundLower: archiveNumber(raw, 'sonicGroundLower', fxDefaults.sonicGroundLower, 0, 100),
+    sonicGroundDepth: archiveNumber(raw, 'sonicGroundDepth', fxDefaults.sonicGroundDepth, 0, 100),
+    sonicGroundAutoRotate: archiveNumber(raw, 'sonicGroundAutoRotate', fxDefaults.sonicGroundAutoRotate, 0, 100),
+    sonicGroundColorMode: raw.sonicGroundColorMode === 'custom' ? 'custom' : 'cover',
+    sonicGroundBaseColor: normalizeHexColor(raw.sonicGroundBaseColor || fxDefaults.sonicGroundBaseColor, fxDefaults.sonicGroundBaseColor),
+    sonicGroundCoolColor: normalizeHexColor(raw.sonicGroundCoolColor || fxDefaults.sonicGroundCoolColor, fxDefaults.sonicGroundCoolColor),
+    sonicGroundWarmColor: normalizeHexColor(raw.sonicGroundWarmColor || fxDefaults.sonicGroundWarmColor, fxDefaults.sonicGroundWarmColor),
+    sonicGroundAccentColor: normalizeHexColor(raw.sonicGroundAccentColor || fxDefaults.sonicGroundAccentColor, fxDefaults.sonicGroundAccentColor),
+    sonicGroundGlow: archiveNumber(raw, 'sonicGroundGlow', fxDefaults.sonicGroundGlow, 0, 100),
+    sonicGroundSubBass: archiveNumber(raw, 'sonicGroundSubBass', fxDefaults.sonicGroundSubBass, 0, 100),
+    sonicGroundBass: archiveNumber(raw, 'sonicGroundBass', fxDefaults.sonicGroundBass, 0, 100),
+    sonicGroundLowMid: archiveNumber(raw, 'sonicGroundLowMid', fxDefaults.sonicGroundLowMid, 0, 100),
+    sonicGroundMid: archiveNumber(raw, 'sonicGroundMid', fxDefaults.sonicGroundMid, 0, 100),
+    sonicGroundHighMid: archiveNumber(raw, 'sonicGroundHighMid', fxDefaults.sonicGroundHighMid, 0, 100),
+    sonicGroundPresence: archiveNumber(raw, 'sonicGroundPresence', fxDefaults.sonicGroundPresence, 0, 100),
+    sonicGroundBrilliance: archiveNumber(raw, 'sonicGroundBrilliance', fxDefaults.sonicGroundBrilliance, 0, 100),
+    sonicGroundAir: archiveNumber(raw, 'sonicGroundAir', fxDefaults.sonicGroundAir, 0, 100),
+    sonicGroundFloatingEnabled: raw.sonicGroundFloatingEnabled !== false,
+    sonicGroundFloatingIntensity: archiveNumber(raw, 'sonicGroundFloatingIntensity', fxDefaults.sonicGroundFloatingIntensity, 0, 100),
+    sonicGroundFloatingMinSize: archiveNumber(raw, 'sonicGroundFloatingMinSize', fxDefaults.sonicGroundFloatingMinSize, 0, 100),
+    sonicGroundFloatingMaxSize: archiveNumber(raw, 'sonicGroundFloatingMaxSize', fxDefaults.sonicGroundFloatingMaxSize, 0, 100),
+    sonicGroundFloatingSpeed: archiveNumber(raw, 'sonicGroundFloatingSpeed', fxDefaults.sonicGroundFloatingSpeed, 0, 100),
+    sonicGroundFloatingCount: archiveNumber(raw, 'sonicGroundFloatingCount', fxDefaults.sonicGroundFloatingCount, 0, 100),
+    sonicAudioMonitorEnabled: raw.sonicAudioMonitorEnabled !== false,
+    sonicAudioAutoTrack: raw.sonicAudioAutoTrack !== false,
+    sonicAudioSensitivity: archiveNumber(raw, 'sonicAudioSensitivity', fxDefaults.sonicAudioSensitivity, 0, 100),
+    sonicAudioBandStart: archiveNumber(raw, 'sonicAudioBandStart', fxDefaults.sonicAudioBandStart, 0, 510),
+    sonicAudioBandEnd: archiveNumber(raw, 'sonicAudioBandEnd', fxDefaults.sonicAudioBandEnd, 2, 512),
+    sonicAudioThreshold: archiveNumber(raw, 'sonicAudioThreshold', fxDefaults.sonicAudioThreshold, 0, 100),
+    sonicAudioPulseStrength: archiveNumber(raw, 'sonicAudioPulseStrength', fxDefaults.sonicAudioPulseStrength, 0, 100),
+    sonicWorkshopInputGain: archiveNumber(raw, 'sonicWorkshopInputGain', fxDefaults.sonicWorkshopInputGain, 40, 100),
+    sonicWorkshopAudioIntensity: archiveNumber(raw, 'sonicWorkshopAudioIntensity', fxDefaults.sonicWorkshopAudioIntensity, 0.3, 2.5),
+    sonicWorkshopResponseRange: archiveNumber(raw, 'sonicWorkshopResponseRange', fxDefaults.sonicWorkshopResponseRange, 0.3, 2),
+    sonicWorkshopPeakIntensity: archiveNumber(raw, 'sonicWorkshopPeakIntensity', fxDefaults.sonicWorkshopPeakIntensity, 0, 1.4),
+    sonicWorkshopColorMode: raw.sonicWorkshopColorMode === 'custom' ? 'custom' : 'cover',
+    sonicWorkshopTheme: archiveMode(raw, 'sonicWorkshopTheme', /^(coral-mirage|ocean-deep|arctic-blue|arctic-aurora|emerald-forest|cyber-forest|minimal-mono|minimal-monochrome|neon-tokyo|golden-hour|ember-fire|crimson|crimson-sunset|aurora|violet-dream)$/, fxDefaults.sonicWorkshopTheme),
+    sonicWorkshopCustomColor: normalizeHexColor(raw.sonicWorkshopCustomColor || fxDefaults.sonicWorkshopCustomColor || '#cb6c89', fxDefaults.sonicWorkshopCustomColor || '#cb6c89'),
+    sonicWorkshopBaseColorMode: raw.sonicWorkshopBaseColorMode === 'custom' ? 'custom' : 'cover',
+    sonicWorkshopBaseColor: normalizeHexColor(raw.sonicWorkshopBaseColor || fxDefaults.sonicWorkshopBaseColor || '#16060f', fxDefaults.sonicWorkshopBaseColor || '#16060f'),
+    sonicWorkshopWarmColorMode: raw.sonicWorkshopWarmColorMode === 'custom' ? 'custom' : 'cover',
+    sonicWorkshopWarmColor: normalizeHexColor(raw.sonicWorkshopWarmColor || fxDefaults.sonicWorkshopWarmColor || '#cb6c89', fxDefaults.sonicWorkshopWarmColor || '#cb6c89'),
+    sonicWorkshopCoolColorMode: raw.sonicWorkshopCoolColorMode === 'custom' ? 'custom' : 'cover',
+    sonicWorkshopCoolColor: normalizeHexColor(raw.sonicWorkshopCoolColor || fxDefaults.sonicWorkshopCoolColor || '#99c4ff', fxDefaults.sonicWorkshopCoolColor || '#99c4ff'),
+    sonicWorkshopRippleColorMode: raw.sonicWorkshopRippleColorMode === 'custom' ? 'custom' : 'cover',
+    sonicWorkshopRippleColor: normalizeHexColor(raw.sonicWorkshopRippleColor || fxDefaults.sonicWorkshopRippleColor || '#f8d8ff', fxDefaults.sonicWorkshopRippleColor || '#f8d8ff'),
+    sonicWorkshopPeakColorMode: raw.sonicWorkshopPeakColorMode === 'custom' ? 'custom' : 'cover',
+    sonicWorkshopPeakColor: normalizeHexColor(raw.sonicWorkshopPeakColor || fxDefaults.sonicWorkshopPeakColor || '#99c4ff', fxDefaults.sonicWorkshopPeakColor || '#99c4ff'),
+    particleLyrics: raw.particleLyrics !== false,
+    backCover: !!raw.backCover,
+    shelf: archiveShelfMode,
+    shelfPinnedOpen: archiveShelfPinnedOpen,
+    shelfCameraMode: archiveMode(raw, 'shelfCameraMode', /^(dynamic|static)$/, fxDefaults.shelfCameraMode),
+    shelfPresence: archiveShelfPresence,
+    shelfShowPodcasts: raw.shelfShowPodcasts !== false,
+    shelfMergeCollections: raw.shelfMergeCollections === true,
+    shelfSize: archiveNumber(raw, 'shelfSize', fxDefaults.shelfSize, 0.65, 1.45),
+    shelfOffsetX: archiveNumber(raw, 'shelfOffsetX', fxDefaults.shelfOffsetX, -1.2, 1.2),
+    shelfOffsetY: archiveNumber(raw, 'shelfOffsetY', fxDefaults.shelfOffsetY, -0.9, 0.9),
+    shelfOffsetZ: archiveNumber(raw, 'shelfOffsetZ', fxDefaults.shelfOffsetZ, -0.9, 0.9),
+    shelfAngleY: archiveNumber(raw, 'shelfAngleY', fxDefaults.shelfAngleY, -30, 30),
+    shelfAngleYManual: raw.shelfAngleYManual === true,
+    shelfOpacity: archiveNumber(raw, 'shelfOpacity', fxDefaults.shelfOpacity, 0.25, 1),
+    shelfBgOpacity: archiveNumber(raw, 'shelfBgOpacity', fxDefaults.shelfBgOpacity, 0.25, 0.98),
+    shelfAccentColor: normalizeHexColor(raw.shelfAccentColor || fxDefaults.shelfAccentColor, fxDefaults.shelfAccentColor),
+    shelfDetailOffsetX: archiveNumber(raw, 'shelfDetailOffsetX', fxDefaults.shelfDetailOffsetX, -4.8, 4.8),
+    shelfDetailOffsetY: archiveNumber(raw, 'shelfDetailOffsetY', fxDefaults.shelfDetailOffsetY, -3.6, 3.6),
+    shelfDetailOffsetZ: archiveNumber(raw, 'shelfDetailOffsetZ', fxDefaults.shelfDetailOffsetZ, -3.6, 3.6),
+    shelfDetailScale: archiveNumber(raw, 'shelfDetailScale', fxDefaults.shelfDetailScale, 0.72, 1.35),
+    shelfDetailAngleX: archiveNumber(raw, 'shelfDetailAngleX', fxDefaults.shelfDetailAngleX, -24, 24),
+    shelfDetailAngleY: archiveNumber(raw, 'shelfDetailAngleY', fxDefaults.shelfDetailAngleY, -28, 28),
+    shelfDetailRowGap: archiveNumber(raw, 'shelfDetailRowGap', fxDefaults.shelfDetailRowGap, 0.72, 1.32),
+    shelfDetailOpenDuration: archiveNumber(raw, 'shelfDetailOpenDuration', fxDefaults.shelfDetailOpenDuration, 0.12, 1.2),
+    shelfDetailCloseDuration: archiveNumber(raw, 'shelfDetailCloseDuration', fxDefaults.shelfDetailCloseDuration, 0.08, 0.8),
+    shelfDetailRowDuration: archiveNumber(raw, 'shelfDetailRowDuration', fxDefaults.shelfDetailRowDuration, 0.16, 1.6),
+    shelfDetailIntroStrength: archiveNumber(raw, 'shelfDetailIntroStrength', fxDefaults.shelfDetailIntroStrength, 0, 1.8),
+    shelfDetailParallax: archiveNumber(raw, 'shelfDetailParallax', fxDefaults.shelfDetailParallax, 0, 1.8),
+    shelfSummonOpenDuration: archiveNumber(raw, 'shelfSummonOpenDuration', fxDefaults.shelfSummonOpenDuration, 0.08, 2),
+    shelfSummonCloseDuration: archiveNumber(raw, 'shelfSummonCloseDuration', fxDefaults.shelfSummonCloseDuration, 0.08, 1.6),
+    shelfSummonSlide: archiveNumber(raw, 'shelfSummonSlide', fxDefaults.shelfSummonSlide, 0, 4),
+    shelfSummonStagger: archiveNumber(raw, 'shelfSummonStagger', fxDefaults.shelfSummonStagger, 0, 3),
+    shelfSummonScale: archiveNumber(raw, 'shelfSummonScale', fxDefaults.shelfSummonScale, 0, 3),
+    shelfSummonParallax: archiveNumber(raw, 'shelfSummonParallax', fxDefaults.shelfSummonParallax, 0, 2.5),
+    shelfCameraEnterSpeed: archiveNumber(raw, 'shelfCameraEnterSpeed', fxDefaults.shelfCameraEnterSpeed, 0.2, 1.5),
+    shelfCameraExitSpeed: archiveNumber(raw, 'shelfCameraExitSpeed', fxDefaults.shelfCameraExitSpeed, 0.2, 1.5),
+    cam: archiveMode(raw, 'cam', /^(off|gesture)$/, fxDefaults.cam),
+    gesturePlayerActions: raw.gesturePlayerActions !== false,
+    gestureHandOverlay: raw.gestureHandOverlay !== false,
+    gestureSensitivity: archiveMode(raw, 'gestureSensitivity', /^(steady|balanced|quick)$/, fxDefaults.gestureSensitivity),
+    cameraViewSaved: archiveCameraSaved,
+    cameraViewMode: archiveMode(raw, 'cameraViewMode', /^(orbit|free)$/, 'orbit'),
+    cameraOrbitTheta: archiveNumber(raw, 'cameraOrbitTheta', 0, -Math.PI * 8, Math.PI * 8),
+    cameraOrbitPhi: archiveNumber(raw, 'cameraOrbitPhi', 0.08, -Math.PI * 0.45, Math.PI * 0.45),
+    cameraOrbitRadius: archiveNumber(raw, 'cameraOrbitRadius', 6.6, 2.4, 14.0),
+    cameraFreePositionX: archiveNumber(raw, 'cameraFreePositionX', 0, -80, 80),
+    cameraFreePositionY: archiveNumber(raw, 'cameraFreePositionY', 0, -80, 80),
+    cameraFreePositionZ: archiveNumber(raw, 'cameraFreePositionZ', 6.6, -80, 80),
+    cameraFreeYaw: archiveNumber(raw, 'cameraFreeYaw', 0, -Math.PI * 8, Math.PI * 8),
+    cameraFreePitch: archiveNumber(raw, 'cameraFreePitch', 0, -Math.PI * 0.49, Math.PI * 0.49),
+    cameraFreeRoll: archiveNumber(raw, 'cameraFreeRoll', 0, -Math.PI, Math.PI),
+    cameraFreeFov: archiveNumber(raw, 'cameraFreeFov', BASE_FOV, 26, 72),
+    visualRotationSaved: archiveVisualRotationSaved,
+    visualRotationX: archiveNumber(raw, 'visualRotationX', 0, -Math.PI * 8, Math.PI * 8),
+    visualRotationY: archiveNumber(raw, 'visualRotationY', 0, -Math.PI * 8, Math.PI * 8)
+  };
+}
+function readUserFxArchives() {
+  var raw = [];
+  try {
+    raw = JSON.parse(localStorage.getItem(USER_FX_ARCHIVE_STORE_KEY) || '[]') || [];
+  } catch (e) {
+    raw = [];
+  }
+  if (!Array.isArray(raw)) raw = [];
+  return raw.map(function (slot, index) {
+    slot = slot && typeof slot === 'object' ? slot : {};
+    var snapshot = normalizeFxArchiveSnapshot(slot.snapshot);
+    return {
+      name: normalizeUserFxArchiveName(slot.name, index),
+      createdAt: Number(slot.createdAt) || (snapshot ? (Number(slot.savedAt) || Date.now()) : 0),
+      savedAt: snapshot ? (Number(slot.savedAt) || Date.now()) : 0,
+      snapshot: snapshot
+    };
+  }).filter(function (slot) {
+    return !!(slot.snapshot || slot.savedAt || slot.createdAt);
+  });
+}
+function saveUserFxArchives() {
+  try {
+    localStorage.setItem(USER_FX_ARCHIVE_STORE_KEY, JSON.stringify(userFxArchives));
+  } catch (e) {
+    showToast('用户存档保存失败，本地存储空间可能不足');
+  }
+}
+function hasStoredUserFxArchives() {
+  try {
+    return localStorage.getItem(USER_FX_ARCHIVE_STORE_KEY) != null;
+  } catch (e) {
+    return true;
+  }
+}
+function createPackagedDefaultUserFxArchiveSlot() {
+  return {
+    name: normalizeUserFxArchiveName(PACKAGED_DEFAULT_USER_FX_ARCHIVE_NAME, 0),
+    createdAt: PACKAGED_DEFAULT_USER_FX_ARCHIVE_EXPORTED_AT,
+    savedAt: PACKAGED_DEFAULT_USER_FX_ARCHIVE_SAVED_AT,
+    snapshot: normalizeFxArchiveSnapshot(clonePackagedDefaultFxSnapshot())
+  };
+}
+function formatUserArchiveTime(ts) {
+  ts = Number(ts) || 0;
+  if (!ts) return '空槽位';
+  var diff = Date.now() - ts;
+  if (diff < 60000) return '刚刚保存';
+  if (diff < 3600000) return Math.max(1, Math.round(diff / 60000)) + ' 分钟前';
+  var d = new Date(ts);
+  function pad(v) { return String(v).padStart(2, '0'); }
+  return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+function captureCameraArchiveState() {
+  var useFree = !!(typeof freeCamera !== 'undefined' && freeCamera && (freeCamera.active || freeCamera.locked));
+  var visualRotX = typeof particles !== 'undefined' && particles && particles.rotation ? Number(particles.rotation.x) || 0 : (typeof gestureRotation !== 'undefined' && gestureRotation ? Number(gestureRotation.x) || 0 : 0);
+  var visualRotY = typeof particles !== 'undefined' && particles && particles.rotation ? Number(particles.rotation.y) || 0 : (typeof gestureRotation !== 'undefined' && gestureRotation ? Number(gestureRotation.y) || 0 : 0);
+  var out = {
+    cameraViewSaved: true,
+    cameraViewMode: useFree ? 'free' : 'orbit',
+    cameraOrbitTheta: orbit && isFinite(orbit.userTheta) ? orbit.userTheta : 0,
+    cameraOrbitPhi: orbit && isFinite(orbit.userPhi) ? orbit.userPhi : 0.08,
+    cameraOrbitRadius: orbit && isFinite(orbit.userRadius) ? orbit.userRadius : 6.6,
+    cameraFreePositionX: 0,
+    cameraFreePositionY: 0,
+    cameraFreePositionZ: 6.6,
+    cameraFreeYaw: 0,
+    cameraFreePitch: 0,
+    cameraFreeRoll: 0,
+    cameraFreeFov: typeof BASE_FOV === 'number' ? BASE_FOV : 45,
+    visualRotationSaved: true,
+    visualRotationX: visualRotX,
+    visualRotationY: visualRotY
+  };
+  if (typeof freeCamera !== 'undefined' && freeCamera) {
+    if (freeCamera.position) {
+      out.cameraFreePositionX = Number(freeCamera.position.x) || 0;
+      out.cameraFreePositionY = Number(freeCamera.position.y) || 0;
+      out.cameraFreePositionZ = Number(freeCamera.position.z) || 6.6;
+    }
+    out.cameraFreeYaw = Number(freeCamera.yaw) || 0;
+    out.cameraFreePitch = Number(freeCamera.pitch) || 0;
+    out.cameraFreeRoll = Number(freeCamera.roll) || 0;
+    out.cameraFreeFov = Number(freeCamera.fov) || out.cameraFreeFov;
+  }
+  return out;
+}
+function applyVisualRotationArchiveState(data) {
+  if (!data || data.visualRotationSaved !== true) return false;
+  var rx = Number(data.visualRotationX) || 0;
+  var ry = Number(data.visualRotationY) || 0;
+  if (typeof gestureRotation !== 'undefined' && gestureRotation) {
+    gestureRotation.x = rx;
+    gestureRotation.y = ry;
+  }
+  if (typeof particleSpin !== 'undefined' && particleSpin) {
+    particleSpin.vx = 0;
+    particleSpin.vy = 0;
+  }
+  if (typeof particles !== 'undefined' && particles && particles.rotation) particles.rotation.set(rx, ry, 0);
+  if (typeof bloomParticles !== 'undefined' && bloomParticles && bloomParticles.rotation) bloomParticles.rotation.set(rx, ry, 0);
+  if (typeof floatGroup !== 'undefined' && floatGroup && floatGroup.rotation) floatGroup.rotation.set(rx, ry, 0);
+  if (typeof backCoverGroup !== 'undefined' && backCoverGroup && backCoverGroup.rotation) backCoverGroup.rotation.set(rx, ry, 0);
+  if (typeof orbit !== 'undefined' && orbit && (Math.abs(rx) > 0.0001 || Math.abs(ry) > 0.0001)) {
+    orbit.centerLocked = false;
+    orbit.recentering = false;
+  }
+  return true;
+}
+function applyCameraArchiveState(data) {
+  if (!data || data.cameraViewSaved !== true) return false;
+  if (typeof freeCamera !== 'undefined' && freeCamera) {
+    freeCamera.active = false;
+    freeCamera.resetTween = null;
+    freeCamera.keys = {};
+    if (freeCamera.velocity) freeCamera.velocity.set(0, 0, 0);
+    if (typeof releaseFreeCameraPointerLock === 'function') releaseFreeCameraPointerLock();
+  }
+  if (data.cameraViewMode === 'free' && typeof freeCamera !== 'undefined' && freeCamera) {
+    if (!freeCamera.position) freeCamera.position = new THREE.Vector3();
+    freeCamera.position.set(data.cameraFreePositionX, data.cameraFreePositionY, data.cameraFreePositionZ);
+    freeCamera.yaw = data.cameraFreeYaw;
+    freeCamera.pitch = data.cameraFreePitch;
+    freeCamera.roll = data.cameraFreeRoll;
+    freeCamera.fov = data.cameraFreeFov;
+    freeCamera.locked = true;
+    if (typeof saveFreeCameraState === 'function') saveFreeCameraState();
+    if (typeof updateFreeCameraHint === 'function') updateFreeCameraHint();
+    return true;
+  }
+  if (typeof freeCamera !== 'undefined' && freeCamera) {
+    freeCamera.locked = false;
+    if (typeof saveFreeCameraState === 'function') saveFreeCameraState();
+    if (typeof updateFreeCameraHint === 'function') updateFreeCameraHint();
+  }
+  if (typeof orbit !== 'undefined' && orbit) {
+    orbit.userTheta = data.cameraOrbitTheta;
+    orbit.userPhi = clampRange(data.cameraOrbitPhi, orbit.minPhi, orbit.maxPhi);
+    orbit.userRadius = clampRange(data.cameraOrbitRadius, orbit.minRadius, orbit.maxRadius);
+    orbit.baselineTheta = orbit.userTheta;
+    orbit.baselinePhi = orbit.userPhi;
+    orbit.baselineRadius = orbit.userRadius;
+    orbit.theta = orbit.userTheta;
+    orbit.phi = orbit.userPhi;
+    orbit.radius = orbit.userRadius;
+    orbit.centerLocked = true;
+    orbit.recentering = false;
+    if (orbit.lookAt) orbit.lookAt.set(0, 0, 0);
+    if (orbit.focus) {
+      orbit.focus.active = false;
+      orbit.focus.type = null;
+    }
+    if (typeof clearCenteredViewOffsets === 'function') clearCenteredViewOffsets();
+    if (typeof requestStageLyricCameraSnap === 'function') requestStageLyricCameraSnap(12);
+    return true;
+  }
+  return false;
+}
+function captureFxArchiveSnapshot() {
+  return normalizeFxArchiveSnapshot(Object.assign({ visualPresetSchema: VISUAL_PRESET_SCHEMA }, fx, captureCameraArchiveState()));
+}
+function applySavedLyricPaletteState() {
+  if (!stageLyrics) return;
+  setStageLyricPalette(fx.lyricColorMode === 'custom'
+    ? lyricPaletteFromHex(fx.lyricColor)
+    : (stageLyrics.coverPalette || stageLyrics.palette));
+  updateLyricColorControls();
+  updateLyricHighlightControls();
+  updateLyricGlowControls();
+}
+function applyFxArchiveSnapshot(snapshot) {
+  var data = normalizeFxArchiveSnapshot(snapshot);
+  if (!data) return false;
+  var targetPreset = data.preset;
+  Object.keys(data).forEach(function (key) {
+    if (key === 'visualPresetSchema' || key === 'preset') return;
+    if (isCameraArchiveKey(key)) return;
+    fx[key] = data[key];
+  });
+  if (fx.backgroundAlbumCover === true) {
+    fx.backgroundMedia = null;
+    fx.backgroundImage = '';
+  }
+  normalizeDevelopmentLockedFxState();
+  setPreset(targetPreset, { silent: true, preserveCamera: false, skipTransition: false, noSave: true, commitPlaybackPreset: true });
+  applyCameraArchiveState(data);
+  applyVisualRotationArchiveState(data);
+  applyCoverParticleResolution(fx.coverResolution, { reload: true });
+  if (fx.floatLayer) createFloatLayer(); else destroyFloatLayer();
+  setParticleLyricsSilently(fx.particleLyrics);
+  if (fx.backCover) createBackCoverLayer(); else destroyBackCoverLayer();
+  if (fx.aiDepth) {
+    aiDepthFailUntil = 0;
+    queueAIDepthForCurrentCover(true);
+  }
+  setShelfMode(fx.shelf);
+  if (fx.shelf === 'side') setShelfPinnedOpen(!!fx.shelfPinnedOpen, true, false);
+  if (shelfManager && shelfManager.rebuild) shelfManager.rebuild(true);
+  if (shelfManager && shelfManager.refreshTheme) shelfManager.refreshTheme();
+  setCamMode(fx.cam);
+  updateFxInputs();
+  applySavedLyricPaletteState();
+  refreshCurrentLyricStyle();
+  applyDesktopLyricsState(true);
+  applyWallpaperModeState(true);
+  updateRenderPowerClasses();
+  applyRendererPowerMode();
+  saveLyricLayout({ user: true, reason: 'archiveApply' });
+  return true;
+}
+var hadStoredUserFxArchives = hasStoredUserFxArchives();
+var userFxArchives = readUserFxArchives();
+if (!hadStoredUserFxArchives) {
+  userFxArchives = [createPackagedDefaultUserFxArchiveSlot()];
+  saveUserFxArchives();
+}
+var userFxArchiveEditing = -1;
+var userFxArchiveShareDraft = '';
+function renderUserFxArchives() {
+  var grid = document.getElementById('user-archive-grid');
+  if (!grid) return;
+  grid.innerHTML = userFxArchives.map(function (slot, index) {
+    var hasSave = !!slot.snapshot;
+    var editing = userFxArchiveEditing === index;
+    var nameHtml = editing
+      ? '<input class="user-archive-input" id="user-archive-input-' + index + '" type="text" maxlength="18" value="' + escHtml(slot.name) + '" onkeydown="handleUserFxArchiveRenameKey(event,' + index + ')">'
+      : '<div class="user-archive-name" title="' + escHtml(slot.name) + '">' + escHtml(slot.name) + '</div>';
+    var actionsHtml = editing
+      ? '<button type="button" onclick="commitUserFxArchiveRename(' + index + ')">确定</button>' +
+      '<button type="button" onclick="cancelUserFxArchiveRename()">取消</button>'
+      : '<button type="button" onclick="applyUserFxArchive(' + index + ')"' + (hasSave ? '' : ' disabled') + '>应用</button>' +
+      '<button type="button" onclick="saveUserFxArchive(' + index + ')">保存</button>' +
+      '<button type="button" onclick="renameUserFxArchive(' + index + ')">命名</button>';
+    return '<div class="user-archive-slot' + (hasSave ? ' has-save' : '') + '" data-slot="' + index + '">' +
+      nameHtml +
+      '<div class="user-archive-meta">' + formatUserArchiveTime(slot.savedAt) + '</div>' +
+      '<div class="user-archive-actions">' +
+      actionsHtml +
+      '</div>' +
+      '</div>';
+  }).join('');
+  if (userFxArchiveEditing >= 0) {
+    setTimeout(function () {
+      var input = document.getElementById('user-archive-input-' + userFxArchiveEditing);
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    }, 0);
+  }
+}
+function saveUserFxArchive(index) {
+  index = clampRange(Number(index) || 0, 0, Math.max(0, userFxArchives.length - 1));
+  userFxArchives[index].snapshot = captureFxArchiveSnapshot();
+  userFxArchives[index].savedAt = Date.now();
+  userFxArchives[index].name = normalizeUserFxArchiveName(userFxArchives[index].name, index);
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast('已保存到 ' + userFxArchives[index].name);
+}
+function applyUserFxArchive(index) {
+  index = clampRange(Number(index) || 0, 0, Math.max(0, userFxArchives.length - 1));
+  var slot = userFxArchives[index];
+  if (!slot || !slot.snapshot) {
+    showToast('这个用户存档还是空的');
+    return;
+  }
+  if (applyFxArchiveSnapshot(slot.snapshot)) {
+    showToast('已应用 ' + slot.name);
+  }
+}
+function renameUserFxArchive(index) {
+  index = clampRange(Number(index) || 0, 0, Math.max(0, userFxArchives.length - 1));
+  userFxArchiveEditing = index;
+  renderUserFxArchives();
+}
+function commitUserFxArchiveRename(index) {
+  index = clampRange(Number(index) || 0, 0, Math.max(0, userFxArchives.length - 1));
+  var input = document.getElementById('user-archive-input-' + index);
+  userFxArchives[index].name = normalizeUserFxArchiveName(input && input.value, index);
+  userFxArchiveEditing = -1;
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast('已命名为 ' + userFxArchives[index].name);
+}
+function cancelUserFxArchiveRename() {
+  userFxArchiveEditing = -1;
+  renderUserFxArchives();
+}
+function handleUserFxArchiveRenameKey(e, index) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    commitUserFxArchiveRename(index);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    cancelUserFxArchiveRename();
+  }
+}
+
+function defaultUserFxArchiveName(index) {
+  return '用户存档 ' + (Number(index) + 1);
+}
+function normalizeUserFxArchiveName(name, index) {
+  name = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!name) name = defaultUserFxArchiveName(index);
+  return name.slice(0, 28);
+}
+function userFxArchiveAt(index) {
+  index = Number(index);
+  if (!isFinite(index)) return null;
+  index = Math.floor(index);
+  return index >= 0 && index < userFxArchives.length ? userFxArchives[index] : null;
+}
+function userFxShareChecksum(text) {
+  text = String(text || '');
+  var hash = 2166136261;
+  for (var i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return (hash >>> 0).toString(36).toUpperCase().padStart(7, '0');
+}
+function bytesToBase64Url(bytes) {
+  var binary = '';
+  for (var i = 0; i < bytes.length; i += 0x8000) {
+    var chunk = bytes.subarray(i, Math.min(i + 0x8000, bytes.length));
+    for (var j = 0; j < chunk.length; j++) binary += String.fromCharCode(chunk[j]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+function base64UrlToBytes(text) {
+  text = String(text || '').replace(/-/g, '+').replace(/_/g, '/');
+  while (text.length % 4) text += '=';
+  var binary = atob(text);
+  var bytes = new Uint8Array(binary.length);
+  for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+async function gzipUserFxShareText(text) {
+  if (typeof CompressionStream !== 'function') return null;
+  var stream = new Blob([String(text || '')]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function gunzipUserFxShareText(bytes) {
+  if (typeof DecompressionStream !== 'function') throw new Error('NO_DECOMPRESSION_STREAM');
+  var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return await new Response(stream).text();
+}
+function userFxShareBaselineSnapshot() {
+  var raw = null;
+  try {
+    raw = typeof clonePackagedDefaultFxSnapshot === 'function'
+      ? clonePackagedDefaultFxSnapshot()
+      : Object.assign({ visualPresetSchema: VISUAL_PRESET_SCHEMA }, fxDefaults || {});
+  } catch (e) {
+    raw = Object.assign({ visualPresetSchema: VISUAL_PRESET_SCHEMA }, fxDefaults || {});
+  }
+  return normalizeFxArchiveSnapshot(raw) || {};
+}
+function userFxShareValueEqual(a, b) {
+  if (typeof a === 'number' || typeof b === 'number') {
+    var na = Number(a);
+    var nb = Number(b);
+    return isFinite(na) && isFinite(nb) && Math.abs(na - nb) < 0.000001;
+  }
+  return a === b;
+}
+function compactUserFxArchiveSnapshot(snapshot) {
+  var data = normalizeFxArchiveSnapshot(snapshot);
+  if (!data) return null;
+  var full = USER_FX_SHARE_KEYS.map(function (key) { return data[key]; });
+  var base = userFxShareBaselineSnapshot();
+  var delta = [];
+  USER_FX_SHARE_KEYS.forEach(function (key, index) {
+    if (!userFxShareValueEqual(data[key], base[key])) delta.push(index, data[key]);
+  });
+  var compactDelta = [USER_FX_SHARE_COMPACT_DELTA, delta];
+  var compactFull = [USER_FX_SHARE_COMPACT_FULL, full];
+  return JSON.stringify(compactDelta).length <= JSON.stringify(compactFull).length ? compactDelta : compactFull;
+}
+function expandUserFxArchiveSnapshot(compact) {
+  if (!Array.isArray(compact)) return null;
+  var mode = typeof compact[0] === 'string' ? compact[0] : USER_FX_SHARE_COMPACT_FULL;
+  var values = typeof compact[0] === 'string' ? compact[1] : compact;
+  if (!Array.isArray(values)) return null;
+  var raw = mode === USER_FX_SHARE_COMPACT_DELTA ? userFxShareBaselineSnapshot() : {};
+  if (mode === USER_FX_SHARE_COMPACT_DELTA) {
+    for (var i = 0; i < values.length - 1; i += 2) {
+      var deltaIndex = Math.floor(Number(values[i]));
+      if (deltaIndex >= 0 && deltaIndex < USER_FX_SHARE_KEYS.length) raw[USER_FX_SHARE_KEYS[deltaIndex]] = values[i + 1];
+    }
+  } else {
+    USER_FX_SHARE_KEYS.forEach(function (key, index) {
+      if (index < values.length) raw[key] = values[index];
+    });
+  }
+  return normalizeFxArchiveSnapshot(raw);
+}
+async function encodeUserFxArchiveShareCode(slot) {
+  if (!slot || !slot.snapshot) throw new Error('EMPTY_ARCHIVE');
+  var compact = compactUserFxArchiveSnapshot(slot.snapshot);
+  if (!compact) throw new Error('INVALID_ARCHIVE');
+  var payload = [USER_FX_ARCHIVE_SCHEMA, compact];
+  var json = JSON.stringify(payload);
+  var rawBytes = new TextEncoder().encode(json);
+  var body = USER_FX_SHARE_CODEC_JSON + bytesToBase64Url(rawBytes);
+  try {
+    var zipped = await gzipUserFxShareText(json);
+    if (zipped) {
+      var zippedBody = USER_FX_SHARE_CODEC_GZIP + bytesToBase64Url(zipped);
+      if (zippedBody.length < body.length) body = zippedBody;
+    }
+  } catch (e) {
+  }
+  var version = String(USER_FX_SHARE_VERSION);
+  return USER_FX_SHARE_PREFIX + ':' + version + '.' + body + '.' + userFxShareChecksum(version + '.' + body);
+}
+function extractUserFxShareCode(text) {
+  text = String(text || '').trim();
+  var direct = text.replace(/\s+/g, '');
+  if (/^MR2:[0-9]+\.[A-Za-z][A-Za-z0-9_-]+\.[A-Za-z0-9]+$/.test(direct)) return direct;
+  var match = text.match(/MR2:[0-9]+\.[A-Za-z][A-Za-z0-9_-]+\.[A-Za-z0-9]+/);
+  return match ? match[0] : '';
+}
+function looksLikeUserFxShareCode(text) {
+  return !!extractUserFxShareCode(text);
+}
+async function decodeUserFxArchiveShareCode(text) {
+  var code = extractUserFxShareCode(text);
+  if (!code) throw new Error('INVALID_SHARE_CODE');
+  var parts = code.slice((USER_FX_SHARE_PREFIX + ':').length).split('.');
+  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) throw new Error('INVALID_SHARE_CODE');
+  var version = parts[0];
+  var body = parts[1];
+  var checksum = parts[2].toUpperCase();
+  if (version !== String(USER_FX_SHARE_VERSION)) throw new Error('UNSUPPORTED_SHARE_VERSION');
+  if (userFxShareChecksum(version + '.' + body) !== checksum) throw new Error('BAD_SHARE_CHECKSUM');
+  var codec = body.charAt(0);
+  var bytes = base64UrlToBytes(body.slice(1));
+  var json = '';
+  if (codec === USER_FX_SHARE_CODEC_GZIP) {
+    json = await gunzipUserFxShareText(bytes);
+  } else if (codec === USER_FX_SHARE_CODEC_JSON) {
+    json = new TextDecoder().decode(bytes);
+  } else {
+    throw new Error('UNSUPPORTED_SHARE_CODEC');
+  }
+  var payload = JSON.parse(json);
+  var archiveSchema = 0;
+  var archiveName = '';
+  var archiveSavedAt = Date.now();
+  var compactSnapshot = null;
+  if (Array.isArray(payload)) {
+    archiveSchema = Number(payload[0]);
+    if (Array.isArray(payload[1])) {
+      compactSnapshot = payload[1];
+    } else {
+      archiveName = payload[1];
+      compactSnapshot = payload[2];
+    }
+  } else if (payload && typeof payload === 'object') {
+    archiveSchema = Number(payload.s);
+    archiveName = payload.n;
+    archiveSavedAt = Number(payload.a) || Date.now();
+    compactSnapshot = payload.v;
+  }
+  if (!payload || archiveSchema !== USER_FX_ARCHIVE_SCHEMA) {
+    throw new Error('INVALID_SHARE_PAYLOAD');
+  }
+  var snapshot = expandUserFxArchiveSnapshot(compactSnapshot);
+  if (!snapshot) throw new Error('INVALID_SHARE_SNAPSHOT');
+  return {
+    name: normalizeUserFxArchiveName(archiveName || '短代码存档', userFxArchives.length),
+    createdAt: Date.now(),
+    savedAt: archiveSavedAt,
+    snapshot: snapshot
+  };
+}
+function addImportedUserFxArchiveSlot(slot, toastLabel) {
+  if (!slot || !slot.snapshot) return false;
+  userFxArchives.push(slot);
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast((toastLabel || '已导入 ') + slot.name);
+  return true;
+}
+function getArchiveClipboardApi() {
+  return typeof getDesktopWindowApi === 'function' ? getDesktopWindowApi() : null;
+}
+async function writeUserFxArchiveClipboard(text) {
+  var api = getArchiveClipboardApi();
+  if (api && typeof api.copyText === 'function') {
+    var res = await Promise.resolve(api.copyText(text));
+    if (!res || res.ok !== false) return true;
+  }
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    await navigator.clipboard.writeText(text);
+    return true;
+  }
+  var area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', 'readonly');
+  area.style.position = 'fixed';
+  area.style.left = '-9999px';
+  document.body.appendChild(area);
+  area.select();
+  var ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(area);
+  return ok;
+}
+async function readUserFxArchiveClipboard() {
+  var api = getArchiveClipboardApi();
+  if (api && typeof api.readText === 'function') {
+    var res = await Promise.resolve(api.readText());
+    if (res && res.ok !== false) return String(res.text || '');
+  }
+  if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+    return await navigator.clipboard.readText();
+  }
+  return '';
+}
+async function copyUserFxArchiveShareCode(index) {
+  var slot = userFxArchiveAt(index);
+  if (!slot || !slot.snapshot) {
+    showToast('空白存档不能复制短码');
+    return;
+  }
+  try {
+    var code = await encodeUserFxArchiveShareCode(slot);
+    var copied = await writeUserFxArchiveClipboard(code);
+    if (copied) {
+      showToast(code.length > 12000 ? '完整短码已复制，配置较长' : '用户存档短码已复制');
+    } else {
+      window.prompt('复制这段 MR2 短代码', code);
+      showToast('已打开完整短码');
+    }
+  } catch (e) {
+    showToast('短码生成失败');
+  }
+}
+async function importUserFxArchiveShareCodeText(text) {
+  try {
+    var slot = await decodeUserFxArchiveShareCode(text);
+    return addImportedUserFxArchiveSlot(slot, '已导入短码 ');
+  } catch (e) {
+    showToast(e && e.message === 'BAD_SHARE_CHECKSUM' ? '短码校验失败，未导入' : '短码无效，未导入');
+    return false;
+  }
+}
+function userFxArchiveShareInput() {
+  return document.getElementById('user-archive-share-input');
+}
+function updateUserFxArchiveShareDraft(value) {
+  userFxArchiveShareDraft = String(value || '');
+}
+function focusUserFxArchiveShareInput(selectAll) {
+  var input = userFxArchiveShareInput();
+  if (!input) return;
+  input.focus();
+  if (selectAll) input.select();
+}
+async function pasteUserFxArchiveShareCodeToBox() {
+  var text = '';
+  try {
+    text = await readUserFxArchiveClipboard();
+  } catch (e) {
+    text = '';
+  }
+  text = String(text || '').trim();
+  if (!text) {
+    showToast('剪贴板里没有可粘贴的存档码');
+    focusUserFxArchiveShareInput(false);
+    return false;
+  }
+  userFxArchiveShareDraft = text;
+  var input = userFxArchiveShareInput();
+  if (input) {
+    input.value = userFxArchiveShareDraft;
+    input.focus();
+  }
+  showToast(looksLikeUserFxShareCode(text) ? '短码已粘到输入框' : '已粘到输入框，可尝试作为旧 JSON 导入');
+  return true;
+}
+async function importUserFxArchiveShareCodeFromBox() {
+  var input = userFxArchiveShareInput();
+  var text = input ? input.value : userFxArchiveShareDraft;
+  userFxArchiveShareDraft = String(text || '');
+  if (!userFxArchiveShareDraft.trim()) {
+    showToast('先把 MR2 短码粘到输入框');
+    focusUserFxArchiveShareInput(false);
+    return false;
+  }
+  var ok = await importUserFxArchiveText(userFxArchiveShareDraft, '短代码');
+  if (ok) {
+    userFxArchiveShareDraft = '';
+    renderUserFxArchives();
+  }
+  return ok;
+}
+function clearUserFxArchiveShareCodeBox() {
+  userFxArchiveShareDraft = '';
+  var input = userFxArchiveShareInput();
+  if (input) {
+    input.value = '';
+    input.focus();
+  }
+}
+function handleUserFxArchiveShareInputKey(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    importUserFxArchiveShareCodeFromBox();
+  }
+}
+async function importUserFxArchiveFromShareCodePrompt() {
+  return pasteUserFxArchiveShareCodeToBox();
+}
+function renderUserFxArchives() {
+  var grid = document.getElementById('user-archive-grid');
+  if (!grid) return;
+  var toolbar =
+    '<div class="user-archive-toolbar">' +
+    '<div class="user-archive-note">主入口使用 MR2 短代码复制/粘贴；旧 JSON 仍可拖拽或作为兼容备份导入。</div>' +
+    '<div class="user-archive-tools">' +
+    '<button class="fx-mini-btn ghost" type="button" onclick="createUserFxArchive()">新建</button>' +
+    '<button class="fx-mini-btn ghost" type="button" onclick="importUserFxArchiveFromShareCodePrompt()">粘贴码</button>' +
+    '<button class="fx-mini-btn ghost" type="button" onclick="importUserFxArchiveFromDialog()">导入 JSON</button>' +
+    '</div>' +
+    '</div>';
+  var shareBox =
+    '<div class="user-archive-share-panel">' +
+    '<textarea id="user-archive-share-input" class="user-archive-share-input" spellcheck="false" placeholder="把 MR2 短代码粘到这里，也兼容旧 JSON 存档" oninput="updateUserFxArchiveShareDraft(this.value)" onkeydown="handleUserFxArchiveShareInputKey(event)">' + escHtml(userFxArchiveShareDraft) + '</textarea>' +
+    '<div class="user-archive-share-actions">' +
+    '<button type="button" onclick="pasteUserFxArchiveShareCodeToBox()">从剪贴板粘贴</button>' +
+    '<button type="button" onclick="importUserFxArchiveShareCodeFromBox()">导入短码</button>' +
+    '<button type="button" onclick="clearUserFxArchiveShareCodeBox()">清空</button>' +
+    '</div>' +
+    '</div>';
+  var cards = userFxArchives.map(function (slot, index) {
+    var hasSave = !!slot.snapshot;
+    var editing = userFxArchiveEditing === index;
+    var nameHtml = editing
+      ? '<input class="user-archive-input" id="user-archive-input-' + index + '" type="text" maxlength="28" value="' + escHtml(slot.name) + '" onkeydown="handleUserFxArchiveRenameKey(event,' + index + ')">'
+      : '<div class="user-archive-name" title="' + escHtml(slot.name) + '">' + escHtml(slot.name) + '</div>';
+    var actionsHtml = editing
+      ? '<button type="button" onclick="commitUserFxArchiveRename(' + index + ')">确定</button>' +
+      '<button type="button" onclick="cancelUserFxArchiveRename()">取消</button>'
+      : '<button type="button" onclick="applyUserFxArchive(' + index + ')"' + (hasSave ? '' : ' disabled') + '>应用</button>' +
+      '<button type="button" onclick="saveUserFxArchive(' + index + ')">保存</button>' +
+      '<button type="button" onclick="copyUserFxArchiveShareCode(' + index + ')"' + (hasSave ? '' : ' disabled') + '>复制码</button>' +
+      '<button type="button" onclick="renameUserFxArchive(' + index + ')">命名</button>' +
+      '<button type="button" onclick="exportUserFxArchive(' + index + ')"' + (hasSave ? '' : ' disabled') + '>文件</button>' +
+      '<button type="button" onclick="removeUserFxArchive(' + index + ')">删除</button>';
+    return '<div class="user-archive-slot' + (hasSave ? ' has-save' : '') + '" data-slot="' + index + '">' +
+      nameHtml +
+      '<div class="user-archive-meta">' + (hasSave ? formatUserArchiveTime(slot.savedAt) : '空白存档，点击保存写入当前视觉') + '</div>' +
+      '<div class="user-archive-actions">' + actionsHtml + '</div>' +
+      '</div>';
+  }).join('');
+  var addCard = '<button class="user-archive-slot is-new" type="button" onclick="createUserFxArchive()"><strong>＋ 新建空白存档</strong><span class="user-archive-meta">可继续创建，不限制 4 个</span></button>';
+  grid.innerHTML = toolbar + shareBox + cards + addCard;
+  bindUserFxArchiveDrop();
+  if (userFxArchiveEditing >= 0) {
+    setTimeout(function () {
+      var input = document.getElementById('user-archive-input-' + userFxArchiveEditing);
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    }, 0);
+  }
+}
+function createUserFxArchive() {
+  var index = userFxArchives.length;
+  userFxArchives.push({
+    name: normalizeUserFxArchiveName('', index),
+    createdAt: Date.now(),
+    savedAt: 0,
+    snapshot: null
+  });
+  userFxArchiveEditing = index;
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast('已新建空白用户存档');
+}
+function saveUserFxArchive(index) {
+  var slot = userFxArchiveAt(index);
+  if (!slot) return;
+  slot.snapshot = captureFxArchiveSnapshot();
+  slot.savedAt = Date.now();
+  slot.createdAt = slot.createdAt || slot.savedAt;
+  slot.name = normalizeUserFxArchiveName(slot.name, index);
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast('已保存到 ' + slot.name);
+}
+function applyUserFxArchive(index) {
+  var slot = userFxArchiveAt(index);
+  if (!slot || !slot.snapshot) {
+    showToast('这个用户存档还是空白');
+    return;
+  }
+  if (applyFxArchiveSnapshot(slot.snapshot)) showToast('已应用 ' + slot.name);
+}
+function renameUserFxArchive(index) {
+  if (!userFxArchiveAt(index)) return;
+  userFxArchiveEditing = Math.floor(Number(index) || 0);
+  renderUserFxArchives();
+}
+function commitUserFxArchiveRename(index) {
+  var slot = userFxArchiveAt(index);
+  if (!slot) return;
+  var input = document.getElementById('user-archive-input-' + index);
+  slot.name = normalizeUserFxArchiveName(input && input.value, index);
+  slot.createdAt = slot.createdAt || Date.now();
+  userFxArchiveEditing = -1;
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast('已命名为 ' + slot.name);
+}
+function cancelUserFxArchiveRename() {
+  userFxArchiveEditing = -1;
+  renderUserFxArchives();
+}
+function removeUserFxArchive(index) {
+  if (!userFxArchiveAt(index)) return;
+  userFxArchives.splice(index, 1);
+  userFxArchiveEditing = -1;
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast('已删除用户存档');
+}
+function userFxArchiveExportPayload(slot) {
+  return {
+    type: USER_FX_ARCHIVE_EXPORT_TYPE,
+    schema: USER_FX_ARCHIVE_SCHEMA,
+    exportedAt: Date.now(),
+    name: slot.name,
+    savedAt: slot.savedAt,
+    snapshot: slot.snapshot
+  };
+}
+function safeArchiveFileName(name) {
+  return String(name || 'Mineradio 用户存档').replace(/[\\/:*?"<>|]+/g, '-').slice(0, 48) + '.json';
+}
+function exportUserFxArchive(index) {
+  var slot = userFxArchiveAt(index);
+  if (!slot || !slot.snapshot) {
+    showToast('空白存档不能导出');
+    return;
+  }
+  var payload = userFxArchiveExportPayload(slot);
+  var text = JSON.stringify(payload, null, 2);
+  var api = getDesktopWindowApi && getDesktopWindowApi();
+  if (api && typeof api.exportJsonFile === 'function') {
+    api.exportJsonFile({ defaultName: safeArchiveFileName(slot.name), text: text }).then(function (res) {
+      if (res && res.ok) showToast('用户存档已导出');
+      else if (!res || !res.canceled) showToast('用户存档导出失败');
+    }).catch(function () { showToast('用户存档导出失败'); });
+    return;
+  }
+  var blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = safeArchiveFileName(slot.name);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+}
+function normalizeImportedFxArchivePayload(payload, fileName) {
+  if (!payload || typeof payload !== 'object') return null;
+  var snapshot = payload.snapshot ? normalizeFxArchiveSnapshot(payload.snapshot) : normalizeFxArchiveSnapshot(payload);
+  if (!snapshot) return null;
+  var baseName = String(fileName || '').split(/[\\/]/).pop().replace(/\.json$/i, '');
+  return {
+    name: normalizeUserFxArchiveName(payload.name || baseName, userFxArchives.length),
+    createdAt: Date.now(),
+    savedAt: Number(payload.savedAt) || Date.now(),
+    snapshot: snapshot
+  };
+}
+async function importUserFxArchiveText(text, fileName) {
+  if (looksLikeUserFxShareCode(text)) return importUserFxArchiveShareCodeText(text);
+  var payload = null;
+  try { payload = JSON.parse(String(text || '')); } catch (e) { }
+  var slot = normalizeImportedFxArchivePayload(payload, fileName);
+  if (!slot) {
+    showToast('导入失败，文件不是有效的用户存档');
+    return false;
+  }
+  return addImportedUserFxArchiveSlot(slot, '已导入 ');
+}
+function importUserFxArchiveFromDialog() {
+  var api = getDesktopWindowApi && getDesktopWindowApi();
+  if (api && typeof api.importJsonFile === 'function') {
+    api.importJsonFile().then(function (res) {
+      if (res && res.ok) importUserFxArchiveText(res.text, res.filePath || '用户存档.json');
+      else if (!res || !res.canceled) showToast('导入失败');
+    }).catch(function () { showToast('导入失败'); });
+    return;
+  }
+  var input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.onchange = function () {
+    var file = input.files && input.files[0];
+    if (file) readUserFxArchiveImportFile(file);
+  };
+  input.click();
+}
+function readUserFxArchiveImportFile(file) {
+  if (!file || !/\.json$/i.test(file.name || '')) {
+    showToast('请导入 JSON 用户存档');
+    return;
+  }
+  var reader = new FileReader();
+  reader.onload = function (e) { importUserFxArchiveText(e.target && e.target.result, file.name); };
+  reader.onerror = function () { showToast('导入失败'); };
+  reader.readAsText(file, 'utf-8');
+}
+function bindUserFxArchiveDrop() {
+  var grid = document.getElementById('user-archive-grid');
+  if (!grid || grid._archiveDropBound) return;
+  grid._archiveDropBound = true;
+  grid.addEventListener('dragover', function (e) {
+    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    grid.classList.add('dragover');
+  });
+  grid.addEventListener('dragleave', function (e) {
+    if (!grid.contains(e.relatedTarget)) grid.classList.remove('dragover');
+  });
+  grid.addEventListener('drop', function (e) {
+    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    grid.classList.remove('dragover');
+    Array.prototype.forEach.call(e.dataTransfer.files, readUserFxArchiveImportFile);
+  });
+}
+;
+
+// ==================== 07-fx/00-preset-archive-data.js ====================
+// ============================================================
+var presetMeta = [
+  { name: 'emily专辑封面', desc: '封面粒子 · 快速入场' },
+  { name: '滚筒', desc: '隧道 · 沉浸感' },
+  { name: '星球', desc: '星球 · 雕塑感' },
+  { name: '虚空', desc: '无粒子 · 自定义背景' },
+  { name: '唱片', desc: '唱片 · 圆形封面' },
+  { name: '星河', desc: '壁纸粒子 · 音乐律动' },
+  { name: '安魂', desc: '骷髅·YUI7W', descHtml: '骷髅·<span class="pc-yui7w">YUI7W</span>' },
+  { name: '音域回响', nameHtml: '音域回响 <span class="pc-name-en">Sonic-Topography</span>', desc: '作者 Ajin', descHtml: '作者 <span class="pc-author-ajin">Ajin</span>' },
+  { name: '音域回响', nameHtml: '音域回响 <span class="pc-name-en">Wallpaper Engine</span>', desc: '作者 CmzYa' },
+  { name: '月蚀圣环', nameHtml: '月蚀圣环 <span class="pc-name-en">ECLIPSE HALO</span>', desc: '黑曜轨道 · 冷金日冕', premiumVisual: true, accent: '#e8c98d', accent2: '#8fd8ff' },
+  { name: '雨幕霓虹', nameHtml: '雨幕霓虹 <span class="pc-name-en">NEON DRIZZLE</span>', desc: '城市雨丝 · 色谱残光', premiumVisual: true, accent: '#67efff', accent2: '#ff6bb5' },
+  { name: '折光蝶群', nameHtml: '折光蝶群 <span class="pc-name-en">PRISM FLOCK</span>', desc: '折纸翼阵 · 光谱迁徙', premiumVisual: true, accent: '#f0d7ff', accent2: '#75e6d1' },
+  { name: '深海绽放', nameHtml: '深海绽放 <span class="pc-name-en">ABYSSAL BLOOM</span>', desc: '生物荧光 · 潮汐花冠', premiumVisual: true, accent: '#75f0d0', accent2: '#8178ff' },
+];
+var presetIcons = [
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 14c3-2 5-2 8 0s5 2 8 0M3 10c3-2 5-2 8 0s5 2 8 0M3 18c3-2 5-2 8 0s5 2 8 0"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/><path d="M5 12a7 7 0 0 0 14 0"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7"/><path d="M8.8 8.8l6.4 6.4"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.4"/><path d="M16.5 5.2c2.1.9 3.4 2.4 4 4.5"/><path d="M18.8 3.2l1.5 4.8"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 15c2.2-4.4 4.4-4.4 6.6 0s4.4 4.4 6.6 0S20.6 10.6 23 15"/><path d="M3 9c2.2 2.2 4.4 2.2 6.6 0s4.4-2.2 6.6 0S20.6 11.2 23 9"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.2h4v6.2h4.2v3.8H14v7.6h-4v-7.6H5.8V9.4H10z"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18c2-3 4-3 6 0s4 3 6 0 4-3 6 0"/><path d="M3 12c2-2.5 4-2.5 6 0s4 2.5 6 0 4-2.5 6 0"/><path d="M3 6c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/><circle cx="18" cy="5" r="1.2" fill="currentColor"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18h18"/><path d="M5 15c1.4-4 2.8-4 4.2 0s2.8 4 4.2 0 2.8-4 4.6 0"/><path d="M4 10c2-2 4-2 6 0s4 2 6 0 3-2 4 0"/><path d="M7 6h10"/><circle cx="18.2" cy="5.8" r="1.35" fill="currentColor"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.45"><ellipse cx="12" cy="12" rx="9" ry="3.8" transform="rotate(-18 12 12)"/><ellipse cx="12" cy="12" rx="6.3" ry="2.2" transform="rotate(24 12 12)"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"><path d="M5 3v8M9 2v15M13 5v8M17 2v18M21 6v9"/><path d="M4 19c4-3 8 3 16-1" opacity=".7"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"><path d="M12 12 3 6l3 9 6-3 6 3 3-9-9 6Z"/><path d="M12 12V4M6 15l3 4 3-7 3 7 3-4"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"><path d="M12 20c-1-5-7-5-7-10 4 0 6 2 7 5 1-3 3-5 7-5 0 5-6 5-7 10Z"/><path d="M12 15c-3-3-2-7 0-11 2 4 3 8 0 11Z"/><circle cx="12" cy="15" r="1.2" fill="currentColor" stroke="none"/></svg>',
+];
+var presetDisplayOrder = [0, 9, 10, 11, 12, 6, 7, 8, 5, 4, 2, 1, 3];
+var lyricColorPresets = [
+  { name: '雾蓝', color: '#a9b8c8' },
+  { name: '银蓝', color: '#9db8cf' },
+  { name: '冰川', color: '#7ec8d8' },
+  { name: '青绿', color: '#66d2b5' },
+  { name: '松针', color: '#7fa894' },
+  { name: '月白', color: '#d7d2c4' },
+  { name: '岩金', color: '#c3ae7c' },
+  { name: '琥珀', color: '#d9a45f' },
+  { name: '暮粉', color: '#c78aa4' },
+  { name: '玫红', color: '#d76a8d' },
+  { name: '烟紫', color: '#9b83d3' },
+  { name: '电紫', color: '#8d70ff' },
+  { name: '靛蓝', color: '#5e78d8' },
+  { name: '海蓝', color: '#3c9fe0' },
+  { name: '霓青', color: '#28c5c3' },
+  { name: '夜绿', color: '#245c49' },
+  { name: '酒红', color: '#6d1f35' },
+  { name: '墨黑', color: '#111318' },
+];
+var USER_FX_ARCHIVE_STORE_KEY = 'mineradio-user-fx-archives-v1';
+var USER_FX_ARCHIVE_EXPORT_TYPE = 'mineradio-user-fx-archive';
+var USER_FX_ARCHIVE_SCHEMA = 1;
+var USER_FX_SHARE_PREFIX = 'MR2';
+var USER_FX_SHARE_VERSION = 1;
+var USER_FX_SHARE_PAYLOAD_TYPE = 'ufa';
+var USER_FX_SHARE_CODEC_GZIP = 'G';
+var USER_FX_SHARE_CODEC_JSON = 'J';
+var USER_FX_SHARE_COMPACT_DELTA = 'd';
+var USER_FX_SHARE_COMPACT_FULL = 'f';
+var USER_FX_SHARE_KEYS = [
+  'visualPresetSchema',
+  'preset',
+  'intensity',
+  'cinemaShake',
+  'depth',
+  'coverResolution',
+  'point',
+  'speed',
+  'twist',
+  'color',
+  'scatter',
+  'bgFade',
+  'bloomStrength',
+  'lyricGlowStrength',
+  'lyricBackgroundAdapt',
+  'lyricScale',
+  'lyricOffsetX',
+  'lyricOffsetY',
+  'lyricOffsetZ',
+  'lyricTiltX',
+  'lyricTiltY',
+  'lyricCameraLock',
+  'lyricColorMode',
+  'lyricColor',
+  'lyricHighlightMode',
+  'lyricHighlightColor',
+  'lyricGlowLinked',
+  'lyricGlowColor',
+  'lyricDisplayMode',
+  'lyricTranslationMode',
+  'lyricMotionStyle',
+  'lyricCustomLineCount',
+  'lyricGlitchCameraBind',
+  'lyricGlitchIntensity',
+  'lyricGlitchSlice',
+  'lyricGlitchChroma',
+  'lyricGlitchRate',
+  'lyricGlitchJitter',
+  'lyricContextOpacity',
+  'lyricContextSpread',
+  'lyricTranslationGap',
+  'lyricTranslationScale',
+  'lyricTranslationOpacity',
+  'lyricEdgeFade',
+  'lyricMotionSoftness',
+  'lyricFont',
+  'lyricLetterSpacing',
+  'lyricLineHeight',
+  'lyricWeight',
+  'visualTintMode',
+  'visualTintColor',
+  'uiAccentColor',
+  'homeAccentColor',
+  'homeIconColor',
+  'visualIconColor',
+  'backgroundColorMode',
+  'backgroundColor',
+  'backgroundOpacity',
+  'backgroundAlbumCover',
+  'backgroundMediaCropX',
+  'backgroundMediaCropY',
+  'backgroundMediaZoom',
+  'controlGlassChromaticOffset',
+  'playlistPanelGlassBlur',
+  'playlistPanelGlassDensity',
+  'playlistPanelOpenDuration',
+  'playlistPanelCloseDuration',
+  'backgroundColorCustom',
+  'floatLayer',
+  'cinema',
+  'edge',
+  'aiDepth',
+  'bloom',
+  'lyricGlow',
+  'lyricGlowBeat',
+  'lyricGlowParticles',
+  'lyricVerticalFloat',
+  'lyricPauseHold',
+  'desktopLyrics',
+  'desktopLyricsSize',
+  'desktopLyricsOpacity',
+  'desktopLyricsY',
+  'desktopLyricsClickThrough',
+  'desktopLyricsCinema',
+  'desktopLyricsHighlight',
+  'desktopLyricsFps',
+  'performanceBackground',
+  'performanceQuality',
+  'foregroundFpsMode',
+  'memoryAutoTrimApp',
+  'memoryAutoTrimOnBackground',
+  'memoryAutoSystemTrim',
+  'memorySystemAutoElevate',
+  'memorySystemIntervalMin',
+  'memorySystemThresholdPercent',
+  'memorySystemMask',
+  'memorySafetyRevision',
+  'liveBackgroundKeep',
+  'sonicGroundAmplitude',
+  'sonicGroundMotionSpeed',
+  'sonicGroundDensity',
+  'sonicGroundRange',
+  'sonicGroundLower',
+  'sonicGroundDepth',
+  'sonicGroundAutoRotate',
+  'sonicGroundColorMode',
+  'sonicGroundBaseColor',
+  'sonicGroundCoolColor',
+  'sonicGroundWarmColor',
+  'sonicGroundAccentColor',
+  'sonicGroundGlow',
+  'sonicGroundSubBass',
+  'sonicGroundBass',
+  'sonicGroundLowMid',
+  'sonicGroundMid',
+  'sonicGroundHighMid',
+  'sonicGroundPresence',
+  'sonicGroundBrilliance',
+  'sonicGroundAir',
+  'sonicGroundFloatingEnabled',
+  'sonicGroundFloatingIntensity',
+  'sonicGroundFloatingMinSize',
+  'sonicGroundFloatingMaxSize',
+  'sonicGroundFloatingSpeed',
+  'sonicGroundFloatingCount',
+  'sonicAudioMonitorEnabled',
+  'sonicAudioAutoTrack',
+  'sonicAudioSensitivity',
+  'sonicAudioBandStart',
+  'sonicAudioBandEnd',
+  'sonicAudioThreshold',
+  'sonicAudioPulseStrength',
+  'sonicWorkshopInputGain',
+  'sonicWorkshopAudioIntensity',
+  'sonicWorkshopResponseRange',
+  'sonicWorkshopPeakIntensity',
+  'sonicWorkshopColorMode',
+  'sonicWorkshopTheme',
+  'sonicWorkshopCustomColor',
+  'sonicWorkshopBaseColorMode',
+  'sonicWorkshopBaseColor',
+  'sonicWorkshopWarmColorMode',
+  'sonicWorkshopWarmColor',
+  'sonicWorkshopCoolColorMode',
+  'sonicWorkshopCoolColor',
+  'sonicWorkshopRippleColorMode',
+  'sonicWorkshopRippleColor',
+  'sonicWorkshopPeakColorMode',
+  'sonicWorkshopPeakColor',
+  'particleLyrics',
+  'backCover',
+  'shelf',
+  'shelfPinnedOpen',
+  'shelfCameraMode',
+  'shelfPresence',
+  'shelfShowPodcasts',
+  'shelfMergeCollections',
+  'shelfSize',
+  'shelfOffsetX',
+  'shelfOffsetY',
+  'shelfOffsetZ',
+  'shelfAngleY',
+  'shelfAngleYManual',
+  'shelfOpacity',
+  'shelfBgOpacity',
+  'shelfAccentColor',
+  'shelfDetailOffsetX',
+  'shelfDetailOffsetY',
+  'shelfDetailOffsetZ',
+  'shelfDetailScale',
+  'shelfDetailAngleX',
+  'shelfDetailAngleY',
+  'shelfDetailRowGap',
+  'shelfDetailOpenDuration',
+  'shelfDetailCloseDuration',
+  'shelfDetailRowDuration',
+  'shelfDetailIntroStrength',
+  'shelfDetailParallax',
+  'shelfSummonOpenDuration',
+  'shelfSummonCloseDuration',
+  'shelfSummonSlide',
+  'shelfSummonStagger',
+  'shelfSummonScale',
+  'shelfSummonParallax',
+  'shelfCameraEnterSpeed',
+  'shelfCameraExitSpeed',
+  'cam',
+  'cameraViewSaved',
+  'cameraViewMode',
+  'cameraOrbitTheta',
+  'cameraOrbitPhi',
+  'cameraOrbitRadius',
+  'cameraFreePositionX',
+  'cameraFreePositionY',
+  'cameraFreePositionZ',
+  'cameraFreeYaw',
+  'cameraFreePitch',
+  'cameraFreeRoll',
+  'cameraFreeFov',
+  'visualRotationSaved',
+  'visualRotationX',
+  'visualRotationY',
+  'windowBackgroundOpacity',
+  'backgroundGlassOpacity',
+  'backgroundStarRiver',
+  'lyricTextureClarity',
+  // Append-only: preserve every existing MR2 field index.
+  'lyricLiveViewportFit',
+  'lyricContextHighQuality',
+  'lyricBackdropAdapt',
+  'coverBackdropAdapt',
+  'gesturePlayerActions',
+  'gestureHandOverlay',
+  'gestureSensitivity'
+];
+function defaultUserFxArchiveName(index) {
+  return '存档 ' + (index + 1);
+}
+function normalizeUserFxArchiveName(name, index) {
+  name = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!name) name = defaultUserFxArchiveName(index);
+  return name.slice(0, 18);
+}
+function archiveNumber(raw, key, fallback, min, max) {
+  var value = raw && raw[key] != null ? Number(raw[key]) : fallback;
+  if (!isFinite(value)) value = fallback;
+  return clampRange(value, min, max);
+}
+function archiveMode(raw, key, pattern, fallback) {
+  var value = String(raw && raw[key] != null ? raw[key] : fallback);
+  return pattern.test(value) ? value : fallback;
+}
+function archiveHasCameraState(raw) {
+  if (!raw || typeof raw !== 'object') return false;
+  if (raw.cameraViewSaved === true) return true;
+  var keys = [
+    'cameraViewMode',
+    'cameraOrbitTheta',
+    'cameraOrbitPhi',
+    'cameraOrbitRadius',
+    'cameraFreePositionX',
+    'cameraFreePositionY',
+    'cameraFreePositionZ',
+    'cameraFreeYaw',
+    'cameraFreePitch',
+    'cameraFreeRoll',
+    'cameraFreeFov'
+  ];
+  return keys.some(function (key) { return raw[key] != null; });
+}
+function archiveHasVisualRotationState(raw) {
+  if (!raw || typeof raw !== 'object') return false;
+  return raw.visualRotationSaved === true || raw.visualRotationX != null || raw.visualRotationY != null;
+}
+function isCameraArchiveKey(key) {
+  return /^camera(View|Orbit|Free)/.test(String(key || '')) || /^visualRotation/.test(String(key || ''));
+}
+function normalizeFxArchiveSnapshot(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  var savedPreset = clampRange(Number(raw.preset) || 0, 0, presetMeta.length - 1);
+  if (savedPreset === 3 && raw.visualPresetSchema !== VISUAL_PRESET_SCHEMA) savedPreset = 5;
+  var archiveShelfMode = archiveMode(raw, 'shelf', /^(off|side|stage)$/, fxDefaults.shelf);
+  var archiveShelfPresence = archiveShelfMode === 'off' ? 'auto' : archiveMode(raw, 'shelfPresence', /^(auto|always)$/, fxDefaults.shelfPresence);
+  var archiveShelfPinnedOpen = archiveShelfMode === 'side' && archiveShelfPresence === 'always' && raw.shelfPinnedOpen === true;
+  var archiveCameraSaved = archiveHasCameraState(raw);
+  var archiveVisualRotationSaved = archiveHasVisualRotationState(raw);
+  return {
+    visualPresetSchema: VISUAL_PRESET_SCHEMA,
+    preset: savedPreset,
+    intensity: archiveNumber(raw, 'intensity', fxDefaults.intensity, 0.2, 1.6),
+    cinemaShake: archiveNumber(raw, 'cinemaShake', fxDefaults.cinemaShake, 0, 1.8),
+    depth: archiveNumber(raw, 'depth', fxDefaults.depth, 0.2, 1.8),
+    coverResolution: normalizeCoverResolution(raw.coverResolution),
+    point: archiveNumber(raw, 'point', fxDefaults.point, 0.5, 2.2),
+    speed: archiveNumber(raw, 'speed', fxDefaults.speed, 0.2, 2.5),
+    twist: archiveNumber(raw, 'twist', fxDefaults.twist, 0, 0.6),
+    color: archiveNumber(raw, 'color', fxDefaults.color, 0.5, 2.0),
+    scatter: archiveNumber(raw, 'scatter', fxDefaults.scatter, 0, 0.5),
+    bgFade: archiveNumber(raw, 'bgFade', fxDefaults.bgFade, 0, 1.2),
+    bloomStrength: archiveNumber(raw, 'bloomStrength', fxDefaults.bloomStrength, 0, 1.6),
+    lyricGlowStrength: archiveNumber(raw, 'lyricGlowStrength', fxDefaults.lyricGlowStrength, 0, 0.85),
+    lyricBackgroundAdapt: archiveNumber(raw, 'lyricBackgroundAdapt', fxDefaults.lyricBackgroundAdapt, 0, 1),
+    lyricScale: archiveNumber(raw, 'lyricScale', fxDefaults.lyricScale, 0.35, 1.65),
+    lyricOffsetX: archiveNumber(raw, 'lyricOffsetX', fxDefaults.lyricOffsetX, -4.0, 4.0),
+    lyricOffsetY: archiveNumber(raw, 'lyricOffsetY', fxDefaults.lyricOffsetY, -2.4, 2.7),
+    lyricOffsetZ: archiveNumber(raw, 'lyricOffsetZ', fxDefaults.lyricOffsetZ, -3.2, 3.2),
+    lyricTiltX: archiveNumber(raw, 'lyricTiltX', fxDefaults.lyricTiltX, -84, 84),
+    lyricTiltY: archiveNumber(raw, 'lyricTiltY', fxDefaults.lyricTiltY, -84, 84),
+    lyricCameraLock: !!raw.lyricCameraLock,
+    lyricColorMode: raw.lyricColorMode === 'custom' ? 'custom' : 'auto',
+    lyricColor: normalizeHexColor(raw.lyricColor || fxDefaults.lyricColor),
+    lyricHighlightMode: raw.lyricHighlightMode === 'custom' ? 'custom' : 'auto',
+    lyricHighlightColor: normalizeHexColor(raw.lyricHighlightColor || fxDefaults.lyricHighlightColor),
+    lyricGlowLinked: raw.lyricGlowLinked !== false,
+    lyricGlowColor: normalizeHexColor(raw.lyricGlowColor || fxDefaults.lyricGlowColor),
+    lyricDisplayMode: normalizeLyricDisplayMode(raw.lyricDisplayMode || fxDefaults.lyricDisplayMode),
+    lyricTranslationMode: normalizeLyricTranslationMode(raw.lyricTranslationMode || fxDefaults.lyricTranslationMode),
+    lyricMotionStyle: normalizeLyricMotionStyle(raw.lyricMotionStyle || fxDefaults.lyricMotionStyle),
+    lyricCustomLineCount: archiveNumber(raw, 'lyricCustomLineCount', fxDefaults.lyricCustomLineCount, 1, 10),
+    lyricGlitchCameraBind: !!raw.lyricGlitchCameraBind,
+    lyricGlitchIntensity: archiveNumber(raw, 'lyricGlitchIntensity', fxDefaults.lyricGlitchIntensity, 0, 1.5),
+    lyricGlitchSlice: archiveNumber(raw, 'lyricGlitchSlice', fxDefaults.lyricGlitchSlice, 0, 1.4),
+    lyricGlitchChroma: archiveNumber(raw, 'lyricGlitchChroma', fxDefaults.lyricGlitchChroma, 0, 1.6),
+    lyricGlitchRate: archiveNumber(raw, 'lyricGlitchRate', fxDefaults.lyricGlitchRate, 0.45, 2.2),
+    lyricGlitchJitter: archiveNumber(raw, 'lyricGlitchJitter', fxDefaults.lyricGlitchJitter, 0, 1.8),
+    lyricContextOpacity: archiveNumber(raw, 'lyricContextOpacity', fxDefaults.lyricContextOpacity, 0.25, 1),
+    lyricContextSpread: archiveNumber(raw, 'lyricContextSpread', fxDefaults.lyricContextSpread, 0.60, 2.40),
+    lyricTranslationGap: archiveNumber(raw, 'lyricTranslationGap', fxDefaults.lyricTranslationGap, 0.28, 2.20),
+    lyricTranslationScale: archiveNumber(raw, 'lyricTranslationScale', fxDefaults.lyricTranslationScale, 0.46, 1.12),
+    lyricTranslationOpacity: archiveNumber(raw, 'lyricTranslationOpacity', fxDefaults.lyricTranslationOpacity, 0.20, 1),
+    lyricEdgeFade: archiveNumber(raw, 'lyricEdgeFade', fxDefaults.lyricEdgeFade, 0, 1),
+    lyricMotionSoftness: archiveNumber(raw, 'lyricMotionSoftness', fxDefaults.lyricMotionSoftness, 0.15, 1.2),
+    lyricFont: normalizeLyricFontKey(raw.lyricFont),
+    lyricLetterSpacing: archiveNumber(raw, 'lyricLetterSpacing', fxDefaults.lyricLetterSpacing, -0.04, 0.18),
+    lyricLineHeight: archiveNumber(raw, 'lyricLineHeight', fxDefaults.lyricLineHeight, 0.72, 1.80),
+    lyricWeight: archiveNumber(raw, 'lyricWeight', fxDefaults.lyricWeight, 500, 900),
+    lyricTextureClarity: normalizeLyricTextureClarity(raw.lyricTextureClarity),
+    lyricLiveViewportFit: raw.lyricLiveViewportFit !== false,
+    lyricContextHighQuality: raw.lyricContextHighQuality !== false,
+    lyricBackdropAdapt: raw.lyricBackdropAdapt !== false,
+    coverBackdropAdapt: raw.coverBackdropAdapt !== false,
+    visualTintMode: raw.visualTintMode === 'custom' ? 'custom' : 'auto',
+    visualTintColor: normalizeHexColor(raw.visualTintColor || fxDefaults.visualTintColor),
+    uiAccentColor: normalizeHexColor(raw.uiAccentColor || fxDefaults.uiAccentColor, fxDefaults.uiAccentColor),
+    homeAccentColor: normalizeHexColor(raw.homeAccentColor || fxDefaults.homeAccentColor, fxDefaults.homeAccentColor),
+    homeIconColor: normalizeHexColor(raw.homeIconColor || fxDefaults.homeIconColor, fxDefaults.homeIconColor),
+    visualIconColor: normalizeHexColor(raw.visualIconColor || fxDefaults.visualIconColor, fxDefaults.visualIconColor),
+    backgroundColorMode: raw.backgroundColorMode === 'custom' || raw.backgroundColorCustom ? 'custom' : 'cover',
+    backgroundColor: normalizeHexColor(raw.backgroundColor || fxDefaults.backgroundColor, fxDefaults.backgroundColor),
+    backgroundOpacity: archiveNumber(raw, 'backgroundOpacity', fxDefaults.backgroundOpacity, 0, 1),
+    backgroundAlbumCover: raw.backgroundAlbumCover === true,
+    backgroundMediaCropX: archiveNumber(raw, 'backgroundMediaCropX', fxDefaults.backgroundMediaCropX, 0, 100),
+    backgroundMediaCropY: archiveNumber(raw, 'backgroundMediaCropY', fxDefaults.backgroundMediaCropY, 0, 100),
+    backgroundMediaZoom: archiveNumber(raw, 'backgroundMediaZoom', fxDefaults.backgroundMediaZoom, 1, 2.8),
+    windowBackgroundOpacity: archiveNumber(raw, 'windowBackgroundOpacity', fxDefaults.windowBackgroundOpacity, 0, 1),
+    backgroundGlassOpacity: archiveNumber(raw, 'backgroundGlassOpacity', fxDefaults.backgroundGlassOpacity, 0, 1),
+    controlGlassChromaticOffset: archiveNumber(raw, 'controlGlassChromaticOffset', fxDefaults.controlGlassChromaticOffset, 30, 140),
+    playlistPanelGlassBlur: archiveNumber(raw, 'playlistPanelGlassBlur', fxDefaults.playlistPanelGlassBlur, 14, 60),
+    playlistPanelGlassDensity: archiveNumber(raw, 'playlistPanelGlassDensity', fxDefaults.playlistPanelGlassDensity, 0.55, 1),
+    playlistPanelOpenDuration: archiveNumber(raw, 'playlistPanelOpenDuration', fxDefaults.playlistPanelOpenDuration, 0.08, 0.72),
+    playlistPanelCloseDuration: archiveNumber(raw, 'playlistPanelCloseDuration', fxDefaults.playlistPanelCloseDuration, 0.06, 0.48),
+    backgroundColorCustom: raw.backgroundColorMode === 'custom' || !!raw.backgroundColorCustom,
+    floatLayer: !!raw.floatLayer,
+    cinema: raw.cinema !== false,
+    edge: !!raw.edge,
+    aiDepth: !!raw.aiDepth,
+    bloom: !!raw.bloom,
+    lyricGlow: raw.lyricGlow !== false,
+    lyricGlowBeat: raw.lyricGlowBeat !== false,
+    lyricGlowParticles: !!raw.lyricGlowParticles,
+    lyricVerticalFloat: raw.lyricVerticalFloat !== false,
+    backgroundStarRiver: raw.backgroundStarRiver !== false,
+    lyricPauseHold: raw.lyricPauseHold !== false,
+    desktopLyrics: !!raw.desktopLyrics,
+    desktopLyricsSize: archiveNumber(raw, 'desktopLyricsSize', fxDefaults.desktopLyricsSize, 0.72, 1.55),
+    desktopLyricsOpacity: archiveNumber(raw, 'desktopLyricsOpacity', fxDefaults.desktopLyricsOpacity, 0.28, 1),
+    desktopLyricsY: archiveNumber(raw, 'desktopLyricsY', fxDefaults.desktopLyricsY, 0.08, 0.92),
+    desktopLyricsClickThrough: raw.desktopLyricsClickThrough === true,
+    desktopLyricsCinema: raw.desktopLyricsCinema !== false,
+    desktopLyricsHighlight: raw.desktopLyricsHighlight === true,
+    desktopLyricsFps: normalizeDesktopLyricsFps(Object.prototype.hasOwnProperty.call(raw, 'desktopLyricsFps') ? raw.desktopLyricsFps : fxDefaults.desktopLyricsFps),
+    performanceBackground: normalizePerformanceBackgroundMode(raw.performanceBackground, raw.liveBackgroundKeep === true),
+    performanceQuality: normalizePerformanceQuality(raw.performanceQuality),
+    foregroundFpsMode: normalizeForegroundFpsMode(raw.foregroundFpsMode === 'adaptive' ? 'vsync' : raw.foregroundFpsMode),
+    memoryAutoTrimApp: raw.memoryAutoTrimApp !== false,
+    memoryAutoTrimOnBackground: raw.memoryAutoTrimOnBackground !== false,
+    memoryAutoSystemTrim: raw.memoryAutoSystemTrim === true,
+    memorySystemAutoElevate: raw.memorySystemAutoElevate === true,
+    memorySystemIntervalMin: archiveNumber(raw, 'memorySystemIntervalMin', fxDefaults.memorySystemIntervalMin, 5, 180),
+    memorySystemThresholdPercent: archiveNumber(raw, 'memorySystemThresholdPercent', fxDefaults.memorySystemThresholdPercent, 50, 98),
+    memorySystemMask: archiveNumber(raw, 'memorySystemMask', fxDefaults.memorySystemMask, 1, 29),
+    memorySafetyRevision: fxDefaults.memorySafetyRevision,
+    liveBackgroundKeep: normalizePerformanceBackgroundMode(raw.performanceBackground, raw.liveBackgroundKeep === true) === 'keep',
+    sonicGroundAmplitude: archiveNumber(raw, 'sonicGroundAmplitude', fxDefaults.sonicGroundAmplitude, 0, 100),
+    sonicGroundMotionSpeed: archiveNumber(raw, 'sonicGroundMotionSpeed', fxDefaults.sonicGroundMotionSpeed, 0, 100),
+    sonicGroundDensity: archiveNumber(raw, 'sonicGroundDensity', fxDefaults.sonicGroundDensity, 0, 100),
+    sonicGroundRange: archiveNumber(raw, 'sonicGroundRange', fxDefaults.sonicGroundRange, 0, 100),
+    sonicGroundLower: archiveNumber(raw, 'sonicGroundLower', fxDefaults.sonicGroundLower, 0, 100),
+    sonicGroundDepth: archiveNumber(raw, 'sonicGroundDepth', fxDefaults.sonicGroundDepth, 0, 100),
+    sonicGroundAutoRotate: archiveNumber(raw, 'sonicGroundAutoRotate', fxDefaults.sonicGroundAutoRotate, 0, 100),
+    sonicGroundColorMode: raw.sonicGroundColorMode === 'custom' ? 'custom' : 'cover',
+    sonicGroundBaseColor: normalizeHexColor(raw.sonicGroundBaseColor || fxDefaults.sonicGroundBaseColor, fxDefaults.sonicGroundBaseColor),
+    sonicGroundCoolColor: normalizeHexColor(raw.sonicGroundCoolColor || fxDefaults.sonicGroundCoolColor, fxDefaults.sonicGroundCoolColor),
+    sonicGroundWarmColor: normalizeHexColor(raw.sonicGroundWarmColor || fxDefaults.sonicGroundWarmColor, fxDefaults.sonicGroundWarmColor),
+    sonicGroundAccentColor: normalizeHexColor(raw.sonicGroundAccentColor || fxDefaults.sonicGroundAccentColor, fxDefaults.sonicGroundAccentColor),
+    sonicGroundGlow: archiveNumber(raw, 'sonicGroundGlow', fxDefaults.sonicGroundGlow, 0, 100),
+    sonicGroundSubBass: archiveNumber(raw, 'sonicGroundSubBass', fxDefaults.sonicGroundSubBass, 0, 100),
+    sonicGroundBass: archiveNumber(raw, 'sonicGroundBass', fxDefaults.sonicGroundBass, 0, 100),
+    sonicGroundLowMid: archiveNumber(raw, 'sonicGroundLowMid', fxDefaults.sonicGroundLowMid, 0, 100),
+    sonicGroundMid: archiveNumber(raw, 'sonicGroundMid', fxDefaults.sonicGroundMid, 0, 100),
+    sonicGroundHighMid: archiveNumber(raw, 'sonicGroundHighMid', fxDefaults.sonicGroundHighMid, 0, 100),
+    sonicGroundPresence: archiveNumber(raw, 'sonicGroundPresence', fxDefaults.sonicGroundPresence, 0, 100),
+    sonicGroundBrilliance: archiveNumber(raw, 'sonicGroundBrilliance', fxDefaults.sonicGroundBrilliance, 0, 100),
+    sonicGroundAir: archiveNumber(raw, 'sonicGroundAir', fxDefaults.sonicGroundAir, 0, 100),
+    sonicGroundFloatingEnabled: raw.sonicGroundFloatingEnabled !== false,
+    sonicGroundFloatingIntensity: archiveNumber(raw, 'sonicGroundFloatingIntensity', fxDefaults.sonicGroundFloatingIntensity, 0, 100),
+    sonicGroundFloatingMinSize: archiveNumber(raw, 'sonicGroundFloatingMinSize', fxDefaults.sonicGroundFloatingMinSize, 0, 100),
+    sonicGroundFloatingMaxSize: archiveNumber(raw, 'sonicGroundFloatingMaxSize', fxDefaults.sonicGroundFloatingMaxSize, 0, 100),
+    sonicGroundFloatingSpeed: archiveNumber(raw, 'sonicGroundFloatingSpeed', fxDefaults.sonicGroundFloatingSpeed, 0, 100),
+    sonicGroundFloatingCount: archiveNumber(raw, 'sonicGroundFloatingCount', fxDefaults.sonicGroundFloatingCount, 0, 100),
+    sonicAudioMonitorEnabled: raw.sonicAudioMonitorEnabled !== false,
+    sonicAudioAutoTrack: raw.sonicAudioAutoTrack !== false,
+    sonicAudioSensitivity: archiveNumber(raw, 'sonicAudioSensitivity', fxDefaults.sonicAudioSensitivity, 0, 100),
+    sonicAudioBandStart: archiveNumber(raw, 'sonicAudioBandStart', fxDefaults.sonicAudioBandStart, 0, 510),
+    sonicAudioBandEnd: archiveNumber(raw, 'sonicAudioBandEnd', fxDefaults.sonicAudioBandEnd, 2, 512),
+    sonicAudioThreshold: archiveNumber(raw, 'sonicAudioThreshold', fxDefaults.sonicAudioThreshold, 0, 100),
+    sonicAudioPulseStrength: archiveNumber(raw, 'sonicAudioPulseStrength', fxDefaults.sonicAudioPulseStrength, 0, 100),
+    sonicWorkshopInputGain: archiveNumber(raw, 'sonicWorkshopInputGain', fxDefaults.sonicWorkshopInputGain, 40, 100),
+    sonicWorkshopAudioIntensity: archiveNumber(raw, 'sonicWorkshopAudioIntensity', fxDefaults.sonicWorkshopAudioIntensity, 0.3, 2.5),
+    sonicWorkshopResponseRange: archiveNumber(raw, 'sonicWorkshopResponseRange', fxDefaults.sonicWorkshopResponseRange, 0.3, 2),
+    sonicWorkshopPeakIntensity: archiveNumber(raw, 'sonicWorkshopPeakIntensity', fxDefaults.sonicWorkshopPeakIntensity, 0, 1.4),
+    sonicWorkshopColorMode: raw.sonicWorkshopColorMode === 'custom' ? 'custom' : 'cover',
+    sonicWorkshopTheme: archiveMode(raw, 'sonicWorkshopTheme', /^(coral-mirage|ocean-deep|arctic-blue|arctic-aurora|emerald-forest|cyber-forest|minimal-mono|minimal-monochrome|neon-tokyo|golden-hour|ember-fire|crimson|crimson-sunset|aurora|violet-dream)$/, fxDefaults.sonicWorkshopTheme),
+    sonicWorkshopCustomColor: normalizeHexColor(raw.sonicWorkshopCustomColor || fxDefaults.sonicWorkshopCustomColor || '#cb6c89', fxDefaults.sonicWorkshopCustomColor || '#cb6c89'),
+    sonicWorkshopBaseColorMode: raw.sonicWorkshopBaseColorMode === 'custom' ? 'custom' : 'cover',
+    sonicWorkshopBaseColor: normalizeHexColor(raw.sonicWorkshopBaseColor || fxDefaults.sonicWorkshopBaseColor || '#16060f', fxDefaults.sonicWorkshopBaseColor || '#16060f'),
+    sonicWorkshopWarmColorMode: raw.sonicWorkshopWarmColorMode === 'custom' ? 'custom' : 'cover',
+    sonicWorkshopWarmColor: normalizeHexColor(raw.sonicWorkshopWarmColor || fxDefaults.sonicWorkshopWarmColor || '#cb6c89', fxDefaults.sonicWorkshopWarmColor || '#cb6c89'),
+    sonicWorkshopCoolColorMode: raw.sonicWorkshopCoolColorMode === 'custom' ? 'custom' : 'cover',
+    sonicWorkshopCoolColor: normalizeHexColor(raw.sonicWorkshopCoolColor || fxDefaults.sonicWorkshopCoolColor || '#99c4ff', fxDefaults.sonicWorkshopCoolColor || '#99c4ff'),
+    sonicWorkshopRippleColorMode: raw.sonicWorkshopRippleColorMode === 'custom' ? 'custom' : 'cover',
+    sonicWorkshopRippleColor: normalizeHexColor(raw.sonicWorkshopRippleColor || fxDefaults.sonicWorkshopRippleColor || '#f8d8ff', fxDefaults.sonicWorkshopRippleColor || '#f8d8ff'),
+    sonicWorkshopPeakColorMode: raw.sonicWorkshopPeakColorMode === 'custom' ? 'custom' : 'cover',
+    sonicWorkshopPeakColor: normalizeHexColor(raw.sonicWorkshopPeakColor || fxDefaults.sonicWorkshopPeakColor || '#99c4ff', fxDefaults.sonicWorkshopPeakColor || '#99c4ff'),
+    particleLyrics: raw.particleLyrics !== false,
+    backCover: !!raw.backCover,
+    shelf: archiveShelfMode,
+    shelfPinnedOpen: archiveShelfPinnedOpen,
+    shelfCameraMode: archiveMode(raw, 'shelfCameraMode', /^(dynamic|static)$/, fxDefaults.shelfCameraMode),
+    shelfPresence: archiveShelfPresence,
+    shelfShowPodcasts: raw.shelfShowPodcasts !== false,
+    shelfMergeCollections: raw.shelfMergeCollections === true,
+    shelfSize: archiveNumber(raw, 'shelfSize', fxDefaults.shelfSize, 0.65, 1.45),
+    shelfOffsetX: archiveNumber(raw, 'shelfOffsetX', fxDefaults.shelfOffsetX, -1.2, 1.2),
+    shelfOffsetY: archiveNumber(raw, 'shelfOffsetY', fxDefaults.shelfOffsetY, -0.9, 0.9),
+    shelfOffsetZ: archiveNumber(raw, 'shelfOffsetZ', fxDefaults.shelfOffsetZ, -0.9, 0.9),
+    shelfAngleY: archiveNumber(raw, 'shelfAngleY', fxDefaults.shelfAngleY, -30, 30),
+    shelfAngleYManual: raw.shelfAngleYManual === true,
+    shelfOpacity: archiveNumber(raw, 'shelfOpacity', fxDefaults.shelfOpacity, 0.25, 1),
+    shelfBgOpacity: archiveNumber(raw, 'shelfBgOpacity', fxDefaults.shelfBgOpacity, 0.25, 0.98),
+    shelfAccentColor: normalizeHexColor(raw.shelfAccentColor || fxDefaults.shelfAccentColor, fxDefaults.shelfAccentColor),
+    shelfDetailOffsetX: archiveNumber(raw, 'shelfDetailOffsetX', fxDefaults.shelfDetailOffsetX, -4.8, 4.8),
+    shelfDetailOffsetY: archiveNumber(raw, 'shelfDetailOffsetY', fxDefaults.shelfDetailOffsetY, -3.6, 3.6),
+    shelfDetailOffsetZ: archiveNumber(raw, 'shelfDetailOffsetZ', fxDefaults.shelfDetailOffsetZ, -3.6, 3.6),
+    shelfDetailScale: archiveNumber(raw, 'shelfDetailScale', fxDefaults.shelfDetailScale, 0.72, 1.35),
+    shelfDetailAngleX: archiveNumber(raw, 'shelfDetailAngleX', fxDefaults.shelfDetailAngleX, -24, 24),
+    shelfDetailAngleY: archiveNumber(raw, 'shelfDetailAngleY', fxDefaults.shelfDetailAngleY, -28, 28),
+    shelfDetailRowGap: archiveNumber(raw, 'shelfDetailRowGap', fxDefaults.shelfDetailRowGap, 0.72, 1.32),
+    shelfDetailOpenDuration: archiveNumber(raw, 'shelfDetailOpenDuration', fxDefaults.shelfDetailOpenDuration, 0.12, 1.2),
+    shelfDetailCloseDuration: archiveNumber(raw, 'shelfDetailCloseDuration', fxDefaults.shelfDetailCloseDuration, 0.08, 0.8),
+    shelfDetailRowDuration: archiveNumber(raw, 'shelfDetailRowDuration', fxDefaults.shelfDetailRowDuration, 0.16, 1.6),
+    shelfDetailIntroStrength: archiveNumber(raw, 'shelfDetailIntroStrength', fxDefaults.shelfDetailIntroStrength, 0, 1.8),
+    shelfDetailParallax: archiveNumber(raw, 'shelfDetailParallax', fxDefaults.shelfDetailParallax, 0, 1.8),
+    shelfSummonOpenDuration: archiveNumber(raw, 'shelfSummonOpenDuration', fxDefaults.shelfSummonOpenDuration, 0.08, 2),
+    shelfSummonCloseDuration: archiveNumber(raw, 'shelfSummonCloseDuration', fxDefaults.shelfSummonCloseDuration, 0.08, 1.6),
+    shelfSummonSlide: archiveNumber(raw, 'shelfSummonSlide', fxDefaults.shelfSummonSlide, 0, 4),
+    shelfSummonStagger: archiveNumber(raw, 'shelfSummonStagger', fxDefaults.shelfSummonStagger, 0, 3),
+    shelfSummonScale: archiveNumber(raw, 'shelfSummonScale', fxDefaults.shelfSummonScale, 0, 3),
+    shelfSummonParallax: archiveNumber(raw, 'shelfSummonParallax', fxDefaults.shelfSummonParallax, 0, 2.5),
+    shelfCameraEnterSpeed: archiveNumber(raw, 'shelfCameraEnterSpeed', fxDefaults.shelfCameraEnterSpeed, 0.2, 1.5),
+    shelfCameraExitSpeed: archiveNumber(raw, 'shelfCameraExitSpeed', fxDefaults.shelfCameraExitSpeed, 0.2, 1.5),
+    cam: archiveMode(raw, 'cam', /^(off|gesture)$/, fxDefaults.cam),
+    gesturePlayerActions: raw.gesturePlayerActions !== false,
+    gestureHandOverlay: raw.gestureHandOverlay !== false,
+    gestureSensitivity: archiveMode(raw, 'gestureSensitivity', /^(steady|balanced|quick)$/, fxDefaults.gestureSensitivity),
+    cameraViewSaved: archiveCameraSaved,
+    cameraViewMode: archiveMode(raw, 'cameraViewMode', /^(orbit|free)$/, 'orbit'),
+    cameraOrbitTheta: archiveNumber(raw, 'cameraOrbitTheta', 0, -Math.PI * 8, Math.PI * 8),
+    cameraOrbitPhi: archiveNumber(raw, 'cameraOrbitPhi', 0.08, -Math.PI * 0.45, Math.PI * 0.45),
+    cameraOrbitRadius: archiveNumber(raw, 'cameraOrbitRadius', 6.6, 2.4, 14.0),
+    cameraFreePositionX: archiveNumber(raw, 'cameraFreePositionX', 0, -80, 80),
+    cameraFreePositionY: archiveNumber(raw, 'cameraFreePositionY', 0, -80, 80),
+    cameraFreePositionZ: archiveNumber(raw, 'cameraFreePositionZ', 6.6, -80, 80),
+    cameraFreeYaw: archiveNumber(raw, 'cameraFreeYaw', 0, -Math.PI * 8, Math.PI * 8),
+    cameraFreePitch: archiveNumber(raw, 'cameraFreePitch', 0, -Math.PI * 0.49, Math.PI * 0.49),
+    cameraFreeRoll: archiveNumber(raw, 'cameraFreeRoll', 0, -Math.PI, Math.PI),
+    cameraFreeFov: archiveNumber(raw, 'cameraFreeFov', BASE_FOV, 26, 72),
+    visualRotationSaved: archiveVisualRotationSaved,
+    visualRotationX: archiveNumber(raw, 'visualRotationX', 0, -Math.PI * 8, Math.PI * 8),
+    visualRotationY: archiveNumber(raw, 'visualRotationY', 0, -Math.PI * 8, Math.PI * 8)
+  };
+}
+function readUserFxArchives() {
+  var raw = [];
+  try {
+    raw = JSON.parse(localStorage.getItem(USER_FX_ARCHIVE_STORE_KEY) || '[]') || [];
+  } catch (e) {
+    raw = [];
+  }
+  if (!Array.isArray(raw)) raw = [];
+  return raw.map(function (slot, index) {
+    slot = slot && typeof slot === 'object' ? slot : {};
+    var snapshot = normalizeFxArchiveSnapshot(slot.snapshot);
+    return {
+      name: normalizeUserFxArchiveName(slot.name, index),
+      createdAt: Number(slot.createdAt) || (snapshot ? (Number(slot.savedAt) || Date.now()) : 0),
+      savedAt: snapshot ? (Number(slot.savedAt) || Date.now()) : 0,
+      snapshot: snapshot
+    };
+  }).filter(function (slot) {
+    return !!(slot.snapshot || slot.savedAt || slot.createdAt);
+  });
+}
+function saveUserFxArchives() {
+  try {
+    localStorage.setItem(USER_FX_ARCHIVE_STORE_KEY, JSON.stringify(userFxArchives));
+  } catch (e) {
+    showToast('用户存档保存失败，本地存储空间可能不足');
+  }
+}
+function hasStoredUserFxArchives() {
+  try {
+    return localStorage.getItem(USER_FX_ARCHIVE_STORE_KEY) != null;
+  } catch (e) {
+    return true;
+  }
+}
+function createPackagedDefaultUserFxArchiveSlot() {
+  return {
+    name: normalizeUserFxArchiveName(PACKAGED_DEFAULT_USER_FX_ARCHIVE_NAME, 0),
+    createdAt: PACKAGED_DEFAULT_USER_FX_ARCHIVE_EXPORTED_AT,
+    savedAt: PACKAGED_DEFAULT_USER_FX_ARCHIVE_SAVED_AT,
+    snapshot: normalizeFxArchiveSnapshot(clonePackagedDefaultFxSnapshot())
+  };
+}
+function formatUserArchiveTime(ts) {
+  ts = Number(ts) || 0;
+  if (!ts) return '空槽位';
+  var diff = Date.now() - ts;
+  if (diff < 60000) return '刚刚保存';
+  if (diff < 3600000) return Math.max(1, Math.round(diff / 60000)) + ' 分钟前';
+  var d = new Date(ts);
+  function pad(v) { return String(v).padStart(2, '0'); }
+  return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+function captureCameraArchiveState() {
+  var useFree = !!(typeof freeCamera !== 'undefined' && freeCamera && (freeCamera.active || freeCamera.locked));
+  var visualRotX = typeof particles !== 'undefined' && particles && particles.rotation ? Number(particles.rotation.x) || 0 : (typeof gestureRotation !== 'undefined' && gestureRotation ? Number(gestureRotation.x) || 0 : 0);
+  var visualRotY = typeof particles !== 'undefined' && particles && particles.rotation ? Number(particles.rotation.y) || 0 : (typeof gestureRotation !== 'undefined' && gestureRotation ? Number(gestureRotation.y) || 0 : 0);
+  var out = {
+    cameraViewSaved: true,
+    cameraViewMode: useFree ? 'free' : 'orbit',
+    cameraOrbitTheta: orbit && isFinite(orbit.userTheta) ? orbit.userTheta : 0,
+    cameraOrbitPhi: orbit && isFinite(orbit.userPhi) ? orbit.userPhi : 0.08,
+    cameraOrbitRadius: orbit && isFinite(orbit.userRadius) ? orbit.userRadius : 6.6,
+    cameraFreePositionX: 0,
+    cameraFreePositionY: 0,
+    cameraFreePositionZ: 6.6,
+    cameraFreeYaw: 0,
+    cameraFreePitch: 0,
+    cameraFreeRoll: 0,
+    cameraFreeFov: typeof BASE_FOV === 'number' ? BASE_FOV : 45,
+    visualRotationSaved: true,
+    visualRotationX: visualRotX,
+    visualRotationY: visualRotY
+  };
+  if (typeof freeCamera !== 'undefined' && freeCamera) {
+    if (freeCamera.position) {
+      out.cameraFreePositionX = Number(freeCamera.position.x) || 0;
+      out.cameraFreePositionY = Number(freeCamera.position.y) || 0;
+      out.cameraFreePositionZ = Number(freeCamera.position.z) || 6.6;
+    }
+    out.cameraFreeYaw = Number(freeCamera.yaw) || 0;
+    out.cameraFreePitch = Number(freeCamera.pitch) || 0;
+    out.cameraFreeRoll = Number(freeCamera.roll) || 0;
+    out.cameraFreeFov = Number(freeCamera.fov) || out.cameraFreeFov;
+  }
+  return out;
+}
+function applyVisualRotationArchiveState(data) {
+  if (!data || data.visualRotationSaved !== true) return false;
+  var rx = Number(data.visualRotationX) || 0;
+  var ry = Number(data.visualRotationY) || 0;
+  if (typeof gestureRotation !== 'undefined' && gestureRotation) {
+    gestureRotation.x = rx;
+    gestureRotation.y = ry;
+  }
+  if (typeof particleSpin !== 'undefined' && particleSpin) {
+    particleSpin.vx = 0;
+    particleSpin.vy = 0;
+  }
+  if (typeof particles !== 'undefined' && particles && particles.rotation) particles.rotation.set(rx, ry, 0);
+  if (typeof bloomParticles !== 'undefined' && bloomParticles && bloomParticles.rotation) bloomParticles.rotation.set(rx, ry, 0);
+  if (typeof floatGroup !== 'undefined' && floatGroup && floatGroup.rotation) floatGroup.rotation.set(rx, ry, 0);
+  if (typeof backCoverGroup !== 'undefined' && backCoverGroup && backCoverGroup.rotation) backCoverGroup.rotation.set(rx, ry, 0);
+  if (typeof orbit !== 'undefined' && orbit && (Math.abs(rx) > 0.0001 || Math.abs(ry) > 0.0001)) {
+    orbit.centerLocked = false;
+    orbit.recentering = false;
+  }
+  return true;
+}
+function applyCameraArchiveState(data) {
+  if (!data || data.cameraViewSaved !== true) return false;
+  if (typeof freeCamera !== 'undefined' && freeCamera) {
+    freeCamera.active = false;
+    freeCamera.resetTween = null;
+    freeCamera.keys = {};
+    if (freeCamera.velocity) freeCamera.velocity.set(0, 0, 0);
+    if (typeof releaseFreeCameraPointerLock === 'function') releaseFreeCameraPointerLock();
+  }
+  if (data.cameraViewMode === 'free' && typeof freeCamera !== 'undefined' && freeCamera) {
+    if (!freeCamera.position) freeCamera.position = new THREE.Vector3();
+    freeCamera.position.set(data.cameraFreePositionX, data.cameraFreePositionY, data.cameraFreePositionZ);
+    freeCamera.yaw = data.cameraFreeYaw;
+    freeCamera.pitch = data.cameraFreePitch;
+    freeCamera.roll = data.cameraFreeRoll;
+    freeCamera.fov = data.cameraFreeFov;
+    freeCamera.locked = true;
+    if (typeof saveFreeCameraState === 'function') saveFreeCameraState();
+    if (typeof updateFreeCameraHint === 'function') updateFreeCameraHint();
+    return true;
+  }
+  if (typeof freeCamera !== 'undefined' && freeCamera) {
+    freeCamera.locked = false;
+    if (typeof saveFreeCameraState === 'function') saveFreeCameraState();
+    if (typeof updateFreeCameraHint === 'function') updateFreeCameraHint();
+  }
+  if (typeof orbit !== 'undefined' && orbit) {
+    orbit.userTheta = data.cameraOrbitTheta;
+    orbit.userPhi = clampRange(data.cameraOrbitPhi, orbit.minPhi, orbit.maxPhi);
+    orbit.userRadius = clampRange(data.cameraOrbitRadius, orbit.minRadius, orbit.maxRadius);
+    orbit.baselineTheta = orbit.userTheta;
+    orbit.baselinePhi = orbit.userPhi;
+    orbit.baselineRadius = orbit.userRadius;
+    orbit.theta = orbit.userTheta;
+    orbit.phi = orbit.userPhi;
+    orbit.radius = orbit.userRadius;
+    orbit.centerLocked = true;
+    orbit.recentering = false;
+    if (orbit.lookAt) orbit.lookAt.set(0, 0, 0);
+    if (orbit.focus) {
+      orbit.focus.active = false;
+      orbit.focus.type = null;
+    }
+    if (typeof clearCenteredViewOffsets === 'function') clearCenteredViewOffsets();
+    if (typeof requestStageLyricCameraSnap === 'function') requestStageLyricCameraSnap(12);
+    return true;
+  }
+  return false;
+}
+function captureFxArchiveSnapshot() {
+  return normalizeFxArchiveSnapshot(Object.assign({ visualPresetSchema: VISUAL_PRESET_SCHEMA }, fx, captureCameraArchiveState()));
+}
+function applySavedLyricPaletteState() {
+  if (!stageLyrics) return;
+  setStageLyricPalette(fx.lyricColorMode === 'custom'
+    ? lyricPaletteFromHex(fx.lyricColor)
+    : (stageLyrics.coverPalette || stageLyrics.palette));
+  updateLyricColorControls();
+  updateLyricHighlightControls();
+  updateLyricGlowControls();
+}
+function applyFxArchiveSnapshot(snapshot) {
+  var data = normalizeFxArchiveSnapshot(snapshot);
+  if (!data) return false;
+  var targetPreset = data.preset;
+  Object.keys(data).forEach(function (key) {
+    if (key === 'visualPresetSchema' || key === 'preset') return;
+    if (isCameraArchiveKey(key)) return;
+    fx[key] = data[key];
+  });
+  if (fx.backgroundAlbumCover === true) {
+    fx.backgroundMedia = null;
+    fx.backgroundImage = '';
+  }
+  normalizeDevelopmentLockedFxState();
+  setPreset(targetPreset, { silent: true, preserveCamera: false, skipTransition: false, noSave: true, commitPlaybackPreset: true });
+  applyCameraArchiveState(data);
+  applyVisualRotationArchiveState(data);
+  applyCoverParticleResolution(fx.coverResolution, { reload: true });
+  if (fx.floatLayer) createFloatLayer(); else destroyFloatLayer();
+  setParticleLyricsSilently(fx.particleLyrics);
+  if (fx.backCover) createBackCoverLayer(); else destroyBackCoverLayer();
+  if (fx.aiDepth) {
+    aiDepthFailUntil = 0;
+    queueAIDepthForCurrentCover(true);
+  }
+  setShelfMode(fx.shelf);
+  if (fx.shelf === 'side') setShelfPinnedOpen(!!fx.shelfPinnedOpen, true, false);
+  if (shelfManager && shelfManager.rebuild) shelfManager.rebuild(true);
+  if (shelfManager && shelfManager.refreshTheme) shelfManager.refreshTheme();
+  setCamMode(fx.cam);
+  updateFxInputs();
+  applySavedLyricPaletteState();
+  refreshCurrentLyricStyle();
+  applyDesktopLyricsState(true);
+  applyWallpaperModeState(true);
+  updateRenderPowerClasses();
+  applyRendererPowerMode();
+  saveLyricLayout({ user: true, reason: 'archiveApply' });
+  return true;
+}
+var hadStoredUserFxArchives = hasStoredUserFxArchives();
+var userFxArchives = readUserFxArchives();
+if (!hadStoredUserFxArchives) {
+  userFxArchives = [createPackagedDefaultUserFxArchiveSlot()];
+  saveUserFxArchives();
+}
+var userFxArchiveEditing = -1;
+var userFxArchiveShareDraft = '';
+function renderUserFxArchives() {
+  var grid = document.getElementById('user-archive-grid');
+  if (!grid) return;
+  grid.innerHTML = userFxArchives.map(function (slot, index) {
+    var hasSave = !!slot.snapshot;
+    var editing = userFxArchiveEditing === index;
+    var nameHtml = editing
+      ? '<input class="user-archive-input" id="user-archive-input-' + index + '" type="text" maxlength="18" value="' + escHtml(slot.name) + '" onkeydown="handleUserFxArchiveRenameKey(event,' + index + ')">'
+      : '<div class="user-archive-name" title="' + escHtml(slot.name) + '">' + escHtml(slot.name) + '</div>';
+    var actionsHtml = editing
+      ? '<button type="button" onclick="commitUserFxArchiveRename(' + index + ')">确定</button>' +
+      '<button type="button" onclick="cancelUserFxArchiveRename()">取消</button>'
+      : '<button type="button" onclick="applyUserFxArchive(' + index + ')"' + (hasSave ? '' : ' disabled') + '>应用</button>' +
+      '<button type="button" onclick="saveUserFxArchive(' + index + ')">保存</button>' +
+      '<button type="button" onclick="renameUserFxArchive(' + index + ')">命名</button>';
+    return '<div class="user-archive-slot' + (hasSave ? ' has-save' : '') + '" data-slot="' + index + '">' +
+      nameHtml +
+      '<div class="user-archive-meta">' + formatUserArchiveTime(slot.savedAt) + '</div>' +
+      '<div class="user-archive-actions">' +
+      actionsHtml +
+      '</div>' +
+      '</div>';
+  }).join('');
+  if (userFxArchiveEditing >= 0) {
+    setTimeout(function () {
+      var input = document.getElementById('user-archive-input-' + userFxArchiveEditing);
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    }, 0);
+  }
+}
+function saveUserFxArchive(index) {
+  index = clampRange(Number(index) || 0, 0, Math.max(0, userFxArchives.length - 1));
+  userFxArchives[index].snapshot = captureFxArchiveSnapshot();
+  userFxArchives[index].savedAt = Date.now();
+  userFxArchives[index].name = normalizeUserFxArchiveName(userFxArchives[index].name, index);
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast('已保存到 ' + userFxArchives[index].name);
+}
+function applyUserFxArchive(index) {
+  index = clampRange(Number(index) || 0, 0, Math.max(0, userFxArchives.length - 1));
+  var slot = userFxArchives[index];
+  if (!slot || !slot.snapshot) {
+    showToast('这个用户存档还是空的');
+    return;
+  }
+  if (applyFxArchiveSnapshot(slot.snapshot)) {
+    showToast('已应用 ' + slot.name);
+  }
+}
+function renameUserFxArchive(index) {
+  index = clampRange(Number(index) || 0, 0, Math.max(0, userFxArchives.length - 1));
+  userFxArchiveEditing = index;
+  renderUserFxArchives();
+}
+function commitUserFxArchiveRename(index) {
+  index = clampRange(Number(index) || 0, 0, Math.max(0, userFxArchives.length - 1));
+  var input = document.getElementById('user-archive-input-' + index);
+  userFxArchives[index].name = normalizeUserFxArchiveName(input && input.value, index);
+  userFxArchiveEditing = -1;
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast('已命名为 ' + userFxArchives[index].name);
+}
+function cancelUserFxArchiveRename() {
+  userFxArchiveEditing = -1;
+  renderUserFxArchives();
+}
+function handleUserFxArchiveRenameKey(e, index) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    commitUserFxArchiveRename(index);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    cancelUserFxArchiveRename();
+  }
+}
+
+function defaultUserFxArchiveName(index) {
+  return '用户存档 ' + (Number(index) + 1);
+}
+function normalizeUserFxArchiveName(name, index) {
+  name = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!name) name = defaultUserFxArchiveName(index);
+  return name.slice(0, 28);
+}
+function userFxArchiveAt(index) {
+  index = Number(index);
+  if (!isFinite(index)) return null;
+  index = Math.floor(index);
+  return index >= 0 && index < userFxArchives.length ? userFxArchives[index] : null;
+}
+function userFxShareChecksum(text) {
+  text = String(text || '');
+  var hash = 2166136261;
+  for (var i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return (hash >>> 0).toString(36).toUpperCase().padStart(7, '0');
+}
+function bytesToBase64Url(bytes) {
+  var binary = '';
+  for (var i = 0; i < bytes.length; i += 0x8000) {
+    var chunk = bytes.subarray(i, Math.min(i + 0x8000, bytes.length));
+    for (var j = 0; j < chunk.length; j++) binary += String.fromCharCode(chunk[j]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+function base64UrlToBytes(text) {
+  text = String(text || '').replace(/-/g, '+').replace(/_/g, '/');
+  while (text.length % 4) text += '=';
+  var binary = atob(text);
+  var bytes = new Uint8Array(binary.length);
+  for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+async function gzipUserFxShareText(text) {
+  if (typeof CompressionStream !== 'function') return null;
+  var stream = new Blob([String(text || '')]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function gunzipUserFxShareText(bytes) {
+  if (typeof DecompressionStream !== 'function') throw new Error('NO_DECOMPRESSION_STREAM');
+  var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return await new Response(stream).text();
+}
+function userFxShareBaselineSnapshot() {
+  var raw = null;
+  try {
+    raw = typeof clonePackagedDefaultFxSnapshot === 'function'
+      ? clonePackagedDefaultFxSnapshot()
+      : Object.assign({ visualPresetSchema: VISUAL_PRESET_SCHEMA }, fxDefaults || {});
+  } catch (e) {
+    raw = Object.assign({ visualPresetSchema: VISUAL_PRESET_SCHEMA }, fxDefaults || {});
+  }
+  return normalizeFxArchiveSnapshot(raw) || {};
+}
+function userFxShareValueEqual(a, b) {
+  if (typeof a === 'number' || typeof b === 'number') {
+    var na = Number(a);
+    var nb = Number(b);
+    return isFinite(na) && isFinite(nb) && Math.abs(na - nb) < 0.000001;
+  }
+  return a === b;
+}
+function compactUserFxArchiveSnapshot(snapshot) {
+  var data = normalizeFxArchiveSnapshot(snapshot);
+  if (!data) return null;
+  var full = USER_FX_SHARE_KEYS.map(function (key) { return data[key]; });
+  var base = userFxShareBaselineSnapshot();
+  var delta = [];
+  USER_FX_SHARE_KEYS.forEach(function (key, index) {
+    if (!userFxShareValueEqual(data[key], base[key])) delta.push(index, data[key]);
+  });
+  var compactDelta = [USER_FX_SHARE_COMPACT_DELTA, delta];
+  var compactFull = [USER_FX_SHARE_COMPACT_FULL, full];
+  return JSON.stringify(compactDelta).length <= JSON.stringify(compactFull).length ? compactDelta : compactFull;
+}
+function expandUserFxArchiveSnapshot(compact) {
+  if (!Array.isArray(compact)) return null;
+  var mode = typeof compact[0] === 'string' ? compact[0] : USER_FX_SHARE_COMPACT_FULL;
+  var values = typeof compact[0] === 'string' ? compact[1] : compact;
+  if (!Array.isArray(values)) return null;
+  var raw = mode === USER_FX_SHARE_COMPACT_DELTA ? userFxShareBaselineSnapshot() : {};
+  if (mode === USER_FX_SHARE_COMPACT_DELTA) {
+    for (var i = 0; i < values.length - 1; i += 2) {
+      var deltaIndex = Math.floor(Number(values[i]));
+      if (deltaIndex >= 0 && deltaIndex < USER_FX_SHARE_KEYS.length) raw[USER_FX_SHARE_KEYS[deltaIndex]] = values[i + 1];
+    }
+  } else {
+    USER_FX_SHARE_KEYS.forEach(function (key, index) {
+      if (index < values.length) raw[key] = values[index];
+    });
+  }
+  return normalizeFxArchiveSnapshot(raw);
+}
+async function encodeUserFxArchiveShareCode(slot) {
+  if (!slot || !slot.snapshot) throw new Error('EMPTY_ARCHIVE');
+  var compact = compactUserFxArchiveSnapshot(slot.snapshot);
+  if (!compact) throw new Error('INVALID_ARCHIVE');
+  var payload = [USER_FX_ARCHIVE_SCHEMA, compact];
+  var json = JSON.stringify(payload);
+  var rawBytes = new TextEncoder().encode(json);
+  var body = USER_FX_SHARE_CODEC_JSON + bytesToBase64Url(rawBytes);
+  try {
+    var zipped = await gzipUserFxShareText(json);
+    if (zipped) {
+      var zippedBody = USER_FX_SHARE_CODEC_GZIP + bytesToBase64Url(zipped);
+      if (zippedBody.length < body.length) body = zippedBody;
+    }
+  } catch (e) {
+  }
+  var version = String(USER_FX_SHARE_VERSION);
+  return USER_FX_SHARE_PREFIX + ':' + version + '.' + body + '.' + userFxShareChecksum(version + '.' + body);
+}
+function extractUserFxShareCode(text) {
+  text = String(text || '').trim();
+  var direct = text.replace(/\s+/g, '');
+  if (/^MR2:[0-9]+\.[A-Za-z][A-Za-z0-9_-]+\.[A-Za-z0-9]+$/.test(direct)) return direct;
+  var match = text.match(/MR2:[0-9]+\.[A-Za-z][A-Za-z0-9_-]+\.[A-Za-z0-9]+/);
+  return match ? match[0] : '';
+}
+function looksLikeUserFxShareCode(text) {
+  return !!extractUserFxShareCode(text);
+}
+async function decodeUserFxArchiveShareCode(text) {
+  var code = extractUserFxShareCode(text);
+  if (!code) throw new Error('INVALID_SHARE_CODE');
+  var parts = code.slice((USER_FX_SHARE_PREFIX + ':').length).split('.');
+  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) throw new Error('INVALID_SHARE_CODE');
+  var version = parts[0];
+  var body = parts[1];
+  var checksum = parts[2].toUpperCase();
+  if (version !== String(USER_FX_SHARE_VERSION)) throw new Error('UNSUPPORTED_SHARE_VERSION');
+  if (userFxShareChecksum(version + '.' + body) !== checksum) throw new Error('BAD_SHARE_CHECKSUM');
+  var codec = body.charAt(0);
+  var bytes = base64UrlToBytes(body.slice(1));
+  var json = '';
+  if (codec === USER_FX_SHARE_CODEC_GZIP) {
+    json = await gunzipUserFxShareText(bytes);
+  } else if (codec === USER_FX_SHARE_CODEC_JSON) {
+    json = new TextDecoder().decode(bytes);
+  } else {
+    throw new Error('UNSUPPORTED_SHARE_CODEC');
+  }
+  var payload = JSON.parse(json);
+  var archiveSchema = 0;
+  var archiveName = '';
+  var archiveSavedAt = Date.now();
+  var compactSnapshot = null;
+  if (Array.isArray(payload)) {
+    archiveSchema = Number(payload[0]);
+    if (Array.isArray(payload[1])) {
+      compactSnapshot = payload[1];
+    } else {
+      archiveName = payload[1];
+      compactSnapshot = payload[2];
+    }
+  } else if (payload && typeof payload === 'object') {
+    archiveSchema = Number(payload.s);
+    archiveName = payload.n;
+    archiveSavedAt = Number(payload.a) || Date.now();
+    compactSnapshot = payload.v;
+  }
+  if (!payload || archiveSchema !== USER_FX_ARCHIVE_SCHEMA) {
+    throw new Error('INVALID_SHARE_PAYLOAD');
+  }
+  var snapshot = expandUserFxArchiveSnapshot(compactSnapshot);
+  if (!snapshot) throw new Error('INVALID_SHARE_SNAPSHOT');
+  return {
+    name: normalizeUserFxArchiveName(archiveName || '短代码存档', userFxArchives.length),
+    createdAt: Date.now(),
+    savedAt: archiveSavedAt,
+    snapshot: snapshot
+  };
+}
+function addImportedUserFxArchiveSlot(slot, toastLabel) {
+  if (!slot || !slot.snapshot) return false;
+  userFxArchives.push(slot);
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast((toastLabel || '已导入 ') + slot.name);
+  return true;
+}
+function getArchiveClipboardApi() {
+  return typeof getDesktopWindowApi === 'function' ? getDesktopWindowApi() : null;
+}
+async function writeUserFxArchiveClipboard(text) {
+  var api = getArchiveClipboardApi();
+  if (api && typeof api.copyText === 'function') {
+    var res = await Promise.resolve(api.copyText(text));
+    if (!res || res.ok !== false) return true;
+  }
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    await navigator.clipboard.writeText(text);
+    return true;
+  }
+  var area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', 'readonly');
+  area.style.position = 'fixed';
+  area.style.left = '-9999px';
+  document.body.appendChild(area);
+  area.select();
+  var ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(area);
+  return ok;
+}
+async function readUserFxArchiveClipboard() {
+  var api = getArchiveClipboardApi();
+  if (api && typeof api.readText === 'function') {
+    var res = await Promise.resolve(api.readText());
+    if (res && res.ok !== false) return String(res.text || '');
+  }
+  if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+    return await navigator.clipboard.readText();
+  }
+  return '';
+}
+async function copyUserFxArchiveShareCode(index) {
+  var slot = userFxArchiveAt(index);
+  if (!slot || !slot.snapshot) {
+    showToast('空白存档不能复制短码');
+    return;
+  }
+  try {
+    var code = await encodeUserFxArchiveShareCode(slot);
+    var copied = await writeUserFxArchiveClipboard(code);
+    if (copied) {
+      showToast(code.length > 12000 ? '完整短码已复制，配置较长' : '用户存档短码已复制');
+    } else {
+      window.prompt('复制这段 MR2 短代码', code);
+      showToast('已打开完整短码');
+    }
+  } catch (e) {
+    showToast('短码生成失败');
+  }
+}
+async function importUserFxArchiveShareCodeText(text) {
+  try {
+    var slot = await decodeUserFxArchiveShareCode(text);
+    return addImportedUserFxArchiveSlot(slot, '已导入短码 ');
+  } catch (e) {
+    showToast(e && e.message === 'BAD_SHARE_CHECKSUM' ? '短码校验失败，未导入' : '短码无效，未导入');
+    return false;
+  }
+}
+function userFxArchiveShareInput() {
+  return document.getElementById('user-archive-share-input');
+}
+function updateUserFxArchiveShareDraft(value) {
+  userFxArchiveShareDraft = String(value || '');
+}
+function focusUserFxArchiveShareInput(selectAll) {
+  var input = userFxArchiveShareInput();
+  if (!input) return;
+  input.focus();
+  if (selectAll) input.select();
+}
+async function pasteUserFxArchiveShareCodeToBox() {
+  var text = '';
+  try {
+    text = await readUserFxArchiveClipboard();
+  } catch (e) {
+    text = '';
+  }
+  text = String(text || '').trim();
+  if (!text) {
+    showToast('剪贴板里没有可粘贴的存档码');
+    focusUserFxArchiveShareInput(false);
+    return false;
+  }
+  userFxArchiveShareDraft = text;
+  var input = userFxArchiveShareInput();
+  if (input) {
+    input.value = userFxArchiveShareDraft;
+    input.focus();
+  }
+  showToast(looksLikeUserFxShareCode(text) ? '短码已粘到输入框' : '已粘到输入框，可尝试作为旧 JSON 导入');
+  return true;
+}
+async function importUserFxArchiveShareCodeFromBox() {
+  var input = userFxArchiveShareInput();
+  var text = input ? input.value : userFxArchiveShareDraft;
+  userFxArchiveShareDraft = String(text || '');
+  if (!userFxArchiveShareDraft.trim()) {
+    showToast('先把 MR2 短码粘到输入框');
+    focusUserFxArchiveShareInput(false);
+    return false;
+  }
+  var ok = await importUserFxArchiveText(userFxArchiveShareDraft, '短代码');
+  if (ok) {
+    userFxArchiveShareDraft = '';
+    renderUserFxArchives();
+  }
+  return ok;
+}
+function clearUserFxArchiveShareCodeBox() {
+  userFxArchiveShareDraft = '';
+  var input = userFxArchiveShareInput();
+  if (input) {
+    input.value = '';
+    input.focus();
+  }
+}
+function handleUserFxArchiveShareInputKey(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    importUserFxArchiveShareCodeFromBox();
+  }
+}
+async function importUserFxArchiveFromShareCodePrompt() {
+  return pasteUserFxArchiveShareCodeToBox();
+}
+function renderUserFxArchives() {
+  var grid = document.getElementById('user-archive-grid');
+  if (!grid) return;
+  var toolbar =
+    '<div class="user-archive-toolbar">' +
+    '<div class="user-archive-note">主入口使用 MR2 短代码复制/粘贴；旧 JSON 仍可拖拽或作为兼容备份导入。</div>' +
+    '<div class="user-archive-tools">' +
+    '<button class="fx-mini-btn ghost" type="button" onclick="createUserFxArchive()">新建</button>' +
+    '<button class="fx-mini-btn ghost" type="button" onclick="importUserFxArchiveFromShareCodePrompt()">粘贴码</button>' +
+    '<button class="fx-mini-btn ghost" type="button" onclick="importUserFxArchiveFromDialog()">导入 JSON</button>' +
+    '</div>' +
+    '</div>';
+  var shareBox =
+    '<div class="user-archive-share-panel">' +
+    '<textarea id="user-archive-share-input" class="user-archive-share-input" spellcheck="false" placeholder="把 MR2 短代码粘到这里，也兼容旧 JSON 存档" oninput="updateUserFxArchiveShareDraft(this.value)" onkeydown="handleUserFxArchiveShareInputKey(event)">' + escHtml(userFxArchiveShareDraft) + '</textarea>' +
+    '<div class="user-archive-share-actions">' +
+    '<button type="button" onclick="pasteUserFxArchiveShareCodeToBox()">从剪贴板粘贴</button>' +
+    '<button type="button" onclick="importUserFxArchiveShareCodeFromBox()">导入短码</button>' +
+    '<button type="button" onclick="clearUserFxArchiveShareCodeBox()">清空</button>' +
+    '</div>' +
+    '</div>';
+  var cards = userFxArchives.map(function (slot, index) {
+    var hasSave = !!slot.snapshot;
+    var editing = userFxArchiveEditing === index;
+    var nameHtml = editing
+      ? '<input class="user-archive-input" id="user-archive-input-' + index + '" type="text" maxlength="28" value="' + escHtml(slot.name) + '" onkeydown="handleUserFxArchiveRenameKey(event,' + index + ')">'
+      : '<div class="user-archive-name" title="' + escHtml(slot.name) + '">' + escHtml(slot.name) + '</div>';
+    var actionsHtml = editing
+      ? '<button type="button" onclick="commitUserFxArchiveRename(' + index + ')">确定</button>' +
+      '<button type="button" onclick="cancelUserFxArchiveRename()">取消</button>'
+      : '<button type="button" onclick="applyUserFxArchive(' + index + ')"' + (hasSave ? '' : ' disabled') + '>应用</button>' +
+      '<button type="button" onclick="saveUserFxArchive(' + index + ')">保存</button>' +
+      '<button type="button" onclick="copyUserFxArchiveShareCode(' + index + ')"' + (hasSave ? '' : ' disabled') + '>复制码</button>' +
+      '<button type="button" onclick="renameUserFxArchive(' + index + ')">命名</button>' +
+      '<button type="button" onclick="exportUserFxArchive(' + index + ')"' + (hasSave ? '' : ' disabled') + '>文件</button>' +
+      '<button type="button" onclick="removeUserFxArchive(' + index + ')">删除</button>';
+    return '<div class="user-archive-slot' + (hasSave ? ' has-save' : '') + '" data-slot="' + index + '">' +
+      nameHtml +
+      '<div class="user-archive-meta">' + (hasSave ? formatUserArchiveTime(slot.savedAt) : '空白存档，点击保存写入当前视觉') + '</div>' +
+      '<div class="user-archive-actions">' + actionsHtml + '</div>' +
+      '</div>';
+  }).join('');
+  var addCard = '<button class="user-archive-slot is-new" type="button" onclick="createUserFxArchive()"><strong>＋ 新建空白存档</strong><span class="user-archive-meta">可继续创建，不限制 4 个</span></button>';
+  grid.innerHTML = toolbar + shareBox + cards + addCard;
+  bindUserFxArchiveDrop();
+  if (userFxArchiveEditing >= 0) {
+    setTimeout(function () {
+      var input = document.getElementById('user-archive-input-' + userFxArchiveEditing);
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    }, 0);
+  }
+}
+function createUserFxArchive() {
+  var index = userFxArchives.length;
+  userFxArchives.push({
+    name: normalizeUserFxArchiveName('', index),
+    createdAt: Date.now(),
+    savedAt: 0,
+    snapshot: null
+  });
+  userFxArchiveEditing = index;
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast('已新建空白用户存档');
+}
+function saveUserFxArchive(index) {
+  var slot = userFxArchiveAt(index);
+  if (!slot) return;
+  slot.snapshot = captureFxArchiveSnapshot();
+  slot.savedAt = Date.now();
+  slot.createdAt = slot.createdAt || slot.savedAt;
+  slot.name = normalizeUserFxArchiveName(slot.name, index);
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast('已保存到 ' + slot.name);
+}
+function applyUserFxArchive(index) {
+  var slot = userFxArchiveAt(index);
+  if (!slot || !slot.snapshot) {
+    showToast('这个用户存档还是空白');
+    return;
+  }
+  if (applyFxArchiveSnapshot(slot.snapshot)) showToast('已应用 ' + slot.name);
+}
+function renameUserFxArchive(index) {
+  if (!userFxArchiveAt(index)) return;
+  userFxArchiveEditing = Math.floor(Number(index) || 0);
+  renderUserFxArchives();
+}
+function commitUserFxArchiveRename(index) {
+  var slot = userFxArchiveAt(index);
+  if (!slot) return;
+  var input = document.getElementById('user-archive-input-' + index);
+  slot.name = normalizeUserFxArchiveName(input && input.value, index);
+  slot.createdAt = slot.createdAt || Date.now();
+  userFxArchiveEditing = -1;
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast('已命名为 ' + slot.name);
+}
+function cancelUserFxArchiveRename() {
+  userFxArchiveEditing = -1;
+  renderUserFxArchives();
+}
+function removeUserFxArchive(index) {
+  if (!userFxArchiveAt(index)) return;
+  userFxArchives.splice(index, 1);
+  userFxArchiveEditing = -1;
+  saveUserFxArchives();
+  renderUserFxArchives();
+  showToast('已删除用户存档');
+}
+function userFxArchiveExportPayload(slot) {
+  return {
+    type: USER_FX_ARCHIVE_EXPORT_TYPE,
+    schema: USER_FX_ARCHIVE_SCHEMA,
+    exportedAt: Date.now(),
+    name: slot.name,
+    savedAt: slot.savedAt,
+    snapshot: slot.snapshot
+  };
+}
+function safeArchiveFileName(name) {
+  return String(name || 'Mineradio 用户存档').replace(/[\\/:*?"<>|]+/g, '-').slice(0, 48) + '.json';
+}
+function exportUserFxArchive(index) {
+  var slot = userFxArchiveAt(index);
+  if (!slot || !slot.snapshot) {
+    showToast('空白存档不能导出');
+    return;
+  }
+  var payload = userFxArchiveExportPayload(slot);
+  var text = JSON.stringify(payload, null, 2);
+  var api = getDesktopWindowApi && getDesktopWindowApi();
+  if (api && typeof api.exportJsonFile === 'function') {
+    api.exportJsonFile({ defaultName: safeArchiveFileName(slot.name), text: text }).then(function (res) {
+      if (res && res.ok) showToast('用户存档已导出');
+      else if (!res || !res.canceled) showToast('用户存档导出失败');
+    }).catch(function () { showToast('用户存档导出失败'); });
+    return;
+  }
+  var blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = safeArchiveFileName(slot.name);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+}
+function normalizeImportedFxArchivePayload(payload, fileName) {
+  if (!payload || typeof payload !== 'object') return null;
+  var snapshot = payload.snapshot ? normalizeFxArchiveSnapshot(payload.snapshot) : normalizeFxArchiveSnapshot(payload);
+  if (!snapshot) return null;
+  var baseName = String(fileName || '').split(/[\\/]/).pop().replace(/\.json$/i, '');
+  return {
+    name: normalizeUserFxArchiveName(payload.name || baseName, userFxArchives.length),
+    createdAt: Date.now(),
+    savedAt: Number(payload.savedAt) || Date.now(),
+    snapshot: snapshot
+  };
+}
+async function importUserFxArchiveText(text, fileName) {
+  if (looksLikeUserFxShareCode(text)) return importUserFxArchiveShareCodeText(text);
+  var payload = null;
+  try { payload = JSON.parse(String(text || '')); } catch (e) { }
+  var slot = normalizeImportedFxArchivePayload(payload, fileName);
+  if (!slot) {
+    showToast('导入失败，文件不是有效的用户存档');
+    return false;
+  }
+  return addImportedUserFxArchiveSlot(slot, '已导入 ');
+}
+function importUserFxArchiveFromDialog() {
+  var api = getDesktopWindowApi && getDesktopWindowApi();
+  if (api && typeof api.importJsonFile === 'function') {
+    api.importJsonFile().then(function (res) {
+      if (res && res.ok) importUserFxArchiveText(res.text, res.filePath || '用户存档.json');
+      else if (!res || !res.canceled) showToast('导入失败');
+    }).catch(function () { showToast('导入失败'); });
+    return;
+  }
+  var input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.onchange = function () {
+    var file = input.files && input.files[0];
+    if (file) readUserFxArchiveImportFile(file);
+  };
+  input.click();
+}
+function readUserFxArchiveImportFile(file) {
+  if (!file || !/\.json$/i.test(file.name || '')) {
+    showToast('请导入 JSON 用户存档');
+    return;
+  }
+  var reader = new FileReader();
+  reader.onload = function (e) { importUserFxArchiveText(e.target && e.target.result, file.name); };
+  reader.onerror = function () { showToast('导入失败'); };
+  reader.readAsText(file, 'utf-8');
+}
+function bindUserFxArchiveDrop() {
+  var grid = document.getElementById('user-archive-grid');
+  if (!grid || grid._archiveDropBound) return;
+  grid._archiveDropBound = true;
+  grid.addEventListener('dragover', function (e) {
+    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    grid.classList.add('dragover');
+  });
+  grid.addEventListener('dragleave', function (e) {
+    if (!grid.contains(e.relatedTarget)) grid.classList.remove('dragover');
+  });
+  grid.addEventListener('drop', function (e) {
+    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    grid.classList.remove('dragover');
+    Array.prototype.forEach.call(e.dataTransfer.files, readUserFxArchiveImportFile);
+  });
+}
+;
+
+// ==================== 07-fx/01-lyric-color-controls.js ====================
+function buildLyricColorControls() {
+  var grid = document.getElementById('lyric-color-grid');
+  if (!grid) return;
+  var html = '<button class="lyric-swatch auto" type="button" data-auto="1" onclick="setLyricColorAuto()" title="封面取色">AUTO</button>';
+  html += lyricColorPresets.map(function (p, i) {
+    return '<button class="lyric-swatch" type="button" data-color="' + p.color + '" onclick="setLyricColorPreset(' + i + ')" title="' + escHtml(p.name) + '" style="--swatch:' + p.color + '"></button>';
+  }).join('');
+  grid.innerHTML = html;
+}
+function lyricControlPalette() {
+  var source = fx.lyricColorMode === 'custom'
+    ? lyricPaletteFromHex(fx.lyricColor)
+    : ((stageLyrics && (stageLyrics.coverPalette || stageLyrics.palette)) || null);
+  return typeof effectiveLyricPalette === 'function' ? effectiveLyricPalette(source) : (source || {});
+}
+function updateLyricColorControls() {
+  var picker = document.getElementById('lyric-color-picker');
+  var value = document.getElementById('lyric-color-value');
+  var autoBtn = document.getElementById('lyric-auto-btn');
+  var color = normalizeHexColor(fx.lyricColor);
+  var pal = lyricControlPalette();
+  var tone = fx.lyricColorMode === 'custom'
+    ? color
+    : lyricPaletteColorToHex(pal.primary || pal.secondary || color, '#a9b8c8', 0.38);
+  if (picker) picker.value = tone;
+  if (value) value.textContent = fx.lyricColorMode === 'custom' ? color.toUpperCase() : '封面取色';
+  if (autoBtn) autoBtn.classList.toggle('active', fx.lyricColorMode !== 'custom');
+  document.querySelectorAll('.lyric-swatch').forEach(function (btn) {
+    var isAuto = btn.dataset.auto === '1';
+    var isColor = normalizeHexColor(btn.dataset.color || '') === color;
+    btn.classList.toggle('active', isAuto ? fx.lyricColorMode !== 'custom' : (fx.lyricColorMode === 'custom' && isColor));
+  });
+}
+function updateLyricHighlightControls() {
+  var picker = document.getElementById('lyric-highlight-picker');
+  var value = document.getElementById('lyric-highlight-value');
+  var autoBtn = document.getElementById('lyric-highlight-auto-btn');
+  var color = normalizeHexColor(fx.lyricHighlightColor);
+  var pal = lyricControlPalette();
+  var tone = fx.lyricHighlightMode === 'custom'
+    ? color
+    : lyricPaletteColorToHex(pal.highlight || pal.primary || color, '#fff0b8', 0.48);
+  if (picker) picker.value = tone;
+  if (value) value.textContent = fx.lyricHighlightMode === 'custom' ? color.toUpperCase() : '跟随歌词';
+  if (autoBtn) autoBtn.classList.toggle('active', fx.lyricHighlightMode !== 'custom');
+}
+function lyricPaletteColorToHex(value, fallback, minLum) {
+  if (typeof lyricThreeColor === 'function') {
+    try {
+      var c = lyricThreeColor(value, fallback || '#9db8cf', minLum == null ? 0.36 : minLum);
+      if (c && c.getHexString) return '#' + c.getHexString();
+    } catch (e) { }
+  }
+  return normalizeHexColor(value || fallback || '#9db8cf', fallback || '#9db8cf');
+}
+function lyricGlowControlTone() {
+  var pal = lyricControlPalette();
+  var glow = fx.lyricGlowLinked === false
+    ? fx.lyricGlowColor
+    : (pal.glowColor || pal.secondary || pal.highlight || pal.primary || fx.lyricGlowColor);
+  return lyricPaletteColorToHex(glow, '#9db8cf', fx.lyricGlowLinked === false ? 0.36 : 0.40);
+}
+function updateLyricGlowControls() {
+  var row = document.getElementById('lyric-glow-row');
+  var picker = document.getElementById('lyric-glow-picker');
+  var value = document.getElementById('lyric-glow-value');
+  var linkBtn = document.getElementById('lyric-glow-link-btn');
+  var glowEnableBtn = document.getElementById('lyric-glow-enable-btn');
+  var glowBeatBtn = document.getElementById('lyric-glow-beat-btn');
+  var linked = fx.lyricGlowLinked !== false;
+  var color = normalizeHexColor(fx.lyricGlowColor || '#9db8cf');
+  var tone = lyricGlowControlTone();
+  if (picker) picker.value = linked ? tone : color;
+  if (row) {
+    row.classList.toggle('linked', linked);
+    row.style.setProperty('--lyric-glow-color', tone);
+  }
+  if (picker) picker.style.setProperty('--lyric-glow-color', tone);
+  if (value) {
+    value.textContent = linked ? '跟随高亮' : color.toUpperCase();
+    value.style.setProperty('--lyric-glow-color', tone);
+  }
+  if (linkBtn) {
+    linkBtn.classList.toggle('active', linked);
+    linkBtn.style.setProperty('--lyric-glow-color', tone);
+    linkBtn.textContent = linked ? '链接' : '独立';
+    linkBtn.title = linked ? '点击后单独设置溢光颜色' : '点击后让溢光跟随高亮';
+  }
+  [glowEnableBtn, glowBeatBtn].forEach(function (btn) {
+    if (btn) btn.style.setProperty('--lyric-glow-color', tone);
+  });
+  if (glowEnableBtn) {
+    glowEnableBtn.classList.toggle('active', !!fx.lyricGlow);
+    glowEnableBtn.title = fx.lyricGlow ? '关闭歌词背后的溢光层' : '开启歌词背后的溢光层';
+  }
+  if (glowBeatBtn) {
+    glowBeatBtn.classList.toggle('active', !!fx.lyricGlowBeat);
+    glowBeatBtn.title = fx.lyricGlowBeat ? '后层溢光正在跟随鼓点' : '让后层溢光跟随鼓点';
+  }
+}
+;
+
+// ==================== 07-fx/03-cover-picker-fonts.js ====================
+var coverColorPickerState = { target: 'visualTint', canvas: null };
+function currentCoverPickerCanvas() {
+  if (coverPickerCanvas && coverPickerCanvas.getContext) return coverPickerCanvas;
+  if (coverTex && coverTex.image && coverTex.image.getContext) return coverTex.image;
+  return null;
+}
+function coverPickerSwatchColors() {
+  var pal = stageLyrics.coverPalette || stageLyrics.palette || {};
+  var list = [pal.primary, pal.secondary, pal.highlight, fx.visualTintColor, fx.uiAccentColor, fx.homeAccentColor]
+    .map(function (c) { return normalizeHexColor(c || '', ''); })
+    .filter(function (c) { return /^#[0-9a-f]{6}$/i.test(c); });
+  var seen = {};
+  return list.filter(function (c) {
+    if (seen[c]) return false;
+    seen[c] = true;
+    return true;
+  }).slice(0, 5);
+}
+function setCoverPickerPreview(hex) {
+  var preview = document.getElementById('cover-color-preview');
+  if (preview) preview.style.setProperty('--picked', normalizeHexColor(hex || '#9db8cf'));
+}
+function renderCoverPickerSwatches() {
+  var wrap = document.getElementById('cover-color-swatches');
+  if (!wrap) return;
+  var colors = coverPickerSwatchColors();
+  wrap.innerHTML = colors.map(function (c) {
+    return '<button type="button" style="--c:' + c + '" title="' + c.toUpperCase() + '" onclick="applyCoverPickerColor(\'' + c + '\')"></button>';
+  }).join('');
+}
+function openCoverColorPicker(target) {
+  target = target || 'visualTint';
+  var pop = document.getElementById('cover-color-pop');
+  var art = document.getElementById('cover-color-art');
+  var hint = document.getElementById('cover-color-hint');
+  if (pop && pop.classList.contains('show') && coverColorPickerState.target === target) {
+    closeCoverColorPicker();
+    return;
+  }
+  var cv = currentCoverPickerCanvas();
+  coverColorPickerState.target = target;
+  coverColorPickerState.canvas = cv;
+  if (!pop || !art) return;
+  if (!cv) {
+    setVisualTintAuto();
+    closeCoverColorPicker();
+    showToast('暂无封面，已切换为自动封面取色');
+    return;
+  }
+  var imgSrc = '';
+  try { imgSrc = cv.toDataURL('image/jpeg', 0.84); } catch (e) { }
+  if (!imgSrc && currentCoverSource && currentCoverSource.src) imgSrc = currentCoverSource.src;
+  art.style.backgroundImage = imgSrc ? 'url("' + cssImageUrl(imgSrc) + '")' : '';
+  setCoverPickerPreview(fx.visualTintColor || (stageLyrics.coverPalette && stageLyrics.coverPalette.primary) || '#9db8cf');
+  renderCoverPickerSwatches();
+  if (hint) hint.textContent = '点击专辑封面任意位置取色，或使用下方推荐色。';
+  pop.classList.add('show');
+  placeFxFloatingPanel(pop, document.getElementById('visual-tint-auto-btn') || document.getElementById('visual-tint-picker') || art, { gap: 12, pad: 14 });
+}
+function closeCoverColorPicker() {
+  var pop = document.getElementById('cover-color-pop');
+  if (pop) pop.classList.remove('show');
+  hideCoverColorLoupe();
+}
+function applyCoverPickerColor(hex) {
+  hex = normalizeHexColor(hex || '#9db8cf');
+  setCoverPickerPreview(hex);
+  if (coverColorPickerState.target === 'visualTint') {
+    setVisualTintCustom(hex, true);
+    showToast('视觉主色: ' + hex.toUpperCase());
+  }
+  closeCoverColorPicker();
+}
+function moveCoverColorLoupe(e) {
+  var cv = coverColorPickerState.canvas || currentCoverPickerCanvas();
+  var loupe = document.getElementById('cover-color-loupe');
+  var art = document.getElementById('cover-color-art');
+  if (!cv || !loupe || !art) return;
+  var rect = art.getBoundingClientRect();
+  var x = clampRange((e.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+  var y = clampRange((e.clientY - rect.top) / Math.max(1, rect.height), 0, 1);
+  var imgSrc = '';
+  try { imgSrc = cv.toDataURL('image/jpeg', 0.84); } catch (err) { }
+  if (imgSrc) {
+    loupe.style.backgroundImage = 'url("' + cssImageUrl(imgSrc) + '")';
+    loupe.style.backgroundSize = '680% 680%';
+    loupe.style.backgroundPosition = (x * 100).toFixed(2) + '% ' + (y * 100).toFixed(2) + '%';
+  }
+  loupe.style.left = Math.min(window.innerWidth - 128, e.clientX + 18) + 'px';
+  loupe.style.top = Math.min(window.innerHeight - 128, e.clientY + 18) + 'px';
+  loupe.classList.add('show');
+}
+function hideCoverColorLoupe() {
+  var loupe = document.getElementById('cover-color-loupe');
+  if (loupe) loupe.classList.remove('show');
+}
+function pickCoverColorFromArt(e) {
+  var cv = coverColorPickerState.canvas || currentCoverPickerCanvas();
+  if (!cv || !cv.getContext) return;
+  var rect = e.currentTarget.getBoundingClientRect();
+  var x = clampRange((e.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+  var y = clampRange((e.clientY - rect.top) / Math.max(1, rect.height), 0, 1);
+  var sx = Math.max(0, Math.min(cv.width - 1, Math.floor(x * cv.width)));
+  var sy = Math.max(0, Math.min(cv.height - 1, Math.floor(y * cv.height)));
+  try {
+    var data = cv.getContext('2d').getImageData(sx, sy, 1, 1).data;
+    applyCoverPickerColor(rgbToHexColor(data[0], data[1], data[2]));
+  } catch (err) {
+    showToast('封面取色不可用，已保留自动取色');
+    setVisualTintAuto();
+    closeCoverColorPicker();
+  }
+}
+function updateLyricFontControls() {
+  renderCustomLyricFontButtons();
+  document.querySelectorAll('#lyric-font-grid button').forEach(function (btn) {
+    btn.classList.toggle('active', btn.dataset.font === normalizeLyricFontKey(fx.lyricFont));
+  });
+}
+function setLyricFont(key) {
+  fx.lyricFont = normalizeLyricFontKey(key);
+  var customFont = customLyricFontRecordForKey(fx.lyricFont);
+  if (customFont) {
+    registerCustomLyricFont(customFont).then(function (ok) {
+      if (ok && normalizeLyricFontKey(fx.lyricFont) === customLyricFontKey(customFont.id)) {
+        refreshCurrentLyricStyle();
+        pushDesktopLyricsState(true);
+      }
+    });
+  }
+  updateLyricFontControls();
+  refreshCurrentLyricStyle();
+  saveLyricLayout({ user: true, reason: 'lyricFont' });
+  pushDesktopLyricsState(true);
+  showToast('歌词字体已切换');
+}
+function renderCustomLyricFontButtons() {
+  var grid = document.getElementById('lyric-font-grid');
+  if (!grid) return;
+  grid.querySelectorAll('button[data-custom-font="1"]').forEach(function (btn) { btn.remove(); });
+  var uploadBtn = grid.querySelector('.font-upload-btn');
+  (customLyricFonts || []).forEach(function (font) {
+    var key = customLyricFontKey(font && font.id);
+    if (!key) return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.font = key;
+    btn.dataset.customFont = '1';
+    btn.title = font.name + ' / 点右侧小叉删除';
+    btn.style.fontFamily = lyricFontStackForKey(key);
+    btn.innerHTML = '<span>' + escHtml(font.name) + '</span><span class="font-remove" title="删除字体" onclick="removeCustomLyricFont(event,\'' + font.id + '\')">×</span>';
+    btn.onclick = function () { setLyricFont(key); };
+    if (uploadBtn) grid.insertBefore(btn, uploadBtn);
+    else grid.appendChild(btn);
+  });
+}
+function triggerLyricFontUpload() {
+  var input = document.getElementById('lyric-font-input');
+  if (input) input.click();
+}
+function isSupportedLyricFontFile(file) {
+  if (!file) return false;
+  var name = String(file.name || '').toLowerCase();
+  return /\.(ttf|otf|woff|woff2)$/.test(name) || /^font\/(ttf|otf|woff2?)$/i.test(file.type || '');
+}
+function readFileAsDataUrl(file) {
+  return new Promise(function (resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function () { resolve(String(reader.result || '')); };
+    reader.onerror = function () { reject(reader.error || new Error('FONT_READ_FAILED')); };
+    reader.readAsDataURL(file);
+  });
+}
+async function handleLyricFontFiles(files) {
+  files = Array.from(files || []);
+  var file = files.find(isSupportedLyricFontFile);
+  if (!file) {
+    showToast('没有找到可用字体文件');
+    return;
+  }
+  if (file.size > CUSTOM_LYRIC_FONT_MAX_BYTES) {
+    showToast('字体文件太大，建议小于 3.6MB');
+    return;
+  }
+  try {
+    var dataUrl = await readFileAsDataUrl(file);
+    var id = ('f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)).replace(/[^a-z0-9]/gi, '').slice(0, 24);
+    var record = normalizeCustomLyricFontRecord({
+      id: id,
+      name: normalizeCustomLyricFontName(file.name),
+      family: 'MineradioCustomLyricFont-' + id,
+      dataUrl: dataUrl,
+      size: file.size,
+      savedAt: Date.now()
+    });
+    if (!record) {
+      showToast('字体文件读取失败');
+      return;
+    }
+    var loaded = await registerCustomLyricFont(record);
+    if (!loaded) {
+      showToast('字体加载失败，请换一个字体文件');
+      return;
+    }
+    customLyricFonts = [record].concat((customLyricFonts || []).filter(function (item) {
+      return item && item.id !== record.id && item.name !== record.name;
+    })).slice(0, CUSTOM_LYRIC_FONT_MAX_COUNT);
+    var saved = saveCustomLyricFonts();
+    updateLyricFontControls();
+    setLyricFont(customLyricFontKey(record.id));
+    showToast(saved ? '歌词字体已上传' : '字体已临时加载，文件过大无法保存');
+  } catch (e) {
+    console.warn('[LyricFont] upload failed', e);
+    showToast('字体上传失败');
+  }
+}
+function removeCustomLyricFont(event, id) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  id = String(id || '').replace(/[^a-z0-9_-]/gi, '').slice(0, 32);
+  if (!id) return;
+  var key = customLyricFontKey(id);
+  customLyricFonts = (customLyricFonts || []).filter(function (font) { return font && font.id !== id; });
+  if (normalizeLyricFontKey(fx.lyricFont) === key || fx.lyricFont === key) fx.lyricFont = 'sans';
+  saveCustomLyricFonts();
+  updateLyricFontControls();
+  refreshCurrentLyricStyle();
+  saveLyricLayout({ user: true, reason: 'lyricFontRemove' });
+  pushDesktopLyricsState(true);
+  showToast('已删除上传字体');
+}
+function currentLyricPaletteSource() {
+  return fx.lyricColorMode === 'custom'
+    ? lyricPaletteFromHex(fx.lyricColor)
+    : (stageLyrics.coverPalette || stageLyrics.palette);
+}
+function applyLyricPaletteLive(reason) {
+  if (typeof setStageLyricPalette === 'function') {
+    setStageLyricPalette(currentLyricPaletteSource(), { immediate: true, durationMs: 1, reason: reason || 'live' });
+  }
+}
+function setLyricGlowLinked(linked, openPicker) {
+  fx.lyricGlowLinked = linked !== false;
+  if (!fx.lyricGlowLinked) fx.lyricGlowColor = normalizeHexColor(fx.lyricGlowColor || fx.lyricHighlightColor || '#9db8cf');
+  applyLyricPaletteLive('lyricGlowLinked');
+  updateLyricGlowControls();
+  saveLyricLayout({ syncDisk: true, user: true, reason: 'lyricGlowLinked' });
+  if (openPicker) {
+    setTimeout(function () {
+      var picker = document.getElementById('lyric-glow-picker');
+      if (picker) picker.click();
+    }, 0);
+  }
+}
+function toggleLyricGlowLink(e) {
+  if (e && e.stopPropagation) e.stopPropagation();
+  setLyricGlowLinked(fx.lyricGlowLinked === false);
+}
+function handleLyricGlowRowClick(e) {
+  if (fx.lyricGlowLinked !== false) {
+    if (e && e.preventDefault) e.preventDefault();
+    setLyricGlowLinked(false, true);
+  }
+}
+function setLyricGlowCustom(color, silent) {
+  fx.lyricGlowLinked = false;
+  fx.lyricGlowColor = normalizeHexColor(color || '#9db8cf');
+  applyLyricPaletteLive('lyricGlowColor');
+  updateLyricGlowControls();
+  saveLyricLayout({ syncDisk: true, user: true, reason: 'lyricGlowColor' });
+  pushDesktopLyricsState(true);
+  if (!silent) showToast('溢光颜色: ' + fx.lyricGlowColor.toUpperCase());
+}
+function setLyricColorAuto() {
+  fx.lyricColorMode = 'auto';
+  setStageLyricPalette(stageLyrics.coverPalette || stageLyrics.palette, { immediate: true, durationMs: 1, reason: 'lyricColorAuto' });
+  updateLyricColorControls();
+  updateLyricHighlightControls();
+  updateLyricGlowControls();
+  saveLyricLayout({ syncDisk: true, user: true, reason: 'lyricColorAuto' });
+  pushDesktopLyricsState(true);
+  showToast('歌词颜色: 封面取色');
+}
+function setLyricColorCustom(color, silent) {
+  fx.lyricColorMode = 'custom';
+  fx.lyricColor = normalizeHexColor(color);
+  setStageLyricPalette(lyricPaletteFromHex(fx.lyricColor), { immediate: true, durationMs: 1, reason: 'lyricColorCustom' });
+  updateLyricColorControls();
+  updateLyricHighlightControls();
+  updateLyricGlowControls();
+  saveLyricLayout({ syncDisk: true, user: true, reason: 'lyricColorCustom' });
+  pushDesktopLyricsState(true);
+  if (!silent) showToast('歌词颜色: ' + fx.lyricColor.toUpperCase());
+}
+function setLyricColorPreset(i) {
+  var p = lyricColorPresets[i];
+  if (!p) return;
+  setLyricColorCustom(p.color);
+}
+function setLyricHighlightAuto() {
+  fx.lyricHighlightMode = 'auto';
+  applyLyricPaletteLive('lyricHighlightAuto');
+  updateLyricHighlightControls();
+  updateLyricGlowControls();
+  saveLyricLayout({ syncDisk: true, user: true, reason: 'lyricHighlightAuto' });
+  pushDesktopLyricsState(true);
+  showToast('高亮颜色: 跟随歌词');
+}
+function setLyricHighlightCustom(color, silent) {
+  fx.lyricHighlightMode = 'custom';
+  fx.lyricHighlightColor = normalizeHexColor(color);
+  applyLyricPaletteLive('lyricHighlightCustom');
+  updateLyricHighlightControls();
+  updateLyricGlowControls();
+  saveLyricLayout({ syncDisk: true, user: true, reason: 'lyricHighlightCustom' });
+  pushDesktopLyricsState(true);
+  if (!silent) showToast('高亮颜色: ' + fx.lyricHighlightColor.toUpperCase());
+}
+;
+
+// ==================== 07-fx/05-fx-panel-performance.js ====================
+var homeWaveTrackState = { bars: 0, smooth: [] };
+function ensureHomeWaveTrackBars() {
+  var el = document.getElementById('home-wave-track');
+  if (!el) return;
+  var count = 24;
+  if (homeWaveTrackState.bars === count && el.children.length === count) return;
+  homeWaveTrackState.bars = count;
+  homeWaveTrackState.smooth = new Array(count).fill(0);
+  el.innerHTML = new Array(count + 1).join('<span></span>');
+}
+function updateHomeAudioVisual(dt) {
+  if (!emptyHomeActive) return;
+  var wave = document.getElementById('home-wave-track');
+  if (!wave) return;
+  var nowMs = performance.now();
+  if (homeWaveTrackState.lastAt && nowMs - homeWaveTrackState.lastAt < 80) return;
+  homeWaveTrackState.lastAt = nowMs;
+  ensureHomeWaveTrackBars();
+  var bars = wave.children;
+  var nowT = uniforms && uniforms.uTime ? uniforms.uTime.value : performance.now() / 1000;
+  for (var i = 0; i < bars.length; i++) {
+    var ratio = bars.length > 1 ? i / (bars.length - 1) : 0;
+    var bin = 0;
+    if (frequencyData && frequencyData.length) {
+      bin = (frequencyData[Math.min(frequencyData.length - 1, Math.floor(Math.pow(ratio, 1.2) * (frequencyData.length - 1)))] || 0) / 255;
+    } else {
+      bin = 0.16 + Math.sin(nowT * 1.4 + i * 0.34) * 0.06;
+    }
+    var target = clampRange(Math.max(bin, smoothBass * 0.35 + smoothMid * 0.18 + beatPulse * 0.24), 0.03, 1);
+    var prev = homeWaveTrackState.smooth[i] || 0;
+    prev += (target - prev) * (target > prev ? 0.34 : 0.12);
+    homeWaveTrackState.smooth[i] = prev;
+    bars[i].style.height = Math.max(4, prev * 18) + 'px';
+    bars[i].style.opacity = String(clampRange(0.36 + prev * 0.68, 0.32, 1));
+  }
+}
+function setRange(id, value) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  if (id === 'fx-lyricglow') value = Math.min(0.85, Math.max(0, value));
+  if (id === 'fx-lyricbgadapt') value = Math.min(1, Math.max(0, value));
+  if (id === 'fx-coverres') value = normalizeCoverResolution(value);
+  if (id === 'fx-glassaberration') value = normalizeControlGlassChromaticOffset(value);
+  if (id === 'fx-lyriccustomlines') value = lyricCustomLineCountValue();
+  if (id === 'fx-memory-interval' || id === 'fx-memory-threshold' || id === 'fx-bgcropx' || id === 'fx-bgcropy' || /^fx-sonic(?!we)/.test(id) || id === 'fx-sonicwegain') value = Math.round(Number(value) || 0);
+  el.value = value;
+  var out = el.parentElement.querySelector('output');
+  if (out) out.textContent = id === 'fx-coverres'
+    ? coverParticleCountLabel(value)
+    : (id === 'fx-lyricweight' || id === 'fx-lyriccustomlines' || id === 'fx-glassaberration' || id === 'fx-playlistblur' || id === 'fx-bgcropx' || id === 'fx-bgcropy' || id === 'fx-lyrictiltx' || id === 'fx-lyrictilty' || id === 'fx-shelfangle' || id === 'fx-shelfdetailanglex' || id === 'fx-shelfdetailangley' || id === 'fx-memory-interval' || id === 'fx-memory-threshold' || /^fx-sonic(?!we)/.test(id) || id === 'fx-sonicwegain' ? String(Math.round(Number(value) || 0)) : Number(value).toFixed(id === 'fx-lyricspacing' ? 3 : 2));
+}
+function updateDevelopmentFxControls() {
+  [
+    ['desktopLyrics', 't-desktopLyrics', '全屏幕置顶歌词'],
+    ['desktopLyricsClickThrough', 't-desktopLyricsClickThrough', '锁定后防误触；鼠标移到桌面歌词上按中键可锁定/解锁'],
+    ['desktopLyricsCinema', 't-desktopLyricsCinema', '桌面歌词绑定鼓点电影震动，基础漂浮始终保留'],
+    ['desktopLyricsHighlight', 't-desktopLyricsHighlight', '桌面歌词按播放进度高亮'],
+    ['wallpaperMode', 't-wallpaperMode', '把完整 Mineradio 放到 Windows 桌面；右上控制器可显示、隐藏桌面图标；Esc 退出；重启默认关闭']
+  ].forEach(function (item) {
+    var runtimeUnavailable = item[0] === 'wallpaperMode'
+      && typeof desktopWallpaperRuntimeState !== 'undefined'
+      && desktopWallpaperRuntimeState.supported === false;
+    var locked = isDevelopmentLockedFx(item[0]) || runtimeUnavailable;
+    var el = document.getElementById(item[1]);
+    if (!el) return;
+    el.classList.toggle('dev-locked', locked);
+    if (locked) {
+      el.classList.remove('on');
+      el.setAttribute('aria-disabled', 'true');
+      el.title = runtimeUnavailable ? '当前系统不支持桌面壁纸模式' : '开发中，暂不可用';
+    } else {
+      el.removeAttribute('aria-disabled');
+      el.title = item[2];
+    }
+  });
+  [
+    ['desktopLyrics', 'fx-desktoplyricssize'],
+    ['desktopLyrics', 'fx-desktoplyricsopacity'],
+    ['desktopLyrics', 'fx-desktoplyricsy'],
+    ['wallpaperMode', 'fx-wallpaperopacity']
+  ].forEach(function (item) {
+    var runtimeUnavailable = item[0] === 'wallpaperMode'
+      && typeof desktopWallpaperRuntimeState !== 'undefined'
+      && desktopWallpaperRuntimeState.supported === false;
+    var locked = isDevelopmentLockedFx(item[0]) || runtimeUnavailable;
+    var input = document.getElementById(item[1]);
+    if (!input) return;
+    input.disabled = locked;
+    var row = input.closest && input.closest('.fx-slider');
+    if (row) row.classList.toggle('dev-locked', locked);
+  });
+  var wallpaperFpsLocked = isDevelopmentLockedFx('wallpaperMode')
+    || (typeof desktopWallpaperRuntimeState !== 'undefined' && desktopWallpaperRuntimeState.supported === false);
+  document.querySelectorAll('#wallpaper-fps-seg [data-wallpaper-fps]').forEach(function (btn) {
+    btn.disabled = wallpaperFpsLocked;
+  });
+}
+function updateDesktopLyricsFpsControls() {
+  var fps = normalizeDesktopLyricsFps(fx.desktopLyricsFps);
+  document.querySelectorAll('#desktop-lyrics-fps-seg [data-desktop-lyrics-fps]').forEach(function (btn) {
+    btn.classList.toggle('active', normalizeDesktopLyricsFps(btn.getAttribute('data-desktop-lyrics-fps')) === fps);
+  });
+}
+function updateWallpaperFpsControls() {
+  fx.wallpaperFps = normalizeWallpaperFps(fx.wallpaperFps);
+  document.querySelectorAll('#wallpaper-fps-seg [data-wallpaper-fps]').forEach(function (btn) {
+    var active = normalizeWallpaperFps(btn.getAttribute('data-wallpaper-fps')) === fx.wallpaperFps;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+function updateLyricTextureClarityControls() {
+  fx.lyricTextureClarity = normalizeLyricTextureClarity(fx.lyricTextureClarity);
+  document.querySelectorAll('#lyric-texture-quality-seg [data-lyric-texture-clarity]').forEach(function (btn) {
+    var active = normalizeLyricTextureClarity(btn.getAttribute('data-lyric-texture-clarity')) === fx.lyricTextureClarity;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+function lyricTextureClarityLabel(value) {
+  var tier = normalizeLyricTextureClarity(value);
+  return tier === 4 ? '4× 极致' : (tier === 3 ? '3× 超清' : (tier === 2 ? '2× 高清' : '1× 标清'));
+}
+function setLyricTextureClarity(value, silent) {
+  var next = normalizeLyricTextureClarity(value);
+  var changed = next !== normalizeLyricTextureClarity(fx.lyricTextureClarity);
+  fx.lyricTextureClarity = next;
+  updateLyricTextureClarityControls();
+  if (!changed) return;
+  if (typeof invalidateLyricQualityTextures === 'function') invalidateLyricQualityTextures('texture-clarity-change', { release: next <= 1 });
+  saveLyricLayout({ user: true, reason: 'lyricTextureClarity' });
+  if (!silent) showToast('歌词清晰度: ' + lyricTextureClarityLabel(next));
+}
+function updatePerformanceControls() {
+  fx.performanceBackground = normalizePerformanceBackgroundMode(fx.performanceBackground, fx.liveBackgroundKeep === true);
+  fx.liveBackgroundKeep = fx.performanceBackground === 'keep';
+  fx.performanceQuality = normalizePerformanceQuality(fx.performanceQuality);
+  fx.foregroundFpsMode = normalizeForegroundFpsMode(fx.foregroundFpsMode);
+  document.querySelectorAll('#performance-background-seg [data-performance-background]').forEach(function (btn) {
+    btn.classList.toggle('active', btn.getAttribute('data-performance-background') === fx.performanceBackground);
+  });
+  document.querySelectorAll('#performance-quality-seg [data-performance-quality]').forEach(function (btn) {
+    var active = btn.getAttribute('data-performance-quality') === fx.performanceQuality;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+  document.querySelectorAll('#foreground-fps-seg [data-foreground-fps]').forEach(function (btn) {
+    var active = normalizeForegroundFpsMode(btn.getAttribute('data-foreground-fps')) === fx.foregroundFpsMode;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+  var liveBackgroundKeepToggle = document.getElementById('t-liveBackgroundKeep');
+  if (liveBackgroundKeepToggle) liveBackgroundKeepToggle.classList.toggle('on', fx.liveBackgroundKeep === true);
+}
+var SONIC_ORIGINAL_FX_CONTROL_IDS = [
+  'fx-sonic-ground-section', 'fx-sonicamp', 'fx-sonicspeed', 'fx-sonicdensity', 'fx-sonicrange', 'fx-soniclower', 'fx-sonicdepth', 'fx-sonicautorotate',
+  'fx-sonic-audio-section', 'sonic-audio-toggle-grid', 'sonic-audio-monitor', 'fx-sonicaudiosensitivity', 'fx-sonicaudiobandstart', 'fx-sonicaudiobandend', 'fx-sonicaudiothreshold', 'fx-sonicaudiopulse',
+  'fx-sonicsubbass', 'fx-sonicbass', 'fx-soniclowmid', 'fx-sonicmid', 'fx-sonichighmid', 'fx-sonicpresence', 'fx-sonicbrilliance', 'fx-sonicair',
+  'fx-sonic-color-section', 'sonic-ground-base-row', 'sonic-ground-cool-row', 'sonic-ground-warm-row', 'sonic-ground-accent-row', 'fx-sonicglow',
+  'fx-sonic-floating-section', 'sonic-floating-toggle-grid', 'fx-sonicfloatcount', 'fx-sonicfloatintensity', 'fx-sonicfloatmin', 'fx-sonicfloatmax', 'fx-sonicfloatspeed'
+];
+var SONIC_WORKSHOP_FX_CONTROL_IDS = [
+  'fx-sonic-workshop-section', 'fx-sonicwegain', 'fx-sonicweaudio', 'fx-sonicwerange', 'fx-sonicwepeak',
+  'sonic-workshop-color-row', 'sonic-workshop-base-row', 'sonic-workshop-warm-row', 'sonic-workshop-cool-row',
+  'sonic-workshop-ripple-row', 'sonic-workshop-peak-row', 'sonic-workshop-theme-seg'
+];
+function fxPanelControlBlockById(id) {
+  var el = document.getElementById(id);
+  if (!el) return null;
+  if (el.classList && (el.classList.contains('fx-section-label') || el.classList.contains('fx-slider') || el.classList.contains('fx-toggle-grid') || el.classList.contains('sonic-audio-monitor') || el.classList.contains('lyric-color-row') || el.classList.contains('fx-seg'))) return el;
+  return el.closest ? el.closest('.fx-slider,.fx-toggle-grid,.sonic-audio-monitor,.lyric-color-row,.fx-seg,.fx-section-label') : null;
+}
+function setFxPanelControlsHidden(ids, hidden) {
+  ids.forEach(function (id) {
+    var node = fxPanelControlBlockById(id);
+    if (node) node.classList.toggle('fx-sonic-hidden', !!hidden);
+  });
+}
+function updateSonicSeriesControlVisibility() {
+  var preset = Number(fx && fx.preset) || 0;
+  var original = preset === 7;
+  var workshop = preset === 8;
+  setFxPanelControlsHidden(SONIC_ORIGINAL_FX_CONTROL_IDS, !original);
+  setFxPanelControlsHidden(SONIC_WORKSHOP_FX_CONTROL_IDS, !workshop);
+  setFxPanelControlsHidden(['fx-lyricbgadapt-row', 'fx-lyricbgadapt'], false);
+}
+function setPerformanceBackgroundMode(mode, silent) {
+  var next = normalizePerformanceBackgroundMode(mode, false);
+  fx.performanceBackground = next;
+  fx.liveBackgroundKeep = next === 'keep';
+  updatePerformanceControls();
+  saveLyricLayout({ user: true, reason: 'performanceBackground' });
+  updateRenderPowerClasses();
+  applyRendererPowerMode();
+  if (next === 'keep') recoverVisualsAfterBackground('performance-background-keep');
+  else if (next === 'release' && isDeepBackgroundMode()) trimRuntimeCaches('performance-release', true);
+  if (!silent) {
+    showToast(next === 'keep' ? '后台策略: 保持运行' : (next === 'release' ? '后台策略: 停止并释放' : '后台策略: 自动优化'));
+  }
+}
+function setPerformanceQualityMode(mode, silent) {
+  var next = normalizePerformanceQuality(mode);
+  fx.performanceQuality = next;
+  updatePerformanceControls();
+  applyRendererPowerMode();
+  saveLyricLayout({ user: true, reason: 'performanceQuality' });
+  if (!silent) {
+    var label = next === 'eco' ? '低' : (next === 'balanced' ? '中' : (next === 'ultra' ? '超高' : '高'));
+    showToast('画质档位: ' + label);
+  }
+}
+function setForegroundFpsMode(mode, silent) {
+  var next = normalizeForegroundFpsMode(mode);
+  fx.foregroundFpsMode = next;
+  updatePerformanceControls();
+  saveLyricLayout({ user: true, reason: 'foregroundFpsMode' });
+  if (typeof wakeMainLoopFromBackground === 'function') wakeMainLoopFromBackground();
+  if (typeof syncWallpaperEngineCaptureFrameRate === 'function') {
+    Promise.resolve(syncWallpaperEngineCaptureFrameRate()).catch(function () { });
+  }
+  if (!silent) showToast(next === 'vsync' ? '前台帧率: 跟随屏幕垂直同步' : ('前台帧率上限: ' + next + ' FPS'));
+}
+function updateFxInputs() {
+  normalizeDevelopmentLockedFxState();
+  applyShelfCameraDefaultAngle(false);
+  setRange('fx-intensity', fx.intensity);
+  setRange('fx-cineshake', fx.cinemaShake);
+  setRange('fx-depth', fx.depth);
+  setRange('fx-coverres', fx.coverResolution);
+  setRange('fx-lyricglow', fx.lyricGlowStrength);
+  setRange('fx-lyricbgadapt', fx.lyricBackgroundAdapt);
+  setRange('fx-sonicamp', fx.sonicGroundAmplitude);
+  setRange('fx-sonicspeed', fx.sonicGroundMotionSpeed);
+  setRange('fx-sonicdensity', fx.sonicGroundDensity);
+  setRange('fx-sonicrange', fx.sonicGroundRange);
+  setRange('fx-soniclower', fx.sonicGroundLower);
+  setRange('fx-sonicdepth', fx.sonicGroundDepth);
+  setRange('fx-sonicautorotate', fx.sonicGroundAutoRotate);
+  setRange('fx-sonicaudiosensitivity', fx.sonicAudioSensitivity);
+  setRange('fx-sonicaudiobandstart', fx.sonicAudioBandStart);
+  setRange('fx-sonicaudiobandend', fx.sonicAudioBandEnd);
+  setRange('fx-sonicaudiothreshold', fx.sonicAudioThreshold);
+  setRange('fx-sonicaudiopulse', fx.sonicAudioPulseStrength);
+  setRange('fx-sonicwegain', fx.sonicWorkshopInputGain);
+  setRange('fx-sonicweaudio', fx.sonicWorkshopAudioIntensity);
+  setRange('fx-sonicwerange', fx.sonicWorkshopResponseRange);
+  setRange('fx-sonicwepeak', fx.sonicWorkshopPeakIntensity);
+  setRange('fx-sonicsubbass', fx.sonicGroundSubBass);
+  setRange('fx-sonicbass', fx.sonicGroundBass);
+  setRange('fx-soniclowmid', fx.sonicGroundLowMid);
+  setRange('fx-sonicmid', fx.sonicGroundMid);
+  setRange('fx-sonichighmid', fx.sonicGroundHighMid);
+  setRange('fx-sonicpresence', fx.sonicGroundPresence);
+  setRange('fx-sonicbrilliance', fx.sonicGroundBrilliance);
+  setRange('fx-sonicair', fx.sonicGroundAir);
+  setRange('fx-sonicglow', fx.sonicGroundGlow);
+  setRange('fx-sonicfloatcount', fx.sonicGroundFloatingCount);
+  setRange('fx-sonicfloatintensity', fx.sonicGroundFloatingIntensity);
+  setRange('fx-sonicfloatmin', fx.sonicGroundFloatingMinSize);
+  setRange('fx-sonicfloatmax', fx.sonicGroundFloatingMaxSize);
+  setRange('fx-sonicfloatspeed', fx.sonicGroundFloatingSpeed);
+  setRange('fx-bgopacity', fx.backgroundOpacity == null ? 1 : fx.backgroundOpacity);
+  setRange('fx-bgcropx', fx.backgroundMediaCropX == null ? fxDefaults.backgroundMediaCropX : fx.backgroundMediaCropX);
+  setRange('fx-bgcropy', fx.backgroundMediaCropY == null ? fxDefaults.backgroundMediaCropY : fx.backgroundMediaCropY);
+  setRange('fx-bgzoom', fx.backgroundMediaZoom == null ? fxDefaults.backgroundMediaZoom : fx.backgroundMediaZoom);
+  setRange('fx-windowbgopacity', fx.windowBackgroundOpacity == null ? fxDefaults.windowBackgroundOpacity : fx.windowBackgroundOpacity);
+  setRange('fx-bgglassopacity', fx.backgroundGlassOpacity == null ? fxDefaults.backgroundGlassOpacity : fx.backgroundGlassOpacity);
+  setRange('fx-glassaberration', fx.controlGlassChromaticOffset);
+  setRange('fx-playlistblur', fx.playlistPanelGlassBlur);
+  setRange('fx-playlistdensity', fx.playlistPanelGlassDensity);
+  setRange('fx-playlistopen', fx.playlistPanelOpenDuration);
+  setRange('fx-playlistclose', fx.playlistPanelCloseDuration);
+  setRange('fx-desktoplyricssize', fx.desktopLyricsSize);
+  setRange('fx-desktoplyricsopacity', fx.desktopLyricsOpacity);
+  setRange('fx-desktoplyricsy', fx.desktopLyricsY);
+  setRange('fx-wallpaperopacity', fx.wallpaperOpacity);
+  setRange('fx-shelfsize', fx.shelfSize);
+  setRange('fx-shelfx', fx.shelfOffsetX);
+  setRange('fx-shelfy', fx.shelfOffsetY);
+  setRange('fx-shelfz', fx.shelfOffsetZ);
+  setRange('fx-shelfangle', fx.shelfAngleY);
+  setRange('fx-shelfopacity', fx.shelfOpacity);
+  setRange('fx-shelfbgalpha', fx.shelfBgOpacity);
+  setRange('fx-shelfdetailx', fx.shelfDetailOffsetX);
+  setRange('fx-shelfdetaily', fx.shelfDetailOffsetY);
+  setRange('fx-shelfdetailz', fx.shelfDetailOffsetZ);
+  setRange('fx-shelfdetailscale', fx.shelfDetailScale);
+  setRange('fx-shelfdetailanglex', fx.shelfDetailAngleX);
+  setRange('fx-shelfdetailangley', fx.shelfDetailAngleY);
+  setRange('fx-shelfdetailrowgap', fx.shelfDetailRowGap);
+  setRange('fx-shelfdetailopen', fx.shelfDetailOpenDuration);
+  setRange('fx-shelfdetailclose', fx.shelfDetailCloseDuration);
+  setRange('fx-shelfdetailrowtime', fx.shelfDetailRowDuration);
+  setRange('fx-shelfdetailintro', fx.shelfDetailIntroStrength);
+  setRange('fx-shelfdetailparallax', fx.shelfDetailParallax);
+  setRange('fx-shelfsummonopen', fx.shelfSummonOpenDuration);
+  setRange('fx-shelfsummonclose', fx.shelfSummonCloseDuration);
+  setRange('fx-shelfsummonslide', fx.shelfSummonSlide);
+  setRange('fx-shelfsummonstagger', fx.shelfSummonStagger);
+  setRange('fx-shelfsummonscale', fx.shelfSummonScale);
+  setRange('fx-shelfsummonparallax', fx.shelfSummonParallax);
+  setRange('fx-shelfcamenter', fx.shelfCameraEnterSpeed);
+  setRange('fx-shelfcamexit', fx.shelfCameraExitSpeed);
+  setRange('fx-lyricspacing', fx.lyricLetterSpacing);
+  setRange('fx-lyriclineheight', fx.lyricLineHeight);
+  setRange('fx-lyricweight', fx.lyricWeight);
+  setRange('fx-lyriccustomlines', fx.lyricCustomLineCount);
+  setRange('fx-lyricglitchintensity', fx.lyricGlitchIntensity);
+  setRange('fx-lyricglitchslice', fx.lyricGlitchSlice);
+  setRange('fx-lyricglitchchroma', fx.lyricGlitchChroma);
+  setRange('fx-lyricglitchrate', fx.lyricGlitchRate);
+  setRange('fx-lyricglitchjitter', fx.lyricGlitchJitter);
+  setRange('fx-lyriccontextopacity', fx.lyricContextOpacity);
+  setRange('fx-lyriccontextspread', fx.lyricContextSpread);
+  setRange('fx-lyrictranslationgap', fx.lyricTranslationGap);
+  setRange('fx-lyrictranslationscale', fx.lyricTranslationScale);
+  setRange('fx-lyrictranslationopacity', fx.lyricTranslationOpacity);
+  setRange('fx-lyricedgefade', fx.lyricEdgeFade);
+  setRange('fx-lyricmotionsoftness', fx.lyricMotionSoftness);
+  setRange('fx-lyricscale', fx.lyricScale);
+  setRange('fx-lyricx', fx.lyricOffsetX);
+  setRange('fx-lyricy', fx.lyricOffsetY);
+  setRange('fx-lyricz', fx.lyricOffsetZ);
+  setRange('fx-lyrictiltx', fx.lyricTiltX);
+  setRange('fx-lyrictilty', fx.lyricTiltY);
+  setRange('fx-point', fx.point);
+  setRange('fx-speed', fx.speed);
+  setRange('fx-twist', fx.twist);
+  setRange('fx-color', fx.color);
+  setRange('fx-bloom', fx.bloomStrength);
+  setRange('fx-scatter', fx.scatter);
+  setRange('fx-bgfade', fx.bgFade);
+  updateLyricGlowControls();
+  applyPlaylistPanelFxSettings();
+  // 同步开关
+  document.getElementById('t-float').classList.toggle('on', fx.floatLayer);
+  var floatToggle = document.getElementById('t-float');
+  if (floatToggle) floatToggle.classList.toggle('on', fx.floatLayer);
+  document.getElementById('t-cinema').classList.toggle('on', fx.cinema);
+  var lyricGlowToggle = document.getElementById('t-lyricGlow');
+  if (lyricGlowToggle) lyricGlowToggle.classList.toggle('on', fx.lyricGlow);
+  var lyricGlowBeatToggle = document.getElementById('t-lyricGlowBeat');
+  if (lyricGlowBeatToggle) lyricGlowBeatToggle.classList.toggle('on', fx.lyricGlowBeat);
+  var lyricGlowEnableBtn = document.getElementById('lyric-glow-enable-btn');
+  if (lyricGlowEnableBtn) lyricGlowEnableBtn.classList.toggle('active', fx.lyricGlow);
+  var lyricGlowBeatBtn = document.getElementById('lyric-glow-beat-btn');
+  if (lyricGlowBeatBtn) lyricGlowBeatBtn.classList.toggle('active', fx.lyricGlowBeat);
+  var lyricGlowParticlesToggle = document.getElementById('t-lyricGlowParticles');
+  if (lyricGlowParticlesToggle) lyricGlowParticlesToggle.classList.toggle('on', fx.lyricGlowParticles);
+  var backgroundStarRiverToggle = document.getElementById('t-backgroundStarRiver');
+  if (backgroundStarRiverToggle) backgroundStarRiverToggle.classList.toggle('on', fx.backgroundStarRiver !== false);
+  var lyricVerticalFloatToggle = document.getElementById('t-lyricVerticalFloat');
+  if (lyricVerticalFloatToggle) lyricVerticalFloatToggle.classList.toggle('on', fx.lyricVerticalFloat !== false);
+  var lyricLiveViewportFitToggle = document.getElementById('t-lyricLiveViewportFit');
+  if (lyricLiveViewportFitToggle) lyricLiveViewportFitToggle.classList.toggle('on', fx.lyricLiveViewportFit !== false);
+  var lyricContextHighQualityToggle = document.getElementById('t-lyricContextHighQuality');
+  if (lyricContextHighQualityToggle) lyricContextHighQualityToggle.classList.toggle('on', fx.lyricContextHighQuality !== false);
+  var lyricBackdropAdaptToggle = document.getElementById('t-lyricBackdropAdapt');
+  if (lyricBackdropAdaptToggle) lyricBackdropAdaptToggle.classList.toggle('on', fx.lyricBackdropAdapt !== false);
+  var coverBackdropAdaptToggle = document.getElementById('t-coverBackdropAdapt');
+  if (coverBackdropAdaptToggle) coverBackdropAdaptToggle.classList.toggle('on', fx.coverBackdropAdapt !== false);
+  var lyricPauseHoldToggle = document.getElementById('t-lyricPauseHold');
+  if (lyricPauseHoldToggle) lyricPauseHoldToggle.classList.toggle('on', fx.lyricPauseHold !== false);
+  var lyricCameraLockToggle = document.getElementById('t-lyricCameraLock');
+  if (lyricCameraLockToggle) lyricCameraLockToggle.classList.toggle('on', fx.lyricCameraLock);
+  document.getElementById('t-bloom').classList.toggle('on', fx.bloom);
+  document.getElementById('t-edge').classList.toggle('on', fx.edge);
+  var desktopLyricsToggle = document.getElementById('t-desktopLyrics');
+  if (desktopLyricsToggle) desktopLyricsToggle.classList.toggle('on', fx.desktopLyrics);
+  var desktopLyricsClickToggle = document.getElementById('t-desktopLyricsClickThrough');
+  if (desktopLyricsClickToggle) desktopLyricsClickToggle.classList.toggle('on', fx.desktopLyricsClickThrough !== false);
+  var desktopLyricsCinemaToggle = document.getElementById('t-desktopLyricsCinema');
+  if (desktopLyricsCinemaToggle) desktopLyricsCinemaToggle.classList.toggle('on', fx.desktopLyricsCinema !== false);
+  var desktopLyricsHighlightToggle = document.getElementById('t-desktopLyricsHighlight');
+  if (desktopLyricsHighlightToggle) desktopLyricsHighlightToggle.classList.toggle('on', fx.desktopLyricsHighlight === true);
+  updateDesktopLyricsFpsControls();
+  updateWallpaperFpsControls();
+  var wallpaperModeToggle = document.getElementById('t-wallpaperMode');
+  if (wallpaperModeToggle) wallpaperModeToggle.classList.toggle('on', fx.wallpaperMode);
+  var shelfPodcastsToggle = document.getElementById('t-shelfShowPodcasts');
+  if (shelfPodcastsToggle) shelfPodcastsToggle.classList.toggle('on', fx.shelfShowPodcasts !== false);
+  var shelfMergeToggle = document.getElementById('t-shelfMergeCollections');
+  if (shelfMergeToggle) shelfMergeToggle.classList.toggle('on', fx.shelfMergeCollections === true);
+  var liveBackgroundKeepToggle = document.getElementById('t-liveBackgroundKeep');
+  if (liveBackgroundKeepToggle) liveBackgroundKeepToggle.classList.toggle('on', fx.liveBackgroundKeep === true);
+  var sonicFloatingToggle = document.getElementById('t-sonicGroundFloatingEnabled');
+  if (sonicFloatingToggle) sonicFloatingToggle.classList.toggle('on', fx.sonicGroundFloatingEnabled !== false);
+  var sonicAudioToggle = document.getElementById('t-sonicAudioMonitorEnabled');
+  if (sonicAudioToggle) sonicAudioToggle.classList.toggle('on', fx.sonicAudioMonitorEnabled !== false);
+  var sonicAudioAutoToggle = document.getElementById('t-sonicAudioAutoTrack');
+  if (sonicAudioAutoToggle) sonicAudioAutoToggle.classList.toggle('on', fx.sonicAudioAutoTrack !== false);
+  if (typeof refreshSonicAudioMonitorUi === 'function') refreshSonicAudioMonitorUi();
+  applyStartupAutoplayUi();
+  updatePerformanceControls();
+  if (typeof updateMemoryControls === 'function') updateMemoryControls();
+  updateDevelopmentFxControls();
+  var aiDepthToggle = document.getElementById('t-aidepth');
+  if (aiDepthToggle) aiDepthToggle.classList.toggle('on', fx.aiDepth);
+  // 三态
+  document.querySelectorAll('#shelf-seg button').forEach(function (b) { b.classList.toggle('active', b.dataset.shelf === fx.shelf); });
+  updateShelfControlUi();
+  if (typeof syncGestureCameraUi === 'function') syncGestureCameraUi();
+  else document.querySelectorAll('#cam-seg button').forEach(function (b) { b.classList.toggle('active', b.dataset.cam === fx.cam); });
+  if (typeof applyGestureSettingsUi === 'function') applyGestureSettingsUi();
+  refreshPresetGrid();
+  updateLyricColorControls();
+  updateLyricHighlightControls();
+  updateLyricGlowControls();
+  updateLyricDisplayModeControls();
+  updateLyricTranslationModeControls();
+  updateLyricMotionStyleControls();
+  updateLyricFontControls();
+  updateLyricTextureClarityControls();
+  updateUiAccentControls();
+  updateHomeAccentControls();
+  updateIconAccentControls();
+  updateCustomBackgroundControls();
+  updateVisualTintControls();
+  if (typeof updateSonicGroundColorControls === 'function') updateSonicGroundColorControls();
+  if (typeof updateSonicWorkshopColorControls === 'function') updateSonicWorkshopColorControls();
+  updateSonicSeriesControlVisibility();
+  applyControlGlassChromaticOffset();
+  syncFxUniforms();
+}
+function animateFxResetButton(btn) {
+  if (!btn || !window.gsap) return;
+  window.gsap.fromTo(btn, { rotate: -120, scale: 0.88 }, { rotate: 0, scale: 1, duration: 0.48, ease: 'expo.out', overwrite: true });
+  window.gsap.fromTo(btn, { boxShadow: '0 0 0 0 rgba(244,210,138,.38)' }, { boxShadow: '0 0 0 8px rgba(244,210,138,0)', duration: 0.55, ease: 'sine.out', overwrite: true });
+}
+function isStageLyricRealtimeFxKey(key) {
+  return key === 'lyricLetterSpacing'
+    || key === 'lyricLineHeight'
+    || key === 'lyricWeight'
+    || key === 'lyricCustomLineCount'
+    || key === 'lyricContextOpacity'
+    || key === 'lyricContextSpread'
+    || key === 'lyricTranslationGap'
+    || key === 'lyricTranslationScale'
+    || key === 'lyricTranslationOpacity'
+    || key === 'lyricEdgeFade'
+    || key === 'lyricMotionSoftness'
+    || key === 'lyricBackgroundAdapt'
+    || /^lyricGlitch/.test(key);
+}
+function isDesktopLyricRealtimeFxKey(key) {
+  return isStageLyricRealtimeFxKey(key)
+    || key === 'lyricScale'
+    || key === 'lyricGlowStrength';
+}
+var lyricRealtimeRefreshTimer = null;
+var lyricRealtimeLastRefreshAt = 0;
+function flushStageLyricRealtimeRefresh() {
+  if (lyricRealtimeRefreshTimer) {
+    clearTimeout(lyricRealtimeRefreshTimer);
+    lyricRealtimeRefreshTimer = null;
+  }
+  lyricRealtimeLastRefreshAt = window.performance && performance.now ? performance.now() : Date.now();
+  refreshStageLyricDisplayMode();
+}
+function scheduleStageLyricRealtimeRefresh(deferred) {
+  if (!deferred) {
+    flushStageLyricRealtimeRefresh();
+    return;
+  }
+  var now = window.performance && performance.now ? performance.now() : Date.now();
+  var wait = Math.max(0, 120 - (now - lyricRealtimeLastRefreshAt));
+  if (wait <= 0) {
+    flushStageLyricRealtimeRefresh();
+    return;
+  }
+  if (lyricRealtimeRefreshTimer) clearTimeout(lyricRealtimeRefreshTimer);
+  lyricRealtimeRefreshTimer = setTimeout(flushStageLyricRealtimeRefresh, wait);
+}
+function syncLyricRealtimeFxChange(key, opts) {
+  opts = opts || {};
+  if (key === 'lyricCustomLineCount') updateLyricDisplayModeControls();
+  if (key === 'lyricMotionSoftness' || /^lyricGlitch/.test(key)) updateLyricMotionStyleControls();
+  if (isStageLyricRealtimeFxKey(key)) scheduleStageLyricRealtimeRefresh(!!opts.deferred);
+  else if (key === 'lyricLetterSpacing' || key === 'lyricLineHeight' || key === 'lyricWeight') refreshCurrentLyricStyle();
+  if (isDesktopLyricRealtimeFxKey(key)) pushDesktopLyricsState(true);
+}
+function resetFxSliderValue(id, key, btn) {
+  if (!Object.prototype.hasOwnProperty.call(fxDefaults, key)) return;
+  if (key === 'shelfAngleY') {
+    fx.shelfAngleYManual = false;
+    fx.shelfAngleY = shelfDefaultAngleForCameraMode(fx.shelfCameraMode);
+  } else {
+    fx[key] = fxDefaults[key];
+  }
+  setRange(id, fx[key]);
+  if (key === 'coverResolution') applyCoverParticleResolution(fx[key], { reload: true });
+  if (key === 'backgroundOpacity' || key === 'windowBackgroundOpacity' || key === 'backgroundGlassOpacity' || key === 'backgroundMediaCropX' || key === 'backgroundMediaCropY' || key === 'backgroundMediaZoom') updateCustomBackgroundControls();
+  if (key === 'controlGlassChromaticOffset') applyControlGlassChromaticOffset();
+  if (/^playlistPanel/.test(key)) applyPlaylistPanelFxSettings();
+  syncFxUniforms();
+  if (/^shelf/.test(key) && shelfManager && shelfManager.refreshTheme) shelfManager.refreshTheme();
+  syncLyricRealtimeFxChange(key);
+  saveLyricLayout({ syncDisk: key === 'controlGlassChromaticOffset', user: true, reason: 'reset:' + key });
+  animateFxResetButton(btn);
+  showToast('已恢复默认数值');
+}
+function ensureFxSliderResetButton(id, key) {
+  var el = document.getElementById(id);
+  if (!el || !el.parentElement || el.parentElement.querySelector('.fx-reset-one')) return;
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'fx-reset-one';
+  btn.title = '恢复当前滑条默认值';
+  btn.setAttribute('aria-label', '恢复当前滑条默认值');
+  btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>';
+  btn.addEventListener('click', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    resetFxSliderValue(id, key, btn);
+  });
+  el.parentElement.appendChild(btn);
+}
+var fxPanelTab = 'home';
+var fxPanelTabScroll = {};
+function setFxPanelTab(tab) {
+  var allowed = { home: 1, interface: 1, lyrics: 1, motion: 1, shelf: 1, system: 1 };
+  var panel = document.getElementById('fx-panel');
+  var nextTab = allowed[tab] ? tab : 'home';
+  var previousTab = fxPanelTab;
+  if (panel && previousTab !== nextTab && panel.getAttribute('data-console-layout') === 'task-first-v2') {
+    fxPanelTabScroll[previousTab] = panel.scrollTop;
+  }
+  fxPanelTab = nextTab;
+  if (panel) panel.setAttribute('data-active-tab', fxPanelTab);
+  document.querySelectorAll('#fx-panel-tabs [data-fx-tab]').forEach(function (btn) {
+    var active = btn.getAttribute('data-fx-tab') === fxPanelTab;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    btn.setAttribute('tabindex', active ? '0' : '-1');
+    if (active && previousTab !== fxPanelTab) btn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
+  document.querySelectorAll('#fx-panel .fx-tab-page').forEach(function (page) {
+    var active = page.getAttribute('data-fx-page') === fxPanelTab;
+    page.classList.toggle('active', active);
+    page.setAttribute('aria-hidden', active ? 'false' : 'true');
+  });
+  if (panel && previousTab !== fxPanelTab && panel.getAttribute('data-console-layout') === 'task-first-v2') {
+    requestAnimationFrame(function () {
+      panel.scrollTop = Object.prototype.hasOwnProperty.call(fxPanelTabScroll, fxPanelTab) ? fxPanelTabScroll[fxPanelTab] : 0;
+    });
+  }
+  repositionFxFloatingPanels();
+}
+function fxPanelInputId(node) {
+  var input = node && node.querySelector ? node.querySelector('input[id]') : null;
+  return input ? input.id : '';
+}
+function fxPanelTargetForNode(node, current) {
+  if (!node) return current || 'presets';
+  var id = node.id || '';
+  var inputId = fxPanelInputId(node);
+  if (id === 'preset-grid' || id === 'user-archive-grid') return 'presets';
+  if (id === 'fx-lyric-fold') return 'lyrics';
+  if (id === 'fx-overlay-fold' || id === 'fx-stage-fold') return 'motion';
+  if (id === 'fx-advanced' || node.classList.contains('fx-actions')) return 'advanced';
+  if (node.classList.contains('lyric-color-row') || node.classList.contains('cover-color-pop') || node.classList.contains('color-lab-pop') || node.classList.contains('cover-color-loupe')) return 'appearance';
+  if (inputId === 'fx-bgopacity' || inputId === 'fx-bgcropx' || inputId === 'fx-bgcropy' || inputId === 'fx-bgzoom' || inputId === 'fx-windowbgopacity' || inputId === 'fx-bgglassopacity' || inputId === 'fx-glassaberration' || /^fx-playlist/.test(inputId)) return 'appearance';
+  if (inputId === 'fx-lyricglow' || inputId === 'fx-lyricbgadapt') return 'lyrics';
+  if (/^fx-sonic/.test(inputId)) return 'motion';
+  if (/^fx-(intensity|depth|coverres|cineshake|shelf)/.test(inputId)) return 'motion';
+  return current || 'presets';
+}
+function organizeFxPanel() {
+  if (typeof organizeFxConsoleWorkspace === 'function') {
+    organizeFxConsoleWorkspace();
+    return;
+  }
+  var panel = document.getElementById('fx-panel');
+  if (!panel) return;
+  if (panel._fxPanelOrganized) {
+    setFxPanelTab(fxPanelTab);
+    return;
+  }
+  var head = panel.querySelector('.fx-head');
+  var tabMeta = [
+    ['presets', '\u9884\u8bbe'],
+    ['appearance', '\u5916\u89c2'],
+    ['lyrics', '\u6b4c\u8bcd'],
+    ['motion', '\u52a8\u6001'],
+    ['advanced', '\u9ad8\u7ea7']
+  ];
+  var tabs = document.createElement('div');
+  tabs.className = 'fx-panel-tabs';
+  tabs.id = 'fx-panel-tabs';
+  tabMeta.forEach(function (meta) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.setAttribute('data-fx-tab', meta[0]);
+    btn.textContent = meta[1];
+    tabs.appendChild(btn);
+  });
+  if (head && head.nextSibling) panel.insertBefore(tabs, head.nextSibling);
+  else panel.insertBefore(tabs, panel.firstChild);
+  var pages = {};
+  var insertAfter = tabs;
+  tabMeta.forEach(function (meta) {
+    var page = document.createElement('div');
+    page.className = 'fx-tab-page';
+    page.setAttribute('data-fx-page', meta[0]);
+    insertAfter.parentNode.insertBefore(page, insertAfter.nextSibling);
+    insertAfter = page;
+    pages[meta[0]] = page;
+  });
+  var original = Array.prototype.slice.call(panel.children).filter(function (child) {
+    return child !== head && child !== tabs && !child.classList.contains('fx-tab-page');
+  });
+  var current = 'presets';
+  original.forEach(function (node, idx) {
+    var target;
+    if (node.classList.contains('fx-section-label')) {
+      target = fxPanelTargetForNode(original[idx + 1], current);
+      current = target;
+    } else {
+      target = fxPanelTargetForNode(node, current);
+      current = target;
+    }
+    (pages[target] || pages.presets).appendChild(node);
+  });
+  ['fx-lyric-fold', 'fx-overlay-fold', 'fx-stage-fold', 'fx-advanced'].forEach(function (id) {
+    var fold = document.getElementById(id);
+    if (fold) fold.classList.add('open');
+  });
+  tabs.addEventListener('click', function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest('[data-fx-tab]') : null;
+    if (!btn) return;
+    setFxPanelTab(btn.getAttribute('data-fx-tab'));
+  });
+  panel._fxPanelOrganized = true;
+  setFxPanelTab(fxPanelTab);
+}
+
+function fxControlBlock(id) {
+  var el = document.getElementById(id);
+  if (!el) return null;
+  return el.closest('.fx-slider,.lyric-color-row,.lyric-color-grid,.fx-seg,.preset-grid,.user-archive-grid,.fx-font-grid') || el;
+}
+function setFxSectionBefore(id, text) {
+  var block = fxControlBlock(id);
+  if (!block || !block.parentNode) return;
+  var prev = block.previousElementSibling;
+  if (!prev || !prev.classList || !prev.classList.contains('fx-section-label')) {
+    prev = document.createElement('div');
+    prev.className = 'fx-section-label';
+    block.parentNode.insertBefore(prev, block);
+  }
+  prev.textContent = text;
+}
+function setFxSliderLabel(id, text) {
+  var block = fxControlBlock(id);
+  var label = block && block.querySelector ? block.querySelector('label') : null;
+  if (label) label.textContent = text;
+}
+function setFxSectionBeforeNode(node, text) {
+  if (!node || !node.parentNode) return;
+  var prev = node.previousElementSibling;
+  if (!prev || !prev.classList || !prev.classList.contains('fx-section-label')) {
+    prev = document.createElement('div');
+    prev.className = 'fx-section-label';
+    node.parentNode.insertBefore(prev, node);
+  }
+  prev.textContent = text;
+}
+function moveToggleToGrid(toggleId, grid) {
+  var node = document.getElementById(toggleId);
+  if (!node || !grid || node.parentNode === grid) return;
+  grid.appendChild(node);
+}
+function ensureFxRangeControl(anchorId, id, label, min, max, step) {
+  var existing = document.getElementById(id);
+  if (existing) {
+    existing.min = String(min);
+    existing.max = String(max);
+    existing.step = String(step);
+    return;
+  }
+  var anchor = fxControlBlock(anchorId);
+  if (!anchor || !anchor.parentNode) return;
+  var block = document.createElement('div');
+  block.className = 'fx-slider';
+  var lab = document.createElement('label');
+  lab.textContent = label;
+  var input = document.createElement('input');
+  input.id = id;
+  input.type = 'range';
+  input.min = String(min);
+  input.max = String(max);
+  input.step = String(step);
+  var output = document.createElement('output');
+  block.appendChild(lab);
+  block.appendChild(input);
+  block.appendChild(output);
+  anchor.parentNode.insertBefore(block, anchor.nextSibling);
+}
+function ensureLyricPrimaryControls() {
+  var body = document.querySelector('#fx-lyric-fold .fx-fold-body');
+  if (!body) return;
+  var grid = document.getElementById('fx-lyric-primary-controls');
+  if (!grid) {
+    var label = document.createElement('div');
+    label.className = 'fx-section-label';
+    label.id = 'fx-lyric-primary-label';
+    label.textContent = '歌词开关';
+    grid = document.createElement('div');
+    grid.className = 'fx-toggle-grid lyric-primary-toggle-grid';
+    grid.id = 'fx-lyric-primary-controls';
+    body.insertBefore(grid, body.firstChild);
+    body.insertBefore(label, grid);
+  }
+  [
+    't-desktopLyrics',
+    't-desktopLyricsClickThrough',
+    't-desktopLyricsCinema',
+    't-desktopLyricsHighlight',
+    't-lyricCameraLock',
+    't-lyricGlow',
+    't-lyricGlowBeat',
+    't-lyricGlowParticles',
+    't-backgroundStarRiver',
+    't-lyricVerticalFloat',
+    't-lyricPauseHold'
+  ].forEach(function (id) { moveToggleToGrid(id, grid); });
+}
+function applyBackgroundMediaHint() {
+  var value = document.getElementById('bg-image-value');
+  if (value && !value.dataset.mediaHint) {
+    value.dataset.mediaHint = '1';
+    value.title = '支持封面原图、图片 / 视频上传，已设置媒体可重复裁切';
+  }
+  if (value) value.title = '\u652f\u6301\u5c01\u9762\u539f\u56fe\u3001\u56fe\u7247 / \u89c6\u9891\u4e0a\u4f20\uff0c\u5df2\u8bbe\u7f6e\u5a92\u4f53\u53ef\u91cd\u590d\u88c1\u5207';
+  var label = value && value.closest ? value.closest('.fx-color-row-label') : null;
+  if (label && !document.getElementById('bg-media-hint')) {
+    var hint = document.createElement('small');
+    hint.id = 'bg-media-hint';
+    hint.textContent = '\u5c01\u9762\u539f\u56fe / \u56fe\u7247 / \u89c6\u9891';
+    label.appendChild(hint);
+  }
+}
+function relabelFxPanelControls() {
+  setFxSliderLabel('fx-windowbgopacity', '\u7a97\u53e3\u80cc\u666f\u900f\u660e');
+  setFxSliderLabel('fx-bgglassopacity', '\u6bdb\u73bb\u7483\u900f\u660e');
+  setFxSliderLabel('fx-bgcropx', '\u88c1\u5207\u5de6\u53f3');
+  setFxSliderLabel('fx-bgcropy', '\u88c1\u5207\u4e0a\u4e0b');
+  setFxSliderLabel('fx-bgzoom', '\u88c1\u5207\u7f29\u653e');
+  var title = document.querySelector('#fx-panel .fx-title');
+  if (title) title.textContent = '视觉控制台';
+  ensureLyricPrimaryControls();
+  ensureFxRangeControl('fx-lyrictranslationgap', 'fx-lyrictranslationscale', '译文字号', 0.46, 1.12, 0.01);
+  ensureFxRangeControl('fx-lyrictranslationscale', 'fx-lyrictranslationopacity', '译文透明', 0.20, 1, 0.01);
+  applyBackgroundMediaHint();
+  var overlayGrid = document.getElementById('t-cinema');
+  overlayGrid = overlayGrid && overlayGrid.closest('.fx-toggle-grid');
+  setFxSectionBeforeNode(overlayGrid, '镜头与叠加');
+  setFxSectionBefore('preset-grid', '预设与存档');
+  setFxSectionBefore('user-archive-grid', '用户存档');
+  setFxSectionBefore('ui-accent-picker', '界面与背景');
+  setFxSectionBefore('fx-intensity', '画面基础');
+  setFxSectionBefore('fx-lyricglow', '歌词溢光强度');
+  setFxSectionBefore('lyric-color-grid', '文字颜色');
+  setFxSectionBefore('lyric-highlight-picker', '跟唱高亮');
+  setFxSectionBefore('lyric-glow-row', '歌词溢光颜色');
+  setFxSectionBefore('lyric-source-seg', '歌词来源');
+  setFxSectionBefore('lyric-display-mode-seg', '歌词行数');
+  setFxSectionBefore('lyric-motion-style-seg', '歌词动画');
+  setFxSectionBefore('lyric-font-grid', '字体与字距');
+  setFxSectionBefore('fx-lyricscale', '位置与角度');
+  setFxSectionBefore('fx-desktoplyricssize', '桌面歌词');
+  setFxSectionBefore('desktop-lyrics-fps-seg', '桌面歌词帧率');
+  setFxSectionBefore('wallpaper-fps-seg', '壁纸帧率');
+  setFxSectionBefore('close-behavior-seg', '关闭窗口');
+  setFxSectionBefore('t-startupAutoplay', '启动播放');
+  setFxSectionBefore('fx-playlistblur', '左侧歌单栏');
+  setFxSectionBefore('shelf-seg', '3D 歌单架');
+  setFxSectionBefore('shelf-camera-seg', '歌单架镜头');
+  setFxSectionBefore('shelf-presence-seg', '歌单架显示');
+  setFxSectionBefore('shelf-accent-picker', '歌单架外观');
+  setFxSectionBefore('fx-shelfsize', '歌单架参数');
+  setFxSectionBefore('fx-shelfdetailx', '歌单详情页位置');
+  setFxSectionBefore('fx-shelfdetailopen', '歌单详情页动画');
+  setFxSectionBefore('fx-shelfsummonopen', '歌单架唤出动画');
+  setFxSectionBefore('cam-seg', '摄像头交互');
+  setFxSectionBefore('fx-point', '粒子高级参数');
+  setFxSliderLabel('fx-intensity', '律动强度');
+  setFxSliderLabel('fx-depth', '画面景深');
+  setFxSliderLabel('fx-coverres', '封面清晰度');
+  setFxSliderLabel('fx-cineshake', '电影镜头');
+  setFxSliderLabel('fx-lyricglow', '溢光强度');
+  setFxSliderLabel('fx-bgopacity', '背景透明度');
+  setFxSliderLabel('fx-glassaberration', '玻璃色差');
+  setFxSliderLabel('fx-playlistblur', '左栏雾面');
+  setFxSliderLabel('fx-playlistdensity', '左栏遮挡');
+  setFxSliderLabel('fx-playlistopen', '左栏唤出秒数');
+  setFxSliderLabel('fx-playlistclose', '左栏收起秒数');
+  setFxSliderLabel('fx-lyricspacing', '字间距');
+  setFxSliderLabel('fx-lyriclineheight', '行距');
+  setFxSliderLabel('fx-lyricweight', '字重');
+  setFxSliderLabel('fx-lyriccustomlines', '显示行数');
+  setFxSliderLabel('fx-lyricglitchintensity', '故障强度');
+  setFxSliderLabel('fx-lyricglitchslice', '切片幅度');
+  setFxSliderLabel('fx-lyricglitchchroma', '色散强度');
+  setFxSliderLabel('fx-lyricglitchrate', '触发速度');
+  setFxSliderLabel('fx-lyricglitchjitter', '抖动幅度');
+  setFxSliderLabel('fx-lyriccontextopacity', '上下句清晰');
+  setFxSliderLabel('fx-lyriccontextspread', '上下句间距');
+  setFxSliderLabel('fx-lyrictranslationgap', '译文间距');
+  setFxSliderLabel('fx-lyrictranslationscale', '译文字号');
+  setFxSliderLabel('fx-lyrictranslationopacity', '译文透明');
+  setFxSliderLabel('fx-lyricedgefade', '边缘渐隐');
+  setFxSliderLabel('fx-lyricmotionsoftness', '动画柔顺');
+  setFxSliderLabel('fx-lyricscale', '歌词大小');
+  setFxSliderLabel('fx-lyricx', '左右位置');
+  setFxSliderLabel('fx-lyricy', '上下位置');
+  setFxSliderLabel('fx-lyricz', '前后景深');
+  setFxSliderLabel('fx-lyrictiltx', '上下旋转');
+  setFxSliderLabel('fx-lyrictilty', '左右旋转');
+  setFxSliderLabel('fx-desktoplyricssize', '桌面歌词大小');
+  setFxSliderLabel('fx-desktoplyricsopacity', '桌面歌词透明度');
+  setFxSliderLabel('fx-desktoplyricsy', '桌面歌词高度');
+  setFxSliderLabel('fx-wallpaperopacity', '壁纸透明度');
+  setFxSliderLabel('fx-shelfsize', '歌单架大小');
+  setFxSliderLabel('fx-shelfx', '左右位置');
+  setFxSliderLabel('fx-shelfy', '上下位置');
+  setFxSliderLabel('fx-shelfz', '前后景深');
+  setFxSliderLabel('fx-shelfangle', '侧向角度');
+  setFxSliderLabel('fx-shelfopacity', '整体透明度');
+  setFxSliderLabel('fx-shelfbgalpha', '背景透明度');
+  setFxSliderLabel('fx-shelfdetailx', '详情左右');
+  setFxSliderLabel('fx-shelfdetaily', '详情上下');
+  setFxSliderLabel('fx-shelfdetailz', '详情前后');
+  setFxSliderLabel('fx-shelfdetailscale', '详情大小');
+  setFxSliderLabel('fx-shelfdetailanglex', '详情俯仰');
+  setFxSliderLabel('fx-shelfdetailangley', '详情侧旋');
+  setFxSliderLabel('fx-shelfdetailrowgap', '详情行间距');
+  setFxSliderLabel('fx-shelfdetailopen', '展开秒数');
+  setFxSliderLabel('fx-shelfdetailclose', '关闭秒数');
+  setFxSliderLabel('fx-shelfdetailrowtime', '行入场秒数');
+  setFxSliderLabel('fx-shelfdetailintro', '展开位移');
+  setFxSliderLabel('fx-shelfdetailparallax', '悬浮视差');
+  setFxSliderLabel('fx-shelfsummonopen', '唤出秒数');
+  setFxSliderLabel('fx-shelfsummonclose', '收起秒数');
+  setFxSliderLabel('fx-shelfsummonslide', '唤出位移');
+  setFxSliderLabel('fx-shelfsummonstagger', '卡片错层');
+  setFxSliderLabel('fx-shelfsummonscale', '唤出缩放');
+  setFxSliderLabel('fx-shelfsummonparallax', '唤出视差');
+  setFxSliderLabel('fx-shelfcamenter', '镜头进入速度');
+  setFxSliderLabel('fx-shelfcamexit', '镜头离开速度');
+  setFxSliderLabel('fx-point', '粒子尺寸');
+  setFxSliderLabel('fx-speed', '运动速度');
+  setFxSliderLabel('fx-twist', '粒子扭曲');
+  setFxSliderLabel('fx-color', '色彩张力');
+  setFxSliderLabel('fx-bloom', '光晕强度');
+  setFxSliderLabel('fx-scatter', '离散感');
+  setFxSliderLabel('fx-bgfade', '背景压暗');
+}
+;
+
+// ==================== 07-fx/07-bindings-shelf-immersive.js ====================
+function bindFxPanel() {
+  liftFxFloatingPopups();
+  relabelFxPanelControls();
+  organizeFxPanel();
+  bindHotkeySettings();
+  bindCloseBehaviorControls();
+  bindStartupResumeModeControls();
+  bindAudioOutputControls();
+  if (typeof bindSystemMemoryControls === 'function') bindSystemMemoryControls();
+  buildPresetGrid();
+  renderUserFxArchives();
+  buildLyricColorControls();
+  var ids = [
+    ['fx-intensity', 'intensity'], ['fx-depth', 'depth'], ['fx-coverres', 'coverResolution'], ['fx-cineshake', 'cinemaShake'], ['fx-lyricglow', 'lyricGlowStrength'], ['fx-lyricbgadapt', 'lyricBackgroundAdapt'],
+    ['fx-sonicamp', 'sonicGroundAmplitude'], ['fx-sonicspeed', 'sonicGroundMotionSpeed'], ['fx-sonicdensity', 'sonicGroundDensity'],
+    ['fx-sonicrange', 'sonicGroundRange'], ['fx-soniclower', 'sonicGroundLower'], ['fx-sonicdepth', 'sonicGroundDepth'], ['fx-sonicautorotate', 'sonicGroundAutoRotate'],
+    ['fx-sonicaudiosensitivity', 'sonicAudioSensitivity'], ['fx-sonicaudiobandstart', 'sonicAudioBandStart'], ['fx-sonicaudiobandend', 'sonicAudioBandEnd'], ['fx-sonicaudiothreshold', 'sonicAudioThreshold'], ['fx-sonicaudiopulse', 'sonicAudioPulseStrength'],
+    ['fx-sonicwegain', 'sonicWorkshopInputGain'], ['fx-sonicweaudio', 'sonicWorkshopAudioIntensity'], ['fx-sonicwerange', 'sonicWorkshopResponseRange'], ['fx-sonicwepeak', 'sonicWorkshopPeakIntensity'],
+    ['fx-sonicsubbass', 'sonicGroundSubBass'], ['fx-sonicbass', 'sonicGroundBass'], ['fx-soniclowmid', 'sonicGroundLowMid'], ['fx-sonicmid', 'sonicGroundMid'], ['fx-sonichighmid', 'sonicGroundHighMid'], ['fx-sonicpresence', 'sonicGroundPresence'], ['fx-sonicbrilliance', 'sonicGroundBrilliance'], ['fx-sonicair', 'sonicGroundAir'],
+    ['fx-sonicglow', 'sonicGroundGlow'], ['fx-sonicfloatcount', 'sonicGroundFloatingCount'], ['fx-sonicfloatintensity', 'sonicGroundFloatingIntensity'], ['fx-sonicfloatmin', 'sonicGroundFloatingMinSize'], ['fx-sonicfloatmax', 'sonicGroundFloatingMaxSize'], ['fx-sonicfloatspeed', 'sonicGroundFloatingSpeed'],
+    ['fx-bgopacity', 'backgroundOpacity'], ['fx-bgcropx', 'backgroundMediaCropX'], ['fx-bgcropy', 'backgroundMediaCropY'], ['fx-bgzoom', 'backgroundMediaZoom'], ['fx-windowbgopacity', 'windowBackgroundOpacity'], ['fx-bgglassopacity', 'backgroundGlassOpacity'], ['fx-glassaberration', 'controlGlassChromaticOffset'],
+    ['fx-playlistblur', 'playlistPanelGlassBlur'], ['fx-playlistdensity', 'playlistPanelGlassDensity'], ['fx-playlistopen', 'playlistPanelOpenDuration'], ['fx-playlistclose', 'playlistPanelCloseDuration'],
+    ['fx-desktoplyricssize', 'desktopLyricsSize'], ['fx-desktoplyricsopacity', 'desktopLyricsOpacity'], ['fx-desktoplyricsy', 'desktopLyricsY'], ['fx-wallpaperopacity', 'wallpaperOpacity'],
+    ['fx-shelfsize', 'shelfSize'], ['fx-shelfx', 'shelfOffsetX'], ['fx-shelfy', 'shelfOffsetY'], ['fx-shelfz', 'shelfOffsetZ'], ['fx-shelfangle', 'shelfAngleY'], ['fx-shelfopacity', 'shelfOpacity'], ['fx-shelfbgalpha', 'shelfBgOpacity'],
+    ['fx-shelfdetailx', 'shelfDetailOffsetX'], ['fx-shelfdetaily', 'shelfDetailOffsetY'], ['fx-shelfdetailz', 'shelfDetailOffsetZ'], ['fx-shelfdetailscale', 'shelfDetailScale'], ['fx-shelfdetailanglex', 'shelfDetailAngleX'], ['fx-shelfdetailangley', 'shelfDetailAngleY'], ['fx-shelfdetailrowgap', 'shelfDetailRowGap'],
+    ['fx-shelfdetailopen', 'shelfDetailOpenDuration'], ['fx-shelfdetailclose', 'shelfDetailCloseDuration'], ['fx-shelfdetailrowtime', 'shelfDetailRowDuration'], ['fx-shelfdetailintro', 'shelfDetailIntroStrength'], ['fx-shelfdetailparallax', 'shelfDetailParallax'],
+    ['fx-shelfsummonopen', 'shelfSummonOpenDuration'], ['fx-shelfsummonclose', 'shelfSummonCloseDuration'], ['fx-shelfsummonslide', 'shelfSummonSlide'], ['fx-shelfsummonstagger', 'shelfSummonStagger'], ['fx-shelfsummonscale', 'shelfSummonScale'], ['fx-shelfsummonparallax', 'shelfSummonParallax'],
+    ['fx-shelfcamenter', 'shelfCameraEnterSpeed'], ['fx-shelfcamexit', 'shelfCameraExitSpeed'],
+    ['fx-lyricspacing', 'lyricLetterSpacing'], ['fx-lyriclineheight', 'lyricLineHeight'], ['fx-lyricweight', 'lyricWeight'],
+    ['fx-lyriccustomlines', 'lyricCustomLineCount'],
+    ['fx-lyricglitchintensity', 'lyricGlitchIntensity'], ['fx-lyricglitchslice', 'lyricGlitchSlice'], ['fx-lyricglitchchroma', 'lyricGlitchChroma'], ['fx-lyricglitchrate', 'lyricGlitchRate'], ['fx-lyricglitchjitter', 'lyricGlitchJitter'],
+    ['fx-lyriccontextopacity', 'lyricContextOpacity'], ['fx-lyriccontextspread', 'lyricContextSpread'], ['fx-lyrictranslationgap', 'lyricTranslationGap'], ['fx-lyrictranslationscale', 'lyricTranslationScale'], ['fx-lyrictranslationopacity', 'lyricTranslationOpacity'], ['fx-lyricedgefade', 'lyricEdgeFade'], ['fx-lyricmotionsoftness', 'lyricMotionSoftness'],
+    ['fx-lyricscale', 'lyricScale'], ['fx-lyricx', 'lyricOffsetX'], ['fx-lyricy', 'lyricOffsetY'], ['fx-lyricz', 'lyricOffsetZ'], ['fx-lyrictiltx', 'lyricTiltX'], ['fx-lyrictilty', 'lyricTiltY'],
+    ['fx-point', 'point'], ['fx-speed', 'speed'], ['fx-twist', 'twist'],
+    ['fx-color', 'color'], ['fx-bloom', 'bloomStrength'], ['fx-scatter', 'scatter'], ['fx-bgfade', 'bgFade'],
+  ];
+  ids.forEach(function (pair) {
+    var el = document.getElementById(pair[0]);
+    if (!el) return;
+    ensureFxSliderResetButton(pair[0], pair[1]);
+    el.addEventListener('input', function () {
+      fx[pair[1]] = parseFloat(el.value);
+      var out = el.parentElement.querySelector('output');
+      if (/^sonicGround/.test(pair[1])) fx[pair[1]] = Math.round(clampRange(fx[pair[1]], 0, 100));
+      if (pair[1] === 'lyricBackgroundAdapt') fx.lyricBackgroundAdapt = clampRange(fx.lyricBackgroundAdapt, 0, 1);
+      if (/^sonicWorkshop/.test(pair[1])) {
+        if (pair[1] === 'sonicWorkshopInputGain') fx[pair[1]] = Math.round(clampRange(fx[pair[1]], 40, 100));
+        else if (pair[1] === 'sonicWorkshopAudioIntensity') fx[pair[1]] = clampRange(fx[pair[1]], 0.3, 2.5);
+        else if (pair[1] === 'sonicWorkshopResponseRange') fx[pair[1]] = clampRange(fx[pair[1]], 0.3, 2);
+        else if (pair[1] === 'sonicWorkshopPeakIntensity') fx[pair[1]] = clampRange(fx[pair[1]], 0, 1.4);
+      }
+      if (/^sonicAudio/.test(pair[1])) {
+        var maxAudioValue = pair[1] === 'sonicAudioBandStart' ? 510 : (pair[1] === 'sonicAudioBandEnd' ? 512 : 100);
+        var minAudioValue = pair[1] === 'sonicAudioBandEnd' ? 2 : 0;
+        fx[pair[1]] = Math.round(clampRange(fx[pair[1]], minAudioValue, maxAudioValue));
+        if (typeof sonicAudioNormalizeFx === 'function') sonicAudioNormalizeFx(fx);
+        el.value = fx[pair[1]];
+      }
+      if (pair[1] === 'coverResolution') {
+        fx.coverResolution = normalizeCoverResolution(fx.coverResolution);
+        applyCoverParticleResolution(fx.coverResolution, { reload: true });
+      }
+      if (pair[1] === 'lyricWeight') fx.lyricWeight = Math.round(clampRange(fx.lyricWeight, 500, 900) / 50) * 50;
+      if (pair[1] === 'lyricCustomLineCount') {
+        fx.lyricCustomLineCount = lyricCustomLineCountValue();
+        fx.lyricDisplayMode = 'custom';
+        updateLyricDisplayModeControls();
+      }
+      if (pair[1] === 'backgroundOpacity') {
+        fx.backgroundOpacity = clampRange(fx.backgroundOpacity, 0, 1);
+        fx.backgroundColorMode = 'custom';
+        fx.backgroundColorCustom = true;
+        updateCustomBackgroundControls();
+      }
+      if (pair[1] === 'backgroundMediaCropX' || pair[1] === 'backgroundMediaCropY') {
+        fx[pair[1]] = Math.round(clampRange(fx[pair[1]], 0, 100));
+        el.value = fx[pair[1]];
+        updateCustomBackgroundControls();
+      }
+      if (pair[1] === 'backgroundMediaZoom') {
+        fx.backgroundMediaZoom = clampRange(fx.backgroundMediaZoom, 1, 2.8);
+        updateCustomBackgroundControls();
+      }
+      if (pair[1] === 'windowBackgroundOpacity') {
+        fx.windowBackgroundOpacity = clampRange(fx.windowBackgroundOpacity, 0, 1);
+        updateCustomBackgroundControls();
+      }
+      if (pair[1] === 'backgroundGlassOpacity') {
+        fx.backgroundGlassOpacity = clampRange(fx.backgroundGlassOpacity, 0, 1);
+        updateCustomBackgroundControls();
+      }
+      if (pair[1] === 'controlGlassChromaticOffset') {
+        fx.controlGlassChromaticOffset = normalizeControlGlassChromaticOffset(fx.controlGlassChromaticOffset);
+        applyControlGlassChromaticOffset();
+      }
+      if (pair[1] === 'playlistPanelGlassBlur') fx.playlistPanelGlassBlur = Math.round(clampRange(fx.playlistPanelGlassBlur, 14, 60));
+      if (pair[1] === 'playlistPanelGlassDensity') fx.playlistPanelGlassDensity = clampRange(fx.playlistPanelGlassDensity, 0.55, 1);
+      if (pair[1] === 'playlistPanelOpenDuration') fx.playlistPanelOpenDuration = clampRange(fx.playlistPanelOpenDuration, 0.08, 0.72);
+      if (pair[1] === 'playlistPanelCloseDuration') fx.playlistPanelCloseDuration = clampRange(fx.playlistPanelCloseDuration, 0.06, 0.48);
+      if (pair[1] === 'desktopLyricsSize') fx.desktopLyricsSize = clampRange(fx.desktopLyricsSize, 0.72, 1.55);
+      if (pair[1] === 'desktopLyricsOpacity') fx.desktopLyricsOpacity = clampRange(fx.desktopLyricsOpacity, 0.28, 1);
+      if (pair[1] === 'desktopLyricsY') fx.desktopLyricsY = clampRange(fx.desktopLyricsY, 0.08, 0.92);
+      if (pair[1] === 'wallpaperOpacity') fx.wallpaperOpacity = clampRange(fx.wallpaperOpacity, 0.35, 1);
+      if (pair[1] === 'shelfSize') fx.shelfSize = clampRange(fx.shelfSize, 0.65, 1.45);
+      if (pair[1] === 'shelfOffsetX') fx.shelfOffsetX = clampRange(fx.shelfOffsetX, -1.2, 1.2);
+      if (pair[1] === 'shelfOffsetY') fx.shelfOffsetY = clampRange(fx.shelfOffsetY, -0.9, 0.9);
+      if (pair[1] === 'shelfOffsetZ') fx.shelfOffsetZ = clampRange(fx.shelfOffsetZ, -0.9, 0.9);
+      if (pair[1] === 'shelfAngleY') {
+        fx.shelfAngleYManual = true;
+        fx.shelfAngleY = Math.round(clampRange(fx.shelfAngleY, -30, 30));
+      }
+      if (pair[1] === 'shelfOpacity') fx.shelfOpacity = clampRange(fx.shelfOpacity, 0.25, 1);
+      if (pair[1] === 'shelfBgOpacity') fx.shelfBgOpacity = clampRange(fx.shelfBgOpacity, 0.25, 0.98);
+      if (pair[1] === 'shelfDetailOffsetX') fx.shelfDetailOffsetX = clampRange(fx.shelfDetailOffsetX, -4.8, 4.8);
+      if (pair[1] === 'shelfDetailOffsetY') fx.shelfDetailOffsetY = clampRange(fx.shelfDetailOffsetY, -3.6, 3.6);
+      if (pair[1] === 'shelfDetailOffsetZ') fx.shelfDetailOffsetZ = clampRange(fx.shelfDetailOffsetZ, -3.6, 3.6);
+      if (pair[1] === 'shelfDetailScale') fx.shelfDetailScale = clampRange(fx.shelfDetailScale, 0.72, 1.35);
+      if (pair[1] === 'shelfDetailAngleX') fx.shelfDetailAngleX = Math.round(clampRange(fx.shelfDetailAngleX, -24, 24));
+      if (pair[1] === 'shelfDetailAngleY') fx.shelfDetailAngleY = Math.round(clampRange(fx.shelfDetailAngleY, -28, 28));
+      if (pair[1] === 'shelfDetailRowGap') fx.shelfDetailRowGap = clampRange(fx.shelfDetailRowGap, 0.72, 1.32);
+      if (pair[1] === 'shelfDetailOpenDuration') fx.shelfDetailOpenDuration = clampRange(fx.shelfDetailOpenDuration, 0.12, 1.2);
+      if (pair[1] === 'shelfDetailCloseDuration') fx.shelfDetailCloseDuration = clampRange(fx.shelfDetailCloseDuration, 0.08, 0.8);
+      if (pair[1] === 'shelfDetailRowDuration') fx.shelfDetailRowDuration = clampRange(fx.shelfDetailRowDuration, 0.16, 1.6);
+      if (pair[1] === 'shelfDetailIntroStrength') fx.shelfDetailIntroStrength = clampRange(fx.shelfDetailIntroStrength, 0, 1.8);
+      if (pair[1] === 'shelfDetailParallax') fx.shelfDetailParallax = clampRange(fx.shelfDetailParallax, 0, 1.8);
+      if (pair[1] === 'shelfSummonOpenDuration') fx.shelfSummonOpenDuration = clampRange(fx.shelfSummonOpenDuration, 0.08, 2);
+      if (pair[1] === 'shelfSummonCloseDuration') fx.shelfSummonCloseDuration = clampRange(fx.shelfSummonCloseDuration, 0.08, 1.6);
+      if (pair[1] === 'shelfSummonSlide') fx.shelfSummonSlide = clampRange(fx.shelfSummonSlide, 0, 4);
+      if (pair[1] === 'shelfSummonStagger') fx.shelfSummonStagger = clampRange(fx.shelfSummonStagger, 0, 3);
+      if (pair[1] === 'shelfSummonScale') fx.shelfSummonScale = clampRange(fx.shelfSummonScale, 0, 3);
+      if (pair[1] === 'shelfSummonParallax') fx.shelfSummonParallax = clampRange(fx.shelfSummonParallax, 0, 2.5);
+      if (pair[1] === 'shelfCameraEnterSpeed') fx.shelfCameraEnterSpeed = clampRange(fx.shelfCameraEnterSpeed, 0.2, 1.5);
+      if (pair[1] === 'shelfCameraExitSpeed') fx.shelfCameraExitSpeed = clampRange(fx.shelfCameraExitSpeed, 0.2, 1.5);
+      if (pair[1] === 'lyricOffsetX') fx.lyricOffsetX = clampRange(fx.lyricOffsetX, -4.0, 4.0);
+      if (pair[1] === 'lyricOffsetY') fx.lyricOffsetY = clampRange(fx.lyricOffsetY, -2.4, 2.7);
+      if (pair[1] === 'lyricOffsetZ') fx.lyricOffsetZ = clampRange(fx.lyricOffsetZ, -3.2, 3.2);
+      if (pair[1] === 'lyricTiltX' || pair[1] === 'lyricTiltY') fx[pair[1]] = Math.round(clampRange(fx[pair[1]], -84, 84));
+      if (pair[1] === 'lyricLineHeight') fx.lyricLineHeight = clampRange(fx.lyricLineHeight, 0.72, 1.80);
+      if (pair[1] === 'lyricContextSpread') fx.lyricContextSpread = clampRange(fx.lyricContextSpread, 0.60, 2.40);
+      if (pair[1] === 'lyricTranslationGap') fx.lyricTranslationGap = clampRange(fx.lyricTranslationGap, 0.28, 2.20);
+      if (pair[1] === 'lyricTranslationScale') fx.lyricTranslationScale = clampRange(fx.lyricTranslationScale, 0.46, 1.12);
+      if (pair[1] === 'lyricTranslationOpacity') fx.lyricTranslationOpacity = clampRange(fx.lyricTranslationOpacity, 0.20, 1);
+      if (pair[1] === 'lyricGlitchJitter') fx.lyricGlitchJitter = clampRange(fx.lyricGlitchJitter, 0, 1.8);
+      if (out) out.textContent = pair[1] === 'coverResolution'
+        ? coverParticleCountLabel(fx.coverResolution)
+        : (pair[1] === 'lyricWeight' || /^sonicGround/.test(pair[1]) || /^sonicAudio/.test(pair[1]) || pair[1] === 'sonicWorkshopInputGain' || pair[1] === 'controlGlassChromaticOffset' || pair[1] === 'playlistPanelGlassBlur' || pair[1] === 'backgroundMediaCropX' || pair[1] === 'backgroundMediaCropY' || pair[1] === 'lyricTiltX' || pair[1] === 'lyricTiltY' || pair[1] === 'shelfAngleY' || pair[1] === 'shelfDetailAngleX' || pair[1] === 'shelfDetailAngleY' ? String(Math.round(fx[pair[1]])) : Number(el.value).toFixed(pair[1] === 'lyricLetterSpacing' ? 3 : 2));
+      if (typeof refreshSonicAudioMonitorUi === 'function' && /^sonicAudio/.test(pair[1])) refreshSonicAudioMonitorUi();
+      if (/^sonicWorkshop/.test(pair[1]) && window.MineradioSonicWorkshop && typeof MineradioSonicWorkshop.pushProperties === 'function') MineradioSonicWorkshop.pushProperties(true);
+      syncFxUniforms();
+      if (/^playlistPanel/.test(pair[1])) applyPlaylistPanelFxSettings();
+      if (/^shelf(Size|OffsetX|OffsetY|OffsetZ|AngleY|Opacity|BgOpacity|Detail|Summon|Camera)/.test(pair[1]) && shelfManager && shelfManager.refreshTheme) shelfManager.refreshTheme();
+      syncLyricRealtimeFxChange(pair[1], { deferred: true });
+      if (/^(desktopLyricsSize|desktopLyricsOpacity|desktopLyricsY)$/.test(pair[1])) pushDesktopLyricsState(true);
+      if (pair[1] === 'wallpaperOpacity') pushWallpaperState(true);
+      var saveOpts = { user: true, reason: /^backgroundMedia(CropX|CropY|Zoom)$/.test(pair[1]) ? 'backgroundMediaCrop' : pair[1] };
+      if (pair[1] === 'controlGlassChromaticOffset') saveOpts.syncDisk = true;
+      if (isStageLyricRealtimeFxKey(pair[1]) || isDesktopLyricRealtimeFxKey(pair[1])) scheduleLyricLayoutSave(360, saveOpts);
+      else saveLyricLayout(saveOpts);
+    });
+  });
+  var lyricPicker = document.getElementById('lyric-color-picker');
+  if (lyricPicker) {
+    lyricPicker.addEventListener('input', function () { setLyricColorCustom(lyricPicker.value, true); });
+    lyricPicker.addEventListener('change', function () {
+      setLyricColorCustom(lyricPicker.value, true);
+      showToast('歌词颜色: ' + normalizeHexColor(lyricPicker.value).toUpperCase());
+    });
+  }
+  var lyricHighlightPicker = document.getElementById('lyric-highlight-picker');
+  if (lyricHighlightPicker) {
+    lyricHighlightPicker.addEventListener('input', function () { setLyricHighlightCustom(lyricHighlightPicker.value, true); });
+    lyricHighlightPicker.addEventListener('change', function () {
+      setLyricHighlightCustom(lyricHighlightPicker.value, true);
+      showToast('高亮颜色: ' + normalizeHexColor(lyricHighlightPicker.value).toUpperCase());
+    });
+  }
+  var lyricGlowPicker = document.getElementById('lyric-glow-picker');
+  if (lyricGlowPicker) {
+    lyricGlowPicker.addEventListener('input', function () { setLyricGlowCustom(lyricGlowPicker.value, true); });
+    lyricGlowPicker.addEventListener('change', function () {
+      setLyricGlowCustom(lyricGlowPicker.value, true);
+      showToast('溢光颜色: ' + normalizeHexColor(lyricGlowPicker.value).toUpperCase());
+    });
+  }
+  var uiAccentPicker = document.getElementById('ui-accent-picker');
+  if (uiAccentPicker) {
+    uiAccentPicker.addEventListener('input', function () { setUiAccentColor(uiAccentPicker.value, true); });
+    uiAccentPicker.addEventListener('change', function () {
+      showToast('界面高亮: ' + normalizeHexColor(
+        uiAccentPicker.value,
+        fxDefaults.uiAccentColor || '#ffffff'
+      ).toUpperCase());
+    });
+  }
+  var visualTintPicker = document.getElementById('visual-tint-picker');
+  if (visualTintPicker) {
+    visualTintPicker.addEventListener('input', function () { setVisualTintCustom(visualTintPicker.value, true); });
+    visualTintPicker.addEventListener('change', function () { showToast('视觉主色: ' + normalizeHexColor(visualTintPicker.value).toUpperCase()); });
+  }
+  [
+    ['sonic-ground-base-picker', 'sonicGroundBaseColor'],
+    ['sonic-ground-cool-picker', 'sonicGroundCoolColor'],
+    ['sonic-ground-warm-picker', 'sonicGroundWarmColor'],
+    ['sonic-ground-accent-picker', 'sonicGroundAccentColor']
+  ].forEach(function (pair) {
+    var picker = document.getElementById(pair[0]);
+    if (!picker) return;
+    picker.addEventListener('input', function () { setSonicGroundColor(pair[1], picker.value, true); });
+    picker.addEventListener('change', function () { setSonicGroundColor(pair[1], picker.value); });
+  });
+  [
+    ['sonic-workshop-cover-picker', 'theme'],
+    ['sonic-workshop-base-picker', 'base'],
+    ['sonic-workshop-warm-picker', 'warm'],
+    ['sonic-workshop-cool-picker', 'cool'],
+    ['sonic-workshop-ripple-picker', 'ripple'],
+    ['sonic-workshop-peak-picker', 'peak']
+  ].forEach(function (pair) {
+    var picker = document.getElementById(pair[0]);
+    if (!picker) return;
+    picker.addEventListener('input', function () { setSonicWorkshopRegionColorFromPicker(pair[1], picker.value, true); });
+    picker.addEventListener('change', function () { setSonicWorkshopRegionColorFromPicker(pair[1], picker.value); });
+  });
+  var homeAccentPicker = document.getElementById('home-accent-picker');
+  if (homeAccentPicker) {
+    homeAccentPicker.addEventListener('input', function () { setHomeAccentColor(homeAccentPicker.value, true); });
+    homeAccentPicker.addEventListener('change', function () { showToast('Home 填充: ' + normalizeHexColor(homeAccentPicker.value).toUpperCase()); });
+  }
+  var homeIconPicker = document.getElementById('home-icon-picker');
+  if (homeIconPicker) {
+    homeIconPicker.addEventListener('input', function () { setHomeIconColor(homeIconPicker.value, true); });
+    homeIconPicker.addEventListener('change', function () { showToast('主页图标: ' + normalizeHexColor(homeIconPicker.value, '#f4d28a').toUpperCase()); });
+  }
+  var visualIconPicker = document.getElementById('visual-icon-picker');
+  if (visualIconPicker) {
+    visualIconPicker.addEventListener('input', function () { setVisualIconColor(visualIconPicker.value, true); });
+    visualIconPicker.addEventListener('change', function () { showToast('视觉图标: ' + normalizeHexColor(visualIconPicker.value, '#7fd8ff').toUpperCase()); });
+  }
+  var bgColorPicker = document.getElementById('bg-color-picker');
+  if (bgColorPicker) {
+    bgColorPicker.addEventListener('input', function () { setCustomBackgroundColor(bgColorPicker.value, true); });
+    bgColorPicker.addEventListener('change', function () { showToast('背景颜色: ' + normalizeHexColor(bgColorPicker.value, '#000000').toUpperCase()); });
+  }
+  var shelfAccentPicker = document.getElementById('shelf-accent-picker');
+  if (shelfAccentPicker) {
+    shelfAccentPicker.addEventListener('input', function () { setShelfAccentColor(shelfAccentPicker.value, true); });
+    shelfAccentPicker.addEventListener('change', function () { showToast('歌单架颜色: ' + shelfAccentHex().toUpperCase()); });
+  }
+  var bgImageInput = document.getElementById('background-image-input');
+  if (bgImageInput) {
+    bgImageInput.addEventListener('change', function (e) {
+      var file = e.target.files && e.target.files[0];
+      if (file) readBackgroundMediaFile(file);
+      e.target.value = '';
+    });
+  }
+  ['ui-accent-picker', 'visual-tint-picker', 'sonic-ground-base-picker', 'sonic-ground-cool-picker', 'sonic-ground-warm-picker', 'sonic-ground-accent-picker', 'sonic-workshop-cover-picker', 'sonic-workshop-base-picker', 'sonic-workshop-warm-picker', 'sonic-workshop-cool-picker', 'sonic-workshop-ripple-picker', 'sonic-workshop-peak-picker', 'home-accent-picker', 'home-icon-picker', 'visual-icon-picker', 'bg-color-picker', 'shelf-accent-picker', 'lyric-color-picker', 'lyric-highlight-picker', 'lyric-glow-picker'].forEach(function (id) {
+    bindColorLabPicker(document.getElementById(id));
+  });
+  bindColorLabRows();
+  var sv = document.getElementById('color-lab-sv');
+  if (sv && !sv._bound) {
+    sv._bound = true;
+    sv.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      colorLabState.dragging = true;
+      sv.setPointerCapture && sv.setPointerCapture(e.pointerId);
+      updateColorLabFromSv(e);
+    });
+    sv.addEventListener('pointermove', function (e) { if (colorLabState.dragging) updateColorLabFromSv(e); });
+    sv.addEventListener('pointerup', function () {
+      colorLabState.dragging = false;
+      if (typeof commitColorLabValue === 'function') commitColorLabValue(true);
+    });
+    sv.addEventListener('pointercancel', function () {
+      colorLabState.dragging = false;
+      if (typeof commitColorLabValue === 'function') commitColorLabValue(true);
+    });
+  }
+  var hue = document.getElementById('color-lab-hue');
+  if (hue && !hue._bound) {
+    hue._bound = true;
+    hue.addEventListener('input', function () {
+      colorLabState.h = clampRange(Number(hue.value) || 0, 0, 360) / 360;
+      var hex = hsvToHex(colorLabState.h, colorLabState.s, colorLabState.v);
+      syncColorLabUi(hex);
+      applyColorLabValue(hex, true);
+    });
+  }
+  var hexInput = document.getElementById('color-lab-hex');
+  if (hexInput && !hexInput._bound) {
+    hexInput._bound = true;
+    hexInput.addEventListener('change', function () {
+      var hex = normalizeHexColor(hexInput.value || '#000000', '#000000');
+      syncColorLabUi(hex);
+      applyColorLabValue(hex);
+    });
+  }
+  var presets = document.getElementById('color-lab-presets');
+  if (presets && !presets._bound) {
+    presets._bound = true;
+    presets.addEventListener('click', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('[data-color]') : null;
+      if (!btn) return;
+      var hex = normalizeHexColor(btn.getAttribute('data-color') || '#000000', '#000000');
+      syncColorLabUi(hex);
+      applyColorLabValue(hex);
+    });
+  }
+  if (!document._colorLabOutsideBound) {
+    document._colorLabOutsideBound = true;
+    document.addEventListener('mousedown', function (e) {
+      var pop = document.getElementById('color-lab-pop');
+      if (!pop || !pop.classList.contains('show')) return;
+      if (e.target && (e.target.closest('#color-lab-pop') || e.target.closest('.lyric-color-picker') || e.target.closest('.lyric-color-row'))) return;
+      closeColorLab();
+    }, true);
+    document.addEventListener('mousedown', function (e) {
+      var pop = document.getElementById('cover-color-pop');
+      if (!pop || !pop.classList.contains('show')) return;
+      if (e.target && (e.target.closest('#cover-color-pop') || e.target.closest('#visual-tint-auto-btn'))) return;
+      closeCoverColorPicker();
+    }, true);
+  }
+  // 三态
+  document.querySelectorAll('#shelf-seg button').forEach(function (b) {
+    b.addEventListener('click', function () { setShelfMode(b.dataset.shelf); });
+  });
+  document.querySelectorAll('#shelf-camera-seg [data-shelf-camera]').forEach(function (b) {
+    b.addEventListener('click', function () { setShelfCameraMode(b.getAttribute('data-shelf-camera')); });
+  });
+  document.querySelectorAll('#shelf-presence-seg [data-shelf-presence]').forEach(function (b) {
+    b.addEventListener('click', function () { setShelfPresence(b.getAttribute('data-shelf-presence')); });
+  });
+  document.querySelectorAll('#cam-seg button').forEach(function (b) {
+    b.addEventListener('click', function () { setCamMode(b.dataset.cam); });
+  });
+  document.querySelectorAll('#desktop-lyrics-fps-seg [data-desktop-lyrics-fps]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      fx.desktopLyricsFps = normalizeDesktopLyricsFps(btn.getAttribute('data-desktop-lyrics-fps'));
+      updateDesktopLyricsFpsControls();
+      saveLyricLayout({ user: true, reason: 'desktopLyricsFps' });
+      pushDesktopLyricsState(true);
+      showToast(fx.desktopLyricsFps ? ('桌面歌词帧数 ' + fx.desktopLyricsFps) : '桌面歌词帧数无上限');
+    });
+  });
+  document.querySelectorAll('#wallpaper-fps-seg [data-wallpaper-fps]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      fx.wallpaperFps = normalizeWallpaperFps(btn.getAttribute('data-wallpaper-fps'));
+      updateWallpaperFpsControls();
+      saveLyricLayout({ user: true, reason: 'wallpaperFps' });
+      if (fx.wallpaperMode) pushWallpaperState(true);
+      showToast('壁纸帧数 ' + fx.wallpaperFps);
+    });
+  });
+  document.querySelectorAll('#performance-background-seg [data-performance-background]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      setPerformanceBackgroundMode(btn.getAttribute('data-performance-background'));
+    });
+  });
+  document.querySelectorAll('#performance-quality-seg [data-performance-quality]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      setPerformanceQualityMode(btn.getAttribute('data-performance-quality'));
+    });
+  });
+  document.querySelectorAll('#foreground-fps-seg [data-foreground-fps]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      setForegroundFpsMode(btn.getAttribute('data-foreground-fps'));
+    });
+  });
+  updateFxInputs();
+  if (typeof initFxConsoleSearchAndHistory === 'function') initFxConsoleSearchAndHistory();
+}
+function toggleWallpaperModeFromUi() {
+  if (typeof desktopWallpaperRuntimeState !== 'undefined' && desktopWallpaperRuntimeState.supported === false) {
+    showToast('当前系统不支持桌面壁纸模式');
+    return Promise.resolve({ ok: false, enabled: false, error: 'WALLPAPER_PLATFORM_UNSUPPORTED' });
+  }
+  var desired = !fx.wallpaperMode;
+  fx.wallpaperMode = desired;
+  updateFxInputs();
+  return applyWallpaperModeState(true).then(function (result) {
+    if (result && result.rendererStale) return result;
+    var accepted = !!(result && result.ok === true && result.enabled === desired);
+    if (accepted) showToast(desired ? ('完整桌面模式已开启 · ' + desktopInteractionHotkeyHint()) : '完整桌面模式已关闭');
+    else if (desired) showToast('完整桌面模式启动失败：' + desktopWallpaperErrorLabel(result && result.error));
+    else showToast('完整桌面模式关闭失败：' + desktopWallpaperErrorLabel(result && result.error));
+    return result;
+  });
+}
+function toggleFx(key) {
+  if (isDevelopmentLockedFx(key)) {
+    normalizeDevelopmentLockedFxState();
+    saveLyricLayout({ user: true, reason: key });
+    updateFxInputs();
+    applyDesktopLyricsState(true);
+    applyWallpaperModeState(true);
+    showToast('开发中，暂不可用');
+    return;
+  }
+  if (key === 'wallpaperMode') {
+    toggleWallpaperModeFromUi();
+    return;
+  }
+  fx[key] = !fx[key];
+  var toggleId = 't-' + (key === 'floatLayer' ? 'float' : key === 'aiDepth' ? 'aidepth' : key);
+  var toggle = document.getElementById(toggleId);
+  if (toggle) toggle.classList.toggle('on', fx[key]);
+  if (key === 'lyricGlow' || key === 'lyricGlowBeat') updateLyricGlowControls();
+  syncFxUniforms();
+  if (key === 'lyricCameraLock' || key === 'lyricGlow' || key === 'lyricGlowBeat' || key === 'lyricGlowParticles' || key === 'lyricVerticalFloat' || key === 'lyricLiveViewportFit' || key === 'lyricContextHighQuality' || key === 'lyricBackdropAdapt' || key === 'coverBackdropAdapt' || key === 'backgroundStarRiver' || key === 'lyricPauseHold' || key === 'bloom' || key === 'edge' || key === 'cinema' || key === 'aiDepth' || key === 'desktopLyrics' || key === 'desktopLyricsClickThrough' || key === 'desktopLyricsCinema' || key === 'desktopLyricsHighlight' || key === 'wallpaperMode' || key === 'sonicGroundFloatingEnabled' || key === 'sonicAudioMonitorEnabled' || key === 'sonicAudioAutoTrack' || key === 'shelfShowPodcasts' || key === 'shelfMergeCollections' || key === 'liveBackgroundKeep' || key === 'memoryAutoTrimApp' || key === 'memoryAutoTrimOnBackground' || key === 'memoryAutoSystemTrim' || key === 'memorySystemAutoElevate') saveLyricLayout({ user: true, reason: key });
+  if ((key === 'sonicAudioMonitorEnabled' || key === 'sonicAudioAutoTrack') && typeof refreshSonicAudioMonitorUi === 'function') refreshSonicAudioMonitorUi();
+  if (key === 'floatLayer') { if (fx.floatLayer) createFloatLayer(); else destroyFloatLayer(); saveLyricLayout({ user: true, reason: key }); }
+  if (key === 'desktopLyrics') applyDesktopLyricsState(true);
+  if (key === 'desktopLyricsClickThrough' || key === 'desktopLyricsCinema' || key === 'desktopLyricsHighlight') pushDesktopLyricsState(true);
+  if (key === 'lyricGlow' || key === 'lyricGlowBeat' || key === 'lyricGlowParticles') pushDesktopLyricsState(true);
+  if (key === 'lyricContextHighQuality' && typeof invalidateLyricQualityTextures === 'function') {
+    invalidateLyricQualityTextures('context-quality-toggle', { release: true });
+  }
+  if (key === 'backgroundStarRiver') {
+    if (typeof updateBackgroundStarRiverState === 'function') updateBackgroundStarRiverState(0.016, true);
+    showToast(fx.backgroundStarRiver !== false ? '背景星河已开启' : '背景星河已关闭');
+  }
+  if (key === 'wallpaperMode') applyWallpaperModeState(true);
+  if (key === 'shelfShowPodcasts' || key === 'shelfMergeCollections') {
+    if (shelfManager && shelfManager.rebuild) shelfManager.rebuild(true);
+    if (shelfManager && shelfManager.refreshTheme) shelfManager.refreshTheme();
+  }
+  if (key === 'liveBackgroundKeep') {
+    fx.performanceBackground = fx.liveBackgroundKeep ? 'keep' : 'auto';
+    updatePerformanceControls();
+    saveLyricLayout({ user: true, reason: 'liveBackgroundKeep' });
+    if (fx.liveBackgroundKeep && backgroundCacheTrimTimer) {
+      clearTimeout(backgroundCacheTrimTimer);
+      backgroundCacheTrimTimer = 0;
+    }
+    updateRenderPowerClasses();
+    applyRendererPowerMode();
+    if (fx.liveBackgroundKeep) recoverVisualsAfterBackground('live-background-keep');
+  }
+  if (key === 'memoryAutoTrimApp' || key === 'memoryAutoTrimOnBackground' || key === 'memoryAutoSystemTrim' || key === 'memorySystemAutoElevate') {
+    if (typeof updateMemoryControls === 'function') updateMemoryControls();
+    if (typeof configureMemoryReductFromFx === 'function') configureMemoryReductFromFx('toggle', key === 'memoryAutoSystemTrim' && fx.memoryAutoSystemTrim);
+  }
+  if (key === 'lyricGlow') showToast(fx.lyricGlow ? '歌词溢光已开启' : '歌词溢光已关闭');
+  if (key === 'lyricGlowBeat') showToast(fx.lyricGlowBeat ? '歌词溢光跟随鼓点' : '歌词溢光已脱离鼓点');
+  if (key === 'lyricGlowParticles') showToast(fx.lyricGlowParticles ? '歌词光粒已开启' : '歌词光粒已关闭');
+  if (key === 'lyricVerticalFloat') showToast(fx.lyricVerticalFloat !== false ? '歌词上下浮动已开启' : '歌词上下浮动已关闭');
+  if (key === 'lyricLiveViewportFit') showToast(fx.lyricLiveViewportFit !== false ? '歌词实时边界已开启' : '歌词实时边界已关闭，已停止逐帧投影');
+  if (key === 'lyricContextHighQuality') showToast(fx.lyricContextHighQuality !== false ? '上下句高清纹理已开启' : '上下句高清纹理已关闭，仅保留当前双语高清');
+  if (key === 'lyricBackdropAdapt') showToast(fx.lyricBackdropAdapt !== false ? '全局歌词避光已开启' : '全局歌词避光已关闭');
+  if (key === 'coverBackdropAdapt') showToast(fx.coverBackdropAdapt !== false ? '封面粒子避光已开启' : '封面粒子避光已关闭');
+  if (key === 'lyricPauseHold') showToast(fx.lyricPauseHold !== false ? '暂停时保留歌词' : '暂停时隐藏歌词');
+  if (key === 'desktopLyrics') showToast(fx.desktopLyrics ? '桌面歌词已开启' : '桌面歌词已关闭');
+  if (key === 'desktopLyricsClickThrough') showToast(fx.desktopLyricsClickThrough !== false ? '桌面歌词已锁定' : '桌面歌词可移动');
+  if (key === 'desktopLyricsCinema') showToast(fx.desktopLyricsCinema !== false ? '桌面歌词电影震动已开启' : '桌面歌词电影震动已关闭，基础漂浮保留');
+  if (key === 'desktopLyricsHighlight') showToast(fx.desktopLyricsHighlight === true ? '桌面歌词高亮跟随已开启' : '桌面歌词高亮跟随已关闭');
+  if (key === 'wallpaperMode') showToast(fx.wallpaperMode ? '壁纸模式已开启' : '壁纸模式已关闭');
+  if (key === 'shelfShowPodcasts') showToast(fx.shelfShowPodcasts !== false ? '3D歌单架已显示播客歌单' : '3D歌单架已隐藏播客歌单');
+  if (key === 'shelfMergeCollections') showToast(fx.shelfMergeCollections === true ? '我的歌单与收藏歌单已合并滚动' : '收藏歌单恢复滚到底切页');
+  if (key === 'liveBackgroundKeep') showToast(fx.liveBackgroundKeep ? '直播后台保持已开启' : '直播后台保持已关闭');
+  if (key === 'memoryAutoTrimApp') showToast(fx.memoryAutoTrimApp ? '播放器进程压缩已开启' : '播放器进程压缩已关闭');
+  if (key === 'memoryAutoTrimOnBackground') showToast(fx.memoryAutoTrimOnBackground ? '最小化后台会自动压缩' : '后台自动压缩已关闭');
+  if (key === 'memoryAutoSystemTrim') showToast(fx.memoryAutoSystemTrim ? '系统级 Mem Reduct 已开启' : '系统级 Mem Reduct 已关闭');
+  if (key === 'memorySystemAutoElevate') showToast(fx.memorySystemAutoElevate ? '系统释放允许请求管理员权限' : '系统释放不再自动提权');
+  if (key === 'lyricCameraLock') showToast(fx.lyricCameraLock ? '歌词已绑定镜头' : '歌词已恢复自由漂浮');
+  if (key === 'bloom') showToast(fx.bloom ? '溢光已开启' : '溢光已关闭');
+  if (key === 'edge') showToast(fx.edge ? '已开启轮廓高亮' : '已关闭轮廓高亮');
+  if (key === 'cinema') showToast(fx.cinema ? '已开启电影镜头' : '已关闭电影镜头');
+  if (key === 'aiDepth') {
+    if (fx.aiDepth) {
+      aiDepthFailUntil = 0;
+      queueAIDepthForCurrentCover(true);
+    }
+    showToast(fx.aiDepth ? '已开启后台 AI 立体增强' : '已关闭 AI 立体增强, 使用轻量弧面');
+  }
+}
+function toggleFxPanel(force) {
+  var el = document.getElementById('fx-panel');
+  if (!el) return;
+  if (!diyPlayerMode && force !== false) {
+    showToast('开启 DIY 玩家模式后可打开视觉控制台');
+    return;
+  }
+  var currentlyOpen = el.classList.contains('show') || el.classList.contains('peek');
+  if (peekTimers && peekTimers.fx) { clearTimeout(peekTimers.fx); peekTimers.fx = null; }
+  fxPanelPinned = false;
+  if (force === false) {
+    el.classList.remove('show', 'peek');
+    el.classList.toggle('closing', currentlyOpen);
+    setTimeout(function () { el.classList.remove('closing'); }, 280);
+    var fab = document.getElementById('fx-fab');
+    if (fab) fab.classList.remove('active');
+    return;
+  }
+  el.classList.remove('show', 'closing');
+  setPeek(el, true, 'fx');
+}
+function resetFx() {
+  var savedCam = fx.cam;
+  var savedGesturePlayerActions = fx.gesturePlayerActions;
+  var savedGestureHandOverlay = fx.gestureHandOverlay;
+  var savedGestureSensitivity = fx.gestureSensitivity;
+  var savedShelf = fx.shelf;
+  var savedShelfCameraMode = normalizeShelfCameraMode(fx.shelfCameraMode || fxDefaults.shelfCameraMode);
+  var savedShelfPresence = normalizeShelfPresence(fx.shelfPresence || fxDefaults.shelfPresence);
+  fx = Object.assign({}, fxDefaults, {
+    cam: savedCam,
+    gesturePlayerActions: savedGesturePlayerActions,
+    gestureHandOverlay: savedGestureHandOverlay,
+    gestureSensitivity: savedGestureSensitivity,
+    shelf: savedShelf,
+    shelfCameraMode: savedShelfCameraMode,
+    shelfPresence: savedShelfPresence,
+    shelfAngleY: shelfDefaultAngleForCameraMode(savedShelfCameraMode),
+    shelfAngleYManual: false
+  });
+  applyCoverParticleResolution(fx.coverResolution, { reload: true });
+  updateFxInputs();
+  syncFxUniforms();
+  refreshStageLyricDisplayMode();
+  applyDesktopLyricsState(true);
+  pushDesktopLyricsState(true);
+  applyWallpaperModeState(true);
+  updateRenderPowerClasses();
+  applyRendererPowerMode();
+  setStageLyricPalette(stageLyrics.coverPalette || stageLyrics.palette);
+  setPreset(fx.preset, { silent: true, preserveCamera: true, skipTransition: true });
+  if (fx.floatLayer) createFloatLayer(); else destroyFloatLayer();
+  if (shelfManager && shelfManager.rebuild) shelfManager.rebuild(true);
+  if (shelfManager && shelfManager.refreshTheme) shelfManager.refreshTheme();
+  saveLyricLayout({ user: true, reason: 'resetFx' });
+  showToast('已恢复默认参数');
+}
+
+function setShelfMode(m, opts) {
+  opts = opts || {};
+  m = /^(off|side|stage)$/.test(String(m || '')) ? m : fxDefaults.shelf;
+  var prevShelf = fx.shelf;
+  var prevPinned = fx.shelfPinnedOpen;
+  var prevPresence = fx.shelfPresence;
+  fx.shelf = m;
+  if (m !== 'side' && shelfPinnedOpen) setShelfPinnedOpen(false, true, false);
+  if (m !== 'side') {
+    fx.shelfPinnedOpen = false;
+    shelfVisibility = 0;
+    updateShelfHoverCueFromPointer(null);
+    shelfHoverCue.target = 0;
+    shelfHoverCue.value = 0;
+    shelfHoverCue.zoneActive = false;
+    shelfHoverCue.enteredAt = 0;
+    shelfHoverCue.guide = false;
+    if (typeof setShelfHoverTabVisible === 'function') setShelfHoverTabVisible(false);
+    if (shelfManager && shelfManager.clearSelected) shelfManager.clearSelected();
+    if (shelfManager && shelfManager.hasOpenContent && shelfManager.hasOpenContent() && typeof safeShelfCloseContent === 'function') safeShelfCloseContent('shelf-mode-off');
+  }
+  if (m === 'off') fx.shelfPresence = 'auto';
+  document.querySelectorAll('#shelf-seg button').forEach(function (b) { b.classList.toggle('active', b.dataset.shelf === m); });
+  if (shelfManager) shelfManager.setMode(m);
+  // 舞台模式: 顶部搜索、底部控件让位
+  var searchArea = document.getElementById('search-area');
+  var bottomBar = document.getElementById('bottom-bar');
+  if (searchArea) searchArea.classList.toggle('stage-mode', m === 'stage');
+  if (bottomBar) bottomBar.classList.toggle('stage-mode', m === 'stage');
+  if (opts.forceSave || prevShelf !== fx.shelf || prevPinned !== fx.shelfPinnedOpen || prevPresence !== fx.shelfPresence) {
+    saveLyricLayout({ user: opts.user !== false, reason: 'shelfMode' });
+  }
+}
+
+function updateShelfControlUi() {
+  fx.shelfCameraMode = normalizeShelfCameraMode(fx.shelfCameraMode || fxDefaults.shelfCameraMode);
+  fx.shelfPresence = normalizeShelfPresence(fx.shelfPresence || fxDefaults.shelfPresence);
+  document.querySelectorAll('#shelf-camera-seg [data-shelf-camera]').forEach(function (btn) {
+    btn.classList.toggle('active', btn.getAttribute('data-shelf-camera') === fx.shelfCameraMode);
+  });
+  document.querySelectorAll('#shelf-presence-seg [data-shelf-presence]').forEach(function (btn) {
+    btn.classList.toggle('active', btn.getAttribute('data-shelf-presence') === fx.shelfPresence);
+  });
+  var color = shelfAccentHex();
+  var picker = document.getElementById('shelf-accent-picker');
+  var value = document.getElementById('shelf-accent-value');
+  if (picker) picker.value = color;
+  if (value) value.textContent = color.toUpperCase();
+}
+function refreshShelfVisuals(reason) {
+  updateShelfControlUi();
+  if (shelfManager && shelfManager.refreshTheme) shelfManager.refreshTheme();
+  if (shelfManager && shelfManager.rebuild && reason === 'mode') shelfManager.rebuild(true);
+}
+function setShelfCameraMode(mode) {
+  fx.shelfCameraMode = normalizeShelfCameraMode(mode);
+  applyShelfCameraDefaultAngle(true);
+  setRange('fx-shelfangle', fx.shelfAngleY);
+  updateShelfControlUi();
+  if (fx.shelfCameraMode === 'static' && orbit && orbit.focus && /^shelf-/.test(String(orbit.focus.type || ''))) {
+    setFocusZone(null, true);
+  }
+  saveLyricLayout({ user: true, reason: 'shelfCameraMode' });
+  showToast(fx.shelfCameraMode === 'static' ? '3D歌单架: 静态镜头' : '3D歌单架: 动态镜头');
+}
+function setShelfPresence(mode) {
+  fx.shelfPresence = normalizeShelfPresence(mode);
+  updateShelfControlUi();
+  if (shelfManager && shelfManager.setMode) shelfManager.setMode(fx.shelf);
+  if (fx.shelfPresence === 'auto') {
+    if (shelfPinnedOpen) setShelfPinnedOpen(false, true, false);
+    fx.shelfPinnedOpen = false;
+    updateShelfHoverCueFromPointer(null);
+    shelfHoverCue.target = 0;
+    shelfHoverCue.value = 0;
+    shelfHoverCue.zoneActive = false;
+    shelfHoverCue.enteredAt = 0;
+    shelfHoverCue.guide = false;
+    shelfVisibility = 0;
+    if (typeof setShelfHoverTabVisible === 'function') setShelfHoverTabVisible(false);
+    if (shelfManager && shelfManager.clearSelected) shelfManager.clearSelected();
+    if (shelfManager && shelfManager.hasOpenContent && shelfManager.hasOpenContent() && typeof safeShelfCloseContent === 'function') safeShelfCloseContent('shelf-presence-auto');
+    if (typeof setFocusZone === 'function') setFocusZone(null, true);
+  }
+  updateShelfControlUi();
+  saveLyricLayout({ user: true, reason: 'shelfPresence' });
+  showToast(fx.shelfPresence === 'always' ? '3D歌单架: 常驻' : '3D歌单架: 自动隐藏');
+}
+function setShelfAccentColor(color, silent) {
+  fx.shelfAccentColor = normalizeHexColor(color || fxDefaults.shelfAccentColor, fxDefaults.shelfAccentColor);
+  refreshShelfVisuals('color');
+  saveLyricLayout({ user: true, reason: 'shelfAccentColor' });
+  if (!silent) showToast('歌单架颜色: ' + fx.shelfAccentColor.toUpperCase());
+}
+function resetShelfAccentColor() {
+  setShelfAccentColor(fxDefaults.shelfAccentColor || '#f4d28a');
+}
+
+function syncControlsAutoHideButton() {
+  var btn = document.getElementById('controls-hide-btn');
+  if (btn) btn.classList.toggle('active', controlsAutoHide);
+  if (!controlsAutoHide && controlsHideTimer) {
+    clearTimeout(controlsHideTimer);
+    controlsHideTimer = null;
+  }
+}
+
+function setParticleLyricsSilently(on) {
+  fx.particleLyrics = !!on;
+  if (fx.particleLyrics) {
+    createLyricsParticles();
+    if (typeof requestStageLyricWarmup === 'function') requestStageLyricWarmup('setParticleLyricsSilently', 150);
+    if (typeof scheduleStageLyricPrewarm === 'function') scheduleStageLyricPrewarm('setParticleLyricsSilently', 48);
+    if (typeof scheduleStageLyricFullTrackWarmup === 'function') scheduleStageLyricFullTrackWarmup('track-ready', 220);
+  } else clearStageLyrics();
+  lyricsVisible = fx.particleLyrics;
+}
+
+function updateImmersiveButton() {
+  var btn = document.getElementById('immersive-btn');
+  if (!btn) return;
+  btn.classList.toggle('active', immersiveMode);
+  btn.setAttribute('aria-pressed', immersiveMode ? 'true' : 'false');
+  btn.title = immersiveMode ? '退出全沉浸式' : '全沉浸式';
+  btn.setAttribute('aria-label', btn.title);
+}
+
+function closeImmersiveInterference() {
+  closeMiniQueue();
+  toggleFxPanel(false);
+  closeUploadTip(false);
+  closeLoginModal();
+  closeUserModal();
+  closeCollectModal();
+  closeCoverCropModal();
+  closeCustomLyricModal();
+  closeTrackDetailModal();
+  if (!localBeatAnalysis.active) closeLocalBeatModal();
+  ['search-area', 'fx-panel', 'trial-banner', 'ai-depth-chip', 'beat-chip'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.classList.remove('peek', 'show', 'closing');
+  });
+  var fab = document.getElementById('fx-fab');
+  if (fab) fab.classList.remove('active');
+  document.body.classList.remove('login-guide-active');
+  setFocusZone(null, true);
+}
+
+function setImmersiveMode(on) {
+  on = !!on;
+  if (immersiveMode === on) return;
+
+  if (on) {
+    immersiveState = {
+      shelfMode: fx.shelf,
+      shelfPinnedOpen: shelfPinnedOpen,
+      lyrics: fx.particleLyrics,
+      controlsAutoHide: controlsAutoHide,
+      bottomVisible: !!(document.getElementById('bottom-bar') && document.getElementById('bottom-bar').classList.contains('visible'))
+    };
+    immersiveMode = true;
+    document.body.classList.add('immersive-mode');
+    var bottomBarEnter = document.getElementById('bottom-bar');
+    if (bottomBarEnter) bottomBarEnter.classList.add('visible');
+    closeImmersiveInterference();
+    if (!fx.particleLyrics) setParticleLyricsSilently(true);
+    controlsAutoHide = true;
+    syncControlsAutoHideButton();
+    updateImmersiveButton();
+    syncCursorAutoHideMode();
+    revealBottomControls(720);
+    setTimeout(function () {
+      if (immersiveMode && !controlsHovering) setControlsHidden(true);
+    }, 980);
+    return;
+  }
+
+  immersiveMode = false;
+  document.body.classList.remove('immersive-mode');
+  closeMiniQueue();
+  if (immersiveState.shelfMode) setShelfMode(immersiveState.shelfMode);
+  if (immersiveState.shelfMode === 'side' && immersiveState.shelfPinnedOpen) setShelfPinnedOpen(true, true);
+  else setShelfPinnedOpen(false, true);
+  if (immersiveState.lyrics === false) setParticleLyricsSilently(false);
+  controlsAutoHide = immersiveState.controlsAutoHide !== false;
+  syncControlsAutoHideButton();
+  updateImmersiveButton();
+  syncCursorAutoHideMode();
+  var bottomBarExit = document.getElementById('bottom-bar');
+  if (immersiveState.bottomVisible) revealBottomControls(900);
+  else if (bottomBarExit) bottomBarExit.classList.remove('visible', 'soft-hidden');
+  showToast('已退出全沉浸式');
+}
+
+function toggleImmersiveMode() {
+  setImmersiveMode(!immersiveMode);
+}
+
+async function setCamMode(m) {
+  if (m === 'head') m = 'gesture'; // v8: 头部追踪已下线, 兼容旧设置
+  m = m === 'gesture' ? 'gesture' : 'off';
+  fx.cam = m;
+  if (m === 'off') {
+    stopGestureControl();
+    syncGestureCameraUi();
+    saveLyricLayout({ user: true, reason: 'cam' });
+    return true;
+  }
+  syncGestureCameraUi();
+  saveLyricLayout({ user: true, reason: 'cam' });
+  var started = await startGestureControl();
+  syncGestureCameraUi();
+  return started === true;
+}
+
+// ============================================================
+//  更新提示预览
+;
+
+// ==================== 05-playback/06-track-detail-lyrics-actions.js ====================
+function currentCoverSong() {
+  if (currentIdx >= 0 && playQueue[currentIdx]) return playQueue[currentIdx];
+  return currentLocalSong || null;
+}
+function songDurationLabel(song) {
+  var sec = playbackDurationFromSong(song);
+  if (!sec && audio && isFinite(audio.duration) && audio.duration > 0) sec = audio.duration;
+  if (!sec) return '未知';
+  return formatProgramTime(sec);
+}
+function songSourceLabel(song) {
+  if (!song) return '未知';
+  if (song.provider === 'spotify' || song.source === 'spotify' || song.type === 'spotify' || song.spotifyId || song.spotifyUri) return 'Spotify';
+  if (song.provider === 'qq' || song.source === 'qq' || song.type === 'qq') return 'QQ 音乐';
+  if (song.provider === 'qishui' || song.source === 'qishui' || song.type === 'qishui') return '汽水音乐';
+  if (song.provider === 'kugou' || song.source === 'kugou' || song.type === 'kugou' || song.hash || song.audioHash) return '酷狗音乐';
+  if (song.type === 'local') return '本地上传';
+  if (song.type === 'podcast' || song.source === 'podcast') return '网易云播客';
+  return '网易云音乐';
+}
+function detailRow(label, value) {
+  value = value == null || value === '' ? '未知' : value;
+  return '<div class="detail-k">' + escHtml(label) + '</div><div class="detail-v">' + escHtml(String(value)) + '</div>';
+}
+function currentArtistNames(song) {
+  var text = String((song && song.artist) || '').trim();
+  if (!text) return [];
+  return text.split(/\s*\/\s*|\s*,\s*|、/).map(function (s) { return s.trim(); }).filter(Boolean);
+}
+var trackDetailSeq = 0;
+var detailArtistSongs = [];
+var detailAlbumSongs = [];
+var detailAlbumContext = null;
+var detailAlbumGaplessEnabled = true;
+var detailAlbumGaplessUserTouched = false;
+var detailAlbumCollectionState = Object.create(null);
+var detailCommentSong = null;
+var detailCommentSubmitBusy = false;
+function normalizeArtistNameForMatch(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[\s·・,，、/\\|&＋+_-]+/g, '')
+    .replace(/[()（）\[\]【】"'“”‘’]/g, '');
+}
+function artistNameMatches(expectedNames, actualName) {
+  var actual = normalizeArtistNameForMatch(actualName);
+  if (!actual) return false;
+  return (expectedNames || []).some(function (name) {
+    var expected = normalizeArtistNameForMatch(name);
+    return expected && (expected === actual || expected.indexOf(actual) >= 0 || actual.indexOf(expected) >= 0);
+  });
+}
+function currentArtistId(song) {
+  if (!song) return '';
+  if (!isCloudSong(song)) return '';
+  if (song.artistId) return String(song.artistId);
+  var artists = song.artists || [];
+  for (var i = 0; i < artists.length; i++) {
+    if (artists[i] && artists[i].id) return String(artists[i].id);
+  }
+  return '';
+}
+function currentQQArtistMid(song) {
+  if (!song || songProviderKey(song) !== 'qq') return '';
+  if (song.artistMid) return String(song.artistMid);
+  if (song.singerMid) return String(song.singerMid);
+  if (song.artistId && !/^\d+$/.test(String(song.artistId))) return String(song.artistId);
+  var artists = song.artists || [];
+  for (var i = 0; i < artists.length; i++) {
+    if (artists[i] && artists[i].mid) return String(artists[i].mid);
+    if (artists[i] && artists[i].id && !/^\d+$/.test(String(artists[i].id))) return String(artists[i].id);
+  }
+  return '';
+}
+function currentAlbumKey(song) {
+  if (!song) return '';
+  var provider = songProviderKey(song);
+  if (provider === 'qq') {
+    var qqAlbumMid = song.albumMid || song.albummid || song.album_mid || '';
+    return qqAlbumMid ? 'qq:' + qqAlbumMid : '';
+  }
+  if (provider === 'spotify') {
+    var spotifyAlbumId = song.albumId || song.spotifyAlbumId || '';
+    return spotifyAlbumId ? 'spotify:' + spotifyAlbumId : '';
+  }
+  if (provider === 'netease') {
+    var albumId = song.albumId || song.album_id || '';
+    return albumId ? 'netease:' + albumId : '';
+  }
+  if (provider === 'kugou') {
+    var kugouAlbumId = song.albumId || song.album_id || '';
+    return kugouAlbumId ? 'kugou:' + kugouAlbumId : '';
+  }
+  if (provider === 'qishui') {
+    var qishuiAlbumId = song.albumId || song.album_id || '';
+    return qishuiAlbumId ? 'qishui:' + qishuiAlbumId : '';
+  }
+  return '';
+}
+function albumDetailUrlForSong(song) {
+  var provider = songProviderKey(song);
+  if (provider === 'qq') {
+    var qqAlbumMid = song && (song.albumMid || song.albummid || song.album_mid || '');
+    return qqAlbumMid ? '/api/qq/album/detail?mid=' + encodeURIComponent(qqAlbumMid) + '&limit=120' : '';
+  }
+  if (provider === 'spotify') {
+    var spotifyAlbumId = song && (song.albumId || song.spotifyAlbumId || '');
+    return spotifyAlbumId ? '/api/spotify/album/detail?id=' + encodeURIComponent(spotifyAlbumId) + '&limit=100' : '';
+  }
+  if (provider === 'netease') {
+    var albumId = song && (song.albumId || song.album_id || '');
+    return albumId ? '/api/album/detail?id=' + encodeURIComponent(albumId) + '&limit=120' : '';
+  }
+  return '';
+}
+function albumDetailMissingText(song) {
+  var provider = songProviderKey(song);
+  if (provider === 'kugou') return '当前酷狗歌曲缺少稳定专辑详情接口，暂不能按当前音源打开专辑。';
+  if (provider === 'qishui') return '汽水当前作为匹配源接入，暂不能按当前音源打开专辑详情。';
+  return '当前歌曲缺少可用专辑 ID，重新搜索或播放新版结果后再打开专辑。';
+}
+function albumCollectionConfig(song) {
+  var provider = songProviderKey(song);
+  var albumId = song && (song.albumId || song.album_id || song.spotifyAlbumId || '');
+  if (!albumId) return null;
+  if (provider === 'netease') return { provider: provider, id: String(albumId), endpoint: '/api/album/subscribe', field: 'subscribed', label: '网易云' };
+  if (provider === 'spotify') return { provider: provider, id: String(albumId), endpoint: '/api/spotify/album/like', field: 'like', label: 'Spotify' };
+  if (provider === 'qishui') return { provider: provider, id: String(albumId), endpoint: '/api/qishui/album/collect', field: 'collected', label: '汽水音乐' };
+  return null;
+}
+function albumCollectionKey(song) {
+  var config = albumCollectionConfig(song);
+  return config ? (config.provider + ':' + config.id) : '';
+}
+function renderAlbumCollectionButton(song) {
+  var config = albumCollectionConfig(song);
+  if (!config) return '';
+  var key = albumCollectionKey(song);
+  var collected = !!detailAlbumCollectionState[key];
+  return '<button id="album-collection-toggle" class="detail-action-toggle' + (collected ? ' on' : '') + '" type="button" onclick="toggleAlbumCollection()">' +
+    (collected ? '已收藏专辑' : '收藏专辑') +
+    '</button>';
+}
+function syncAlbumCollectionButton(song) {
+  song = song || detailCommentSong || currentCoverSong();
+  var btn = document.getElementById('album-collection-toggle');
+  if (!btn) return;
+  var collected = !!detailAlbumCollectionState[albumCollectionKey(song)];
+  btn.classList.toggle('on', collected);
+  btn.textContent = collected ? '已收藏专辑' : '收藏专辑';
+}
+function syncAlbumCollectionState(song) {
+  var config = albumCollectionConfig(song);
+  if (!config || !isSongAccountLoggedIn(config.provider)) return;
+  var url = '';
+  var responseField = '';
+  if (config.provider === 'netease') {
+    url = '/api/album/subscribe/check?ids=' + encodeURIComponent(config.id);
+    responseField = 'subscribed';
+  } else if (config.provider === 'spotify') {
+    url = '/api/spotify/album/like/check?ids=' + encodeURIComponent(config.id);
+    responseField = 'liked';
+  }
+  if (!url) return;
+  apiJson(url).then(function (result) {
+    if (!result || result.error || !result[responseField]) return;
+    detailAlbumCollectionState[albumCollectionKey(song)] = !!result[responseField][config.id];
+    syncAlbumCollectionButton(song);
+  }).catch(function () {});
+}
+async function toggleAlbumCollection() {
+  var song = detailCommentSong || currentCoverSong();
+  var config = albumCollectionConfig(song);
+  if (!config) { showToast('当前平台暂不支持收藏专辑'); return; }
+  if (!ensureLoggedInForAction(config.provider)) return;
+  var key = albumCollectionKey(song);
+  var next = !detailAlbumCollectionState[key];
+  var payload = { id: config.id, albumId: config.id };
+  payload[config.field] = next;
+  var btn = document.getElementById('album-collection-toggle');
+  if (btn) btn.classList.add('busy');
+  try {
+    var result = await apiJson(config.endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!result || result.error || result.success === false) throw new Error(result && (result.message || result.error) || 'ALBUM_COLLECTION_FAILED');
+    detailAlbumCollectionState[key] = next;
+    syncAlbumCollectionButton(song);
+    showToast(next ? '专辑已收藏到' + config.label : '已取消收藏专辑');
+  } catch (err) {
+    showToast(/SCOPE|PERMISSION/i.test(String(err && err.message || ''))
+      ? '请重新授权后再收藏专辑'
+      : '专辑收藏操作失败');
+  } finally {
+    if (btn) btn.classList.remove('busy');
+  }
+}
+function renderAlbumGaplessButton() {
+  return '<button id="album-gapless-toggle" class="detail-action-toggle' + (detailAlbumGaplessEnabled ? ' on' : '') + '" type="button" onclick="toggleAlbumGaplessPlayback()">' +
+    (detailAlbumGaplessEnabled ? '无缝衔接 开' : '无缝衔接 关') +
+    '</button>';
+}
+function syncAlbumGaplessButton() {
+  var btn = document.getElementById('album-gapless-toggle');
+  if (!btn) return;
+  btn.classList.toggle('on', detailAlbumGaplessEnabled);
+  btn.textContent = detailAlbumGaplessEnabled ? '无缝衔接 开' : '无缝衔接 关';
+}
+function toggleAlbumGaplessPlayback() {
+  detailAlbumGaplessUserTouched = true;
+  detailAlbumGaplessEnabled = !detailAlbumGaplessEnabled;
+  if (typeof setAlbumGaplessPlaybackContext === 'function') {
+    setAlbumGaplessPlaybackContext(detailAlbumGaplessEnabled, detailAlbumContext, { userToggle: true });
+  }
+  syncAlbumGaplessButton();
+  showToast(detailAlbumGaplessEnabled ? '专辑无缝衔接已开启' : '专辑无缝衔接已关闭');
+}
+function tagAlbumSongsForGapless(songs, context) {
+  var albumKey = context && context.albumKey || '';
+  return (songs || []).map(function (song, i) {
+    var copy = cloneSong(song);
+    copy.__albumGaplessKey = albumKey;
+    copy.__albumTrackIndex = i;
+    return copy;
+  });
+}
+function renderAlbumSongList(songs) {
+  detailAlbumSongs = (songs || []).map(cloneSong);
+  if (!detailAlbumSongs.length) return '<div class="detail-empty">暂无专辑曲目</div>';
+  return '<div class="detail-scroll">' + detailAlbumSongs.map(function (s, i) {
+    var cover = songCoverSrc(s, 80);
+    var coverHtml = cover ? '<img class="artist-song-cover" src="' + escHtml(cover) + '" alt="" onerror="this.style.opacity=0.18">' : '<div class="artist-song-cover"></div>';
+    var actionsHtml = '<div class="artist-song-actions">' +
+      '<button class="artist-song-action collect" type="button" title="收藏到歌单" aria-label="收藏到歌单" onclick="event.stopPropagation();collectAlbumDetailSong(' + i + ')">' + artistCollectTrayIconSvg() + '</button>' +
+      '<button class="artist-song-action next" type="button" title="下一首播放" aria-label="下一首播放" onclick="event.stopPropagation();queueAlbumDetailSongNext(' + i + ')">' + artistNextPlusIconSvg() + '</button>' +
+      '</div>';
+    return '<div class="artist-song-item" onclick="playAlbumDetailSong(' + i + ')">' +
+      '<div class="artist-song-rank">' + String(i + 1).padStart(2, '0') + '</div>' +
+      coverHtml +
+      '<div class="artist-song-main"><div class="artist-song-name">' + escHtml(s.name || '') + '</div>' +
+      '<div class="artist-song-meta">' + escHtml((s.artist || '未知歌手') + (s.duration ? (' · ' + songDurationLabel(s)) : '')) + '</div></div>' +
+      actionsHtml +
+      '</div>';
+  }).join('') + '</div>';
+}
+function playAlbumDetailSong(i) {
+  var song = detailAlbumSongs[i];
+  if (!song) return;
+  var taggedSongs = tagAlbumSongsForGapless(detailAlbumSongs, detailAlbumContext);
+  playQueue = taggedSongs;
+  currentIdx = i;
+  if (typeof setAlbumGaplessPlaybackContext === 'function') {
+    setAlbumGaplessPlaybackContext(detailAlbumGaplessEnabled, detailAlbumContext);
+  }
+  safeRenderQueuePanel('album-detail-play');
+  safeShelfRebuild('album-detail-play', true);
+  closeTrackDetailModal();
+  playQueueAt(i, { skipShuffleOrder: true }).catch(function (e) { console.warn('[AlbumDetailPlay]', e); });
+}
+function collectAlbumDetailSong(i) {
+  var song = detailAlbumSongs[i];
+  if (!song) return;
+  collectDetailSong(song);
+}
+function queueAlbumDetailSongNext(i) {
+  var song = detailAlbumSongs[i];
+  if (!song) return;
+  queueDetailSongNext(song);
+}
+function commentTimeLabel(ms) {
+  var t = Number(ms) || 0;
+  if (!t) return '';
+  try {
+    return new Date(t).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+  } catch (e) {
+    return '';
+  }
+}
+function renderDetailComments(comments) {
+  if (!comments || !comments.length) return '<div class="detail-empty">暂无评论</div>';
+  return '<div class="detail-scroll">' + comments.map(function (c) {
+    var user = c.user || {};
+    var avatar = user.avatar ? coverUrlWithSize(user.avatar, 64) : '';
+    return '<div class="comment-item">' +
+      (avatar ? '<img class="comment-avatar" src="' + avatar + '" alt="">' : '<div class="comment-avatar"></div>') +
+      '<div class="comment-main"><div class="comment-meta">' + escHtml(user.nickname || '音乐用户') + (c.likedCount ? (' · ' + c.likedCount + ' 赞') : '') + (c.time ? (' · ' + escHtml(commentTimeLabel(c.time))) : '') + '</div>' +
+      '<div class="comment-text">' + escHtml(c.content || '') + '</div></div>' +
+      '</div>';
+  }).join('') + '</div>';
+}
+function detailCommentsConfig(song) {
+  var provider = songProviderKey(song);
+  if (provider === 'qq') {
+    var qqId = song.qqId || '';
+    var qqMid = song.mid || song.songmid || song.id || '';
+    return {
+      provider: 'qq',
+      title: 'QQ 音乐评论',
+      readUrl: '/api/qq/song/comments?id=' + encodeURIComponent(qqId) + '&mid=' + encodeURIComponent(qqMid) + '&limit=18',
+      writeUrl: '',
+      canWrite: false,
+    };
+  }
+  if (provider === 'qishui') {
+    var qishuiId = song.providerSongId || song.trackId || song.id || '';
+    return qishuiId ? {
+      provider: 'qishui',
+      title: '汽水音乐评论',
+      readUrl: '/api/qishui/song/comments?id=' + encodeURIComponent(qishuiId) + '&limit=18',
+      writeUrl: '/api/qishui/song/comments?id=' + encodeURIComponent(qishuiId),
+      canWrite: true,
+      id: qishuiId,
+    } : null;
+  }
+  if (provider === 'netease' && song.id) {
+    return {
+      provider: 'netease',
+      title: '网易云评论',
+      readUrl: '/api/song/comments?id=' + encodeURIComponent(song.id) + '&limit=18',
+      writeUrl: '/api/song/comments?id=' + encodeURIComponent(song.id),
+      canWrite: true,
+      id: song.id,
+    };
+  }
+  return null;
+}
+function renderDetailCommentComposer(config) {
+  if (!config || !config.canWrite) return '';
+  return '<div class="detail-comment-compose">' +
+    '<input id="detail-comment-input" type="text" maxlength="280" autocomplete="off" placeholder="写下你的评论">' +
+    '<button id="detail-comment-submit" type="button" onclick="submitDetailComment()">发送</button>' +
+    '</div>';
+}
+function loadDetailComments(song, seq) {
+  var config = detailCommentsConfig(song);
+  var target = document.getElementById('song-comments');
+  if (!config || !config.readUrl) {
+    if (target) target.innerHTML = '<div class="detail-empty">当前平台暂无评论接口</div>';
+    return Promise.resolve();
+  }
+  if (target) target.innerHTML = '<div class="detail-loading">正在载入评论...</div>';
+  return apiJson(config.readUrl).then(function (result) {
+    if (seq !== trackDetailSeq) return;
+    var nextTarget = document.getElementById('song-comments');
+    if (nextTarget) nextTarget.innerHTML = result && !result.error
+      ? renderDetailComments(result.comments || [])
+      : '<div class="detail-empty">评论加载失败</div>';
+    bindTrackDetailScrollers();
+  }).catch(function () {
+    var nextTarget = document.getElementById('song-comments');
+    if (seq === trackDetailSeq && nextTarget) nextTarget.innerHTML = '<div class="detail-empty">评论加载失败</div>';
+    bindTrackDetailScrollers();
+  });
+}
+async function submitDetailComment() {
+  if (detailCommentSubmitBusy || !detailCommentSong) return;
+  var config = detailCommentsConfig(detailCommentSong);
+  if (!config || !config.canWrite || !config.writeUrl) {
+    showToast('当前平台评论只读');
+    return;
+  }
+  if (!ensureLoggedInForAction(config.provider)) return;
+  var input = document.getElementById('detail-comment-input');
+  var content = String(input && input.value || '').trim();
+  if (!content) { showToast('先输入评论内容'); return; }
+  detailCommentSubmitBusy = true;
+  var button = document.getElementById('detail-comment-submit');
+  if (button) { button.disabled = true; button.textContent = '发送中'; }
+  try {
+    var result = await apiJson(config.writeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: config.id, content: content })
+    });
+    if (!result || result.error || result.success === false || result.created === false) {
+      throw new Error(result && (result.message || result.error) || 'COMMENT_CREATE_FAILED');
+    }
+    if (input) input.value = '';
+    showToast('评论已发布');
+    await loadDetailComments(detailCommentSong, trackDetailSeq);
+  } catch (err) {
+    showToast('评论发布失败' + (err && err.message ? ': ' + err.message : ''));
+  } finally {
+    detailCommentSubmitBusy = false;
+    if (button) { button.disabled = false; button.textContent = '发送'; }
+  }
+}
+function renderArtistSongList(songs) {
+  detailArtistSongs = (songs || []).map(cloneSong);
+  if (!detailArtistSongs.length) return '<div class="detail-empty">暂无热门歌曲</div>';
+  return '<div class="detail-scroll">' + detailArtistSongs.map(function (s, i) {
+    var cover = songCoverSrc(s, 80);
+    var coverHtml = cover ? '<img class="artist-song-cover" src="' + escHtml(cover) + '" alt="" onerror="this.style.opacity=0.18">' : '<div class="artist-song-cover"></div>';
+    var actionsHtml = '<div class="artist-song-actions">' +
+      '<button class="artist-song-action collect" type="button" title="收藏到歌单" aria-label="收藏到歌单" onclick="event.stopPropagation();collectArtistDetailSong(' + i + ')">' + artistCollectTrayIconSvg() + '</button>' +
+      '<button class="artist-song-action next" type="button" title="下一首播放" aria-label="下一首播放" onclick="event.stopPropagation();queueArtistDetailSongNext(' + i + ')">' + artistNextPlusIconSvg() + '</button>' +
+      '</div>';
+    return '<div class="artist-song-item" onclick="playArtistDetailSong(' + i + ')">' +
+      '<div class="artist-song-rank">' + String(i + 1).padStart(2, '0') + '</div>' +
+      coverHtml +
+      '<div class="artist-song-main"><div class="artist-song-name">' + escHtml(s.name || '') + '</div>' +
+      '<div class="artist-song-meta">' + escHtml((s.album || '未知专辑') + (s.duration ? (' · ' + songDurationLabel(s)) : '')) + '</div></div>' +
+      actionsHtml +
+      '</div>';
+  }).join('') + '</div>';
+}
+function playArtistDetailSong(i) {
+  var song = detailArtistSongs[i];
+  if (!song) return;
+  playQueue = detailArtistSongs.map(cloneSong);
+  currentIdx = i;
+  safeRenderQueuePanel('artist-detail-play');
+  safeShelfRebuild('artist-detail-play', true);
+  closeTrackDetailModal();
+  playQueueAt(i).catch(function (e) { console.warn('[ArtistDetailPlay]', e); });
+}
+function collectArtistDetailSong(i) {
+  var song = detailArtistSongs[i];
+  if (!song) return;
+  collectDetailSong(song);
+}
+function queueArtistDetailSongNext(i) {
+  var song = detailArtistSongs[i];
+  if (!song) return;
+  queueDetailSongNext(song);
+}
+function bindTrackDetailScrollers() {
+  var body = document.getElementById('track-detail-body');
+  bindSmoothWheelScroll(body);
+  if (body) body.querySelectorAll('.detail-scroll').forEach(bindSmoothWheelScroll);
+}
+function closeTrackDetailModal() {
+  closeGsapModal(document.getElementById('track-detail-modal'), function () {
+    detailCommentSong = null;
+    detailCommentSubmitBusy = false;
+  });
+}
+function openTrackDetailModal(type, songOverride) {
+  var song = songOverride || currentCoverSong();
+  if (!song) { showToast('先播放或选择一首歌'); return; }
+  if (immersiveMode) setImmersiveMode(false);
+  var heading = document.getElementById('track-detail-heading');
+  var body = document.getElementById('track-detail-body');
+  if (!heading || !body) return;
+  var cover = songCoverSrc(song, 180);
+  var coverHtml = cover ? '<img class="detail-cover" src="' + cover + '" alt="">' : '<div class="detail-cover"></div>';
+  var title = song.name || '当前歌曲';
+  var artists = currentArtistNames(song);
+  var seq = ++trackDetailSeq;
+  detailCommentSong = song;
+  if (type === 'album') {
+    var albumUrl = albumDetailUrlForSong(song);
+    var albumTitle = song.album || (song.type === 'podcast' ? (song.radioName || 'Podcast') : '未知专辑');
+    var albumKey = currentAlbumKey(song);
+    detailAlbumGaplessUserTouched = false;
+    detailAlbumGaplessEnabled = typeof albumGaplessDefaultEnabledForContext === 'function'
+      ? albumGaplessDefaultEnabledForContext({ albumKey: albumKey })
+      : true;
+    detailAlbumSongs = [];
+    detailAlbumContext = {
+      provider: songProviderKey(song),
+      albumKey: albumKey,
+      album: { name: albumTitle, cover: cover, artist: song.artist || '', id: song.albumId || song.album_id || '', albumMid: song.albumMid || song.albummid || '' },
+      songs: [],
+    };
+    heading.textContent = '专辑详情';
+    body.innerHTML =
+      '<div class="detail-hero">' + coverHtml +
+      '<div style="min-width:0;flex:1"><div class="detail-title" id="album-detail-title">' + escHtml(albumTitle) + '</div>' +
+      '<div class="detail-sub" id="album-detail-sub">' + escHtml(song.artist || '未知歌手') + ' · ' + escHtml(songSourceLabel(song)) + '</div></div>' +
+      '</div>' +
+      '<div class="detail-grid">' +
+      detailRow('当前歌曲', title) +
+      detailRow('专辑', albumTitle) +
+      detailRow('歌手', song.artist || '未知歌手') +
+      detailRow('来源', songSourceLabel(song)) +
+      '</div>' +
+      '<div class="detail-chip-row">' +
+      '<span class="detail-chip">' + escHtml(songSourceLabel(song)) + '</span>' +
+      '<span class="detail-chip">按专辑顺序播放</span>' +
+      '</div>' +
+      '<div class="detail-section"><div class="detail-section-head"><div class="detail-section-title">专辑曲目</div><div class="detail-section-actions">' + renderAlbumCollectionButton(song) + renderAlbumGaplessButton() + '</div></div><div id="album-song-list">' +
+      (albumUrl ? '<div class="detail-loading">正在载入专辑曲目...</div>' : '<div class="detail-empty">' + escHtml(albumDetailMissingText(song)) + '</div>') +
+      '</div></div>';
+    syncAlbumCollectionState(song);
+    if (albumUrl) {
+      apiJson(albumUrl).then(function (r) {
+        if (seq !== trackDetailSeq) return;
+        var target = document.getElementById('album-song-list');
+        if (!r || r.error) {
+          if (target) target.innerHTML = '<div class="detail-empty">专辑详情加载失败</div>';
+          bindTrackDetailScrollers();
+          return;
+        }
+        var albumInfo = r.album || {};
+        var songs = (r.songs || []).map(cloneSong);
+        detailAlbumContext = {
+          provider: r.provider || songProviderKey(song),
+          albumKey: albumKey || currentAlbumKey(songs[0]) || currentAlbumKey(song),
+          album: albumInfo,
+          songs: songs,
+        };
+        if (!detailAlbumContext.albumKey && albumInfo) {
+          detailAlbumContext.albumKey = (r.provider || songProviderKey(song)) + ':' + (albumInfo.albumId || albumInfo.id || albumInfo.albumMid || albumInfo.mid || albumTitle);
+        }
+        if (!detailAlbumGaplessUserTouched && typeof albumGaplessDefaultEnabledForContext === 'function') {
+          detailAlbumGaplessEnabled = albumGaplessDefaultEnabledForContext(detailAlbumContext);
+        }
+        if (detailAlbumGaplessEnabled && typeof setAlbumGaplessPlaybackContext === 'function') {
+          setAlbumGaplessPlaybackContext(true, detailAlbumContext);
+        }
+        var titleEl = document.getElementById('album-detail-title');
+        var subEl = document.getElementById('album-detail-sub');
+        if (titleEl && albumInfo.name) titleEl.textContent = albumInfo.name;
+        if (subEl) subEl.textContent = (albumInfo.artist || song.artist || '未知歌手') + ' · ' + songSourceLabel(song);
+        var detailCover = body.querySelector('.detail-cover');
+        var albumCover = albumInfo.cover || (songs[0] && songs[0].cover) || cover;
+        if (detailCover && albumCover) {
+          if (detailCover.tagName === 'IMG') detailCover.src = coverUrlWithSize(albumCover, 180);
+          else {
+            detailCover.style.backgroundImage = 'url("' + coverUrlWithSize(albumCover, 180).replace(/"/g, '\\"') + '")';
+            detailCover.style.backgroundSize = 'cover';
+            detailCover.style.backgroundPosition = 'center';
+          }
+        }
+        if (target) target.innerHTML = renderAlbumSongList(songs);
+        syncAlbumGaplessButton();
+        bindTrackDetailScrollers();
+      }).catch(function () {
+        var target = document.getElementById('album-song-list');
+        if (seq === trackDetailSeq && target) target.innerHTML = '<div class="detail-empty">专辑详情加载失败</div>';
+        bindTrackDetailScrollers();
+      });
+    }
+  } else if (type === 'artist') {
+    var artistId = currentArtistId(song);
+    var qqArtistMid = currentQQArtistMid(song);
+    var artistDetailUrl = artistId
+      ? ('/api/artist/detail?id=' + encodeURIComponent(artistId) + '&limit=36')
+      : (qqArtistMid ? ('/api/qq/artist/detail?mid=' + encodeURIComponent(qqArtistMid) + '&limit=36') : '');
+    var artistName = artists.join(' / ') || song.artist || '未知歌手';
+    var artistNamesForMatch = artists.length ? artists : (song.artist ? [song.artist] : []);
+    var artistInitial = artistName && artistName !== '未知歌手' ? artistName.slice(0, 1) : '歌';
+    var artistCoverHtml = '<div id="artist-detail-cover" class="detail-cover detail-artist-avatar">' + escHtml(artistInitial) + '</div>';
+    var artistEmptyText = songProviderKey(song) === 'qq'
+      ? '当前 QQ 歌曲缺少 singerMid，无法打开 QQ 歌手主页。'
+      : '当前歌曲缺少可用的歌手主页信息';
+    var artistLoadingText = songProviderKey(song) === 'qq' ? '正在载入 QQ 歌手主页...' : '正在载入歌手主页...';
+    heading.textContent = '歌手详情';
+    body.innerHTML =
+      '<div class="detail-hero">' + artistCoverHtml +
+      '<div style="min-width:0;flex:1"><div class="detail-title">' + escHtml(artistName) + '</div>' +
+      '<div class="detail-sub">来自当前播放 · ' + escHtml(title) + '</div></div>' +
+      '</div>' +
+      '<div class="detail-grid">' +
+      detailRow('当前歌曲', title) +
+      detailRow('关联歌手', artistName) +
+      detailRow('所属专辑', song.album || (song.type === 'podcast' ? (song.radioName || 'Podcast') : '未知')) +
+      detailRow('来源', songSourceLabel(song)) +
+      '</div>' +
+      '<div class="detail-chip-row">' + (artists.length ? artists.map(function (name) { return '<span class="detail-chip">' + escHtml(name) + '</span>'; }).join('') : '<span class="detail-chip">未知歌手</span>') + '</div>' +
+      '<div class="detail-section"><div class="detail-section-head"><div class="detail-section-title">热门歌曲</div></div><div id="artist-hot-songs">' + (artistDetailUrl ? '<div class="detail-loading">' + escHtml(artistLoadingText) + '</div>' : '<div class="detail-empty">' + escHtml(artistEmptyText) + '</div>') + '</div></div>';
+    if (artistDetailUrl) {
+      apiJson(artistDetailUrl).then(function (r) {
+        if (seq !== trackDetailSeq) return;
+        var returnedName = r && r.artist && r.artist.name;
+        var target = document.getElementById('artist-hot-songs');
+        if (returnedName && artistNamesForMatch.length && !artistNameMatches(artistNamesForMatch, returnedName)) {
+          if (target) target.innerHTML = '<div class="detail-empty">歌手资料与当前歌曲不匹配，已停止展示错误主页。</div>';
+          bindTrackDetailScrollers();
+          return;
+        }
+        if (returnedName) {
+          var titleEl = body.querySelector('.detail-title');
+          if (titleEl) titleEl.textContent = r.artist.name;
+        }
+        if (r && r.artist && r.artist.avatar) {
+          var avatarEl = document.getElementById('artist-detail-cover');
+          if (avatarEl) {
+            avatarEl.textContent = '';
+            avatarEl.style.backgroundImage = 'url("' + coverUrlWithSize(r.artist.avatar, 180).replace(/"/g, '\\"') + '")';
+            avatarEl.style.backgroundSize = 'cover';
+            avatarEl.style.backgroundPosition = 'center';
+          }
+        }
+        if (target) target.innerHTML = r && !r.error ? renderArtistSongList(r.songs || []) : '<div class="detail-empty">歌手主页加载失败</div>';
+        bindTrackDetailScrollers();
+      }).catch(function () {
+        var target = document.getElementById('artist-hot-songs');
+        if (seq === trackDetailSeq && target) target.innerHTML = '<div class="detail-empty">歌手主页加载失败</div>';
+        bindTrackDetailScrollers();
+      });
+    }
+  } else {
+    heading.textContent = '歌曲详情';
+    var commentConfig = detailCommentsConfig(song);
+    var detailCommentTitle = commentConfig ? commentConfig.title : (songSourceLabel(song) + '评论');
+    var detailCanLoadComments = !!(commentConfig && commentConfig.readUrl);
+    var detailEmptyText = detailCanLoadComments ? '暂无评论' : '当前平台暂无评论接口';
+    body.innerHTML =
+      '<div class="detail-hero">' + coverHtml +
+      '<div style="min-width:0;flex:1"><div class="detail-title">' + escHtml(title) + '</div>' +
+      '<div class="detail-sub">' + escHtml(song.artist || (song.type === 'local' ? '本地文件' : '未知歌手')) + '</div></div>' +
+      '</div>' +
+      '<div class="detail-grid">' +
+      detailRow('歌曲名', title) +
+      detailRow('歌手', song.artist || '未知歌手') +
+      detailRow('专辑', song.album || (song.type === 'podcast' ? (song.radioName || 'Podcast') : '未知')) +
+      detailRow('时长', songDurationLabel(song)) +
+      detailRow('来源', songSourceLabel(song)) +
+      detailRow('歌词源', lyricSourceMode === 'custom' ? '自定义歌词' : (lyricsTimingSource === 'fallback' ? '占位歌词' : '原词')) +
+      '</div>' +
+      '<div class="detail-chip-row">' +
+      '<span class="detail-chip">' + escHtml(songSourceLabel(song)) + '</span>' +
+      (isSongLiked(song) ? '<span class="detail-chip">红心喜欢</span>' : '') +
+      (getCustomCoverForSong(song) ? '<span class="detail-chip">自定义封面</span>' : '') +
+      (hasCustomLyricForSong(song) ? '<span class="detail-chip">自定义歌词</span>' : '') +
+      '</div>' +
+      '<div class="detail-section"><div class="detail-section-head"><div class="detail-section-title">' + detailCommentTitle + '</div></div>' +
+      renderDetailCommentComposer(commentConfig) +
+      '<div id="song-comments">' + (detailCanLoadComments ? '<div class="detail-loading">正在载入评论...</div>' : '<div class="detail-empty">' + detailEmptyText + '</div>') + '</div></div>';
+    if (detailCanLoadComments) {
+      loadDetailComments(song, seq);
+    }
+  }
+  bindTrackDetailScrollers();
+  openGsapModal(document.getElementById('track-detail-modal'));
+}
+function openArtistDetailForSong(song) {
+  if (!song) { showToast('未找到歌手信息'); return; }
+  if (currentArtistId(song) || currentQQArtistMid(song)) {
+    openTrackDetailModal('artist', song);
+    return;
+  }
+  var artist = String(song.artist || '').split(/\s*\/\s*|\s*,\s*|、|&| feat\.? | ft\.? /i).filter(Boolean)[0] || '';
+  if (artist) {
+    resolveArtistSongForDetail(song, artist).then(function (found) {
+      openTrackDetailModal('artist', found || Object.assign({}, song, { artist: artist }));
+    }).catch(function () {
+      openTrackDetailModal('artist', Object.assign({}, song, { artist: artist }));
+    });
+    showToast('正在查找歌手主页: ' + artist);
+  } else {
+    showToast('当前歌曲缺少歌手主页信息');
+  }
+}
+function resolveArtistSongForDetail(song, artist) {
+  var provider = songProviderKey(song) === 'qq' ? 'qq' : 'netease';
+  var url = provider === 'qq'
+    ? '/api/qq/search?keywords=' + encodeURIComponent(artist) + '&limit=8'
+    : '/api/search?keywords=' + encodeURIComponent(artist) + '&limit=10';
+  return apiJson(url).then(function (r) {
+    var songs = (r && r.songs) || [];
+    for (var i = 0; i < songs.length; i++) {
+      var candidate = songs[i];
+      if (!candidate) continue;
+      if (!artistNameMatches([artist], candidate.artist || '')) continue;
+      if (currentArtistId(candidate) || currentQQArtistMid(candidate)) return candidate;
+    }
+    return null;
+  });
+}
+function setCustomCoverForCurrent(dataUrl, opts) {
+  if (!dataUrl) return;
+  var song = currentCoverSong();
+  var saved = false;
+  var hasKey = false;
+  if (song) {
+    var key = songCustomCoverKey(song);
+    song.customCover = dataUrl;
+    if (key) {
+      hasKey = true;
+      customCoverMap[key] = dataUrl;
+      saved = saveCustomCoverMap();
+      for (var i = 0; i < playQueue.length; i++) {
+        if (songCustomCoverKey(playQueue[i]) === key) playQueue[i].customCover = dataUrl;
+      }
+      if (currentLocalSong && songCustomCoverKey(currentLocalSong) === key) currentLocalSong.customCover = dataUrl;
+    }
+  }
+  applyCoverDataUrl(dataUrl, opts);
+  safeRenderQueuePanel('custom-cover-apply', { scrollCurrent: miniQueueOpen });
+  safeShelfRebuild('custom-cover-apply');
+  updateCustomCoverButton();
+  showToast(song ? (!hasKey ? '封面已应用' : (saved ? '封面已保存' : '封面已应用，存储空间不足')) : '已应用临时封面');
+}
+function updateCustomCoverButton() {
+  var btn = document.getElementById('clear-cover-btn');
+  var hasCover = !!getCustomCoverForSong(currentCoverSong());
+  var area = document.getElementById('search-area');
+  if (area) area.classList.toggle('has-cover-action', hasCover);
+  if (!btn) return;
+  btn.classList.toggle('has-cover', hasCover);
+  btn.title = hasCover ? '取消自定义封面' : '当前没有自定义封面';
+  btn.setAttribute('aria-label', btn.title);
+}
+function clearCustomCoverForCurrent() {
+  var song = currentCoverSong();
+  if (!song) {
+    showToast('先播放或选择一首歌');
+    updateCustomCoverButton();
+    return;
+  }
+  var custom = getCustomCoverForSong(song);
+  if (!custom) {
+    showToast('当前没有自定义封面');
+    updateCustomCoverButton();
+    return;
+  }
+  var key = songCustomCoverKey(song);
+  if (key && customCoverMap[key]) {
+    delete customCoverMap[key];
+    saveCustomCoverMap();
+  }
+  delete playlistCoverCache[custom];
+  delete song.customCover;
+  if (key) {
+    for (var i = 0; i < playQueue.length; i++) {
+      if (songCustomCoverKey(playQueue[i]) === key) delete playQueue[i].customCover;
+    }
+  }
+  if (key && currentLocalSong && songCustomCoverKey(currentLocalSong) === key) delete currentLocalSong.customCover;
+  if (currentIdx >= 0 && playQueue[currentIdx] && playQueue[currentIdx].cover) loadCoverFromUrl(coverUrlWithSize(playQueue[currentIdx].cover, 400));
+  else loadCoverFromUrl('');
+  safeRenderQueuePanel('custom-cover-clear', { scrollCurrent: miniQueueOpen });
+  safeShelfRebuild('custom-cover-clear');
+  updateCustomCoverButton();
+  showToast('已恢复默认封面');
+}
+function readCustomLyricMap() {
+  try {
+    var raw = JSON.parse(localStorage.getItem(CUSTOM_LYRIC_STORE_KEY) || '{}') || {};
+    var out = {};
+    Object.keys(raw).forEach(function (key) {
+      var item = raw[key];
+      if (typeof item === 'string') out[key] = { text: item, updatedAt: 0 };
+      else if (item && typeof item.text === 'string') out[key] = { text: item.text, updatedAt: item.updatedAt || 0 };
+    });
+    return out;
+  } catch (e) {
+    return {};
+  }
+}
+function saveCustomLyricMap() {
+  try {
+    localStorage.setItem(CUSTOM_LYRIC_STORE_KEY, JSON.stringify(customLyricMap || {}));
+    return true;
+  } catch (e) {
+    console.warn('custom lyric save failed:', e);
+    return false;
+  }
+}
+function readCustomLyricPrefs() {
+  try { return JSON.parse(localStorage.getItem(CUSTOM_LYRIC_PREF_STORE_KEY) || '{}') || {}; }
+  catch (e) { return {}; }
+}
+function saveCustomLyricPrefs() {
+  try { localStorage.setItem(CUSTOM_LYRIC_PREF_STORE_KEY, JSON.stringify(customLyricPrefs || {})); } catch (e) { }
+}
+function songCustomLyricKey(song) {
+  return songCustomCoverKey(song);
+}
+function currentLyricSong() {
+  if (currentIdx >= 0 && playQueue[currentIdx]) return playQueue[currentIdx];
+  return currentLocalSong || null;
+}
+function getCustomLyricEntry(song) {
+  var key = songCustomLyricKey(song);
+  return key && customLyricMap[key] ? customLyricMap[key] : null;
+}
+function hasCustomLyricForSong(song) {
+  var entry = getCustomLyricEntry(song);
+  return !!(entry && String(entry.text || '').trim());
+}
+function cloneLyricLine(line) {
+  var copy = Object.assign({}, line || {});
+  if (line && Array.isArray(line.words)) copy.words = line.words.map(function (w) { return Object.assign({}, w); });
+  return copy;
+}
+function cloneLyricLines(lines) {
+  return (Array.isArray(lines) ? lines : []).map(cloneLyricLine);
+}
+function lyricLineSignaturePart(line) {
+  line = line || {};
+  var words = Array.isArray(line.words) ? line.words : [];
+  var firstWord = words[0] || {};
+  var lastWord = words[words.length - 1] || {};
+  return [
+    Math.round((Number(line.t) || 0) * 1000),
+    Math.round((Number(line.duration) || 0) * 1000),
+    String(line.text || ''),
+    line.fallback ? 1 : 0,
+    String(line.source || ''),
+    words.length,
+    Math.round((Number(firstWord.t) || 0) * 1000),
+    Math.round((Number(firstWord.d) || 0) * 1000),
+    Math.round((Number(lastWord.t) || 0) * 1000),
+    Math.round((Number(lastWord.d) || 0) * 1000),
+    String(line.translation || '')
+  ].join('\u001f');
+}
+function lyricLinesSignature(lines) {
+  return (Array.isArray(lines) ? lines : []).map(lyricLineSignaturePart).join('\u001e');
+}
+function currentAppliedLyricRenderSignature() {
+  var song = typeof currentLyricSong === 'function' ? currentLyricSong() : null;
+  var songKey = songCustomLyricKey(song) || (song && (song.provider || song.source || '') + ':' + (song.id || song.mid || song.hash || song.name || '')) || '';
+  return [
+    songKey,
+    lyricSourceMode || 'original',
+    lyricsHasNativeKaraoke ? 1 : 0,
+    lyricsTimingSource || '',
+    lyricsTranslationSource || '',
+    lyricLinesSignature(lyricsLines),
+    lyricLinesSignature(lyricsTranslationLines)
+  ].join('\u001d');
+}
+function preparedLyricStateForApply(lines, hasNativeKaraoke, timingSource, translationLines, translationSource) {
+  var nextLines = Array.isArray(lines) ? lines : [];
+  var nextTranslations = Array.isArray(translationLines) ? translationLines : [];
+  var nextTiming = timingSource || 'fallback';
+  var nextTranslationSource = translationSource || (nextTranslations.length ? 'translation' : 'none');
+  if (!nextLines.length) nextLines = withLyricFallback([]);
+  if (nextLines.length && nextLines[0].fallback) nextTiming = 'fallback';
+  return {
+    lines: nextLines,
+    hasNativeKaraoke: !!hasNativeKaraoke,
+    timingSource: nextTiming,
+    translationLines: nextTranslations,
+    translationSource: nextTranslationSource,
+    signature: lyricStateRenderSignature(nextLines, hasNativeKaraoke, nextTiming, nextTranslations, nextTranslationSource)
+  };
+}
+function lyricStateRenderSignature(lines, hasNativeKaraoke, timingSource, translationLines, translationSource) {
+  var song = typeof currentLyricSong === 'function' ? currentLyricSong() : null;
+  var songKey = songCustomLyricKey(song) || (song && (song.provider || song.source || '') + ':' + (song.id || song.mid || song.hash || song.name || '')) || '';
+  return [
+    songKey,
+    lyricSourceMode || 'original',
+    hasNativeKaraoke ? 1 : 0,
+    timingSource || '',
+    translationSource || '',
+    lyricLinesSignature(lines),
+    lyricLinesSignature(translationLines)
+  ].join('\u001d');
+}
+function skipSameLyricStateRender(prepared, renderOptions, reason) {
+  if (!renderOptions || !renderOptions.preserveSame || !prepared || !prepared.signature) return false;
+  if (prepared.signature !== currentAppliedLyricRenderSignature()) return false;
+  if (typeof markStageLyricsPlaybackResume === 'function') markStageLyricsPlaybackResume(renderOptions.reason || reason || 'same-lyrics-state');
+  return true;
+}
+function setOriginalLyricsState(lines, hasNativeKaraoke, timingSource, translationLines, translationSource) {
+  originalLyricsState = {
+    lines: cloneLyricLines(lines || []),
+    hasNativeKaraoke: !!hasNativeKaraoke,
+    timingSource: timingSource || 'fallback',
+    translationLines: cloneLyricLines(translationLines || []),
+    translationSource: translationSource || 'none'
+  };
+}
+function applyLyricsState(lines, hasNativeKaraoke, timingSource, translationLines, translationSource, renderOptions) {
+  var prepared = preparedLyricStateForApply(lines, hasNativeKaraoke, timingSource, translationLines, translationSource);
+  if (skipSameLyricStateRender(prepared, renderOptions, 'applyLyricsState')) {
+    updateCustomLyricControls();
+    return;
+  }
+  lyricsHasNativeKaraoke = prepared.hasNativeKaraoke;
+  lyricsTimingSource = prepared.timingSource;
+  lyricsTranslationLines = cloneLyricLines(prepared.translationLines);
+  lyricsTranslationSource = prepared.translationSource;
+  lyricsLines = cloneLyricLines(prepared.lines);
+  renderLyrics(renderOptions || {});
+  updateCustomLyricControls();
+}
+function applyOriginalLyricsState(renderOptions) {
+  lyricSourceMode = 'original';
+  applyLyricsState(originalLyricsState.lines, originalLyricsState.hasNativeKaraoke, originalLyricsState.timingSource, originalLyricsState.translationLines, originalLyricsState.translationSource, renderOptions);
+}
+function parseCustomLyricText(text) {
+  var raw = String(text || '').trim();
+  if (!raw) return [];
+  var lrcLines = parseLyricText(raw);
+  if (lrcLines.length && !lrcLines.every(function (line) { return isNoLyricText(line.text); })) {
+    return lrcLines.map(function (line) {
+      var copy = cloneLyricLine(line);
+      copy.source = 'custom-lrc';
+      return copy;
+    });
+  }
+  var rows = raw.split(/\r?\n/).map(function (line) { return line.trim(); }).filter(function (line) { return line && !isNoLyricText(line); });
+  if (!rows.length) return [];
+  var duration = audio && isFinite(audio.duration) && audio.duration > 8 ? audio.duration : 0;
+  var gap = duration ? Math.max(2.8, Math.min(7.2, duration / Math.max(1, rows.length))) : 4.8;
+  return finalizeLyricLineDurations(rows.map(function (line, i) {
+    return { t: i * gap, duration: gap, text: line, source: 'custom-text', charCount: Math.max(1, line.length) };
+  }));
+}
+function applyCustomLyricState(song, silent, renderOptions) {
+  song = song || currentLyricSong();
+  var entry = getCustomLyricEntry(song);
+  if (!entry || !String(entry.text || '').trim()) {
+    if (!silent) openCustomLyricModal();
+    updateCustomLyricControls();
+    return false;
+  }
+  var lines = parseCustomLyricText(entry.text);
+  if (!lines.length) {
+    if (!silent) showToast('自定义歌词内容为空');
+    updateCustomLyricControls();
+    return false;
+  }
+  lyricSourceMode = 'custom';
+  var prepared = preparedLyricStateForApply(lines, false, lines[0] && lines[0].source === 'custom-lrc' ? 'custom-lrc' : 'custom-text', [], 'none');
+  if (skipSameLyricStateRender(prepared, renderOptions, 'applyCustomLyricState')) {
+    updateCustomLyricControls();
+    return true;
+  }
+  lyricsHasNativeKaraoke = prepared.hasNativeKaraoke;
+  lyricsTimingSource = prepared.timingSource;
+  lyricsTranslationLines = cloneLyricLines(prepared.translationLines);
+  lyricsTranslationSource = prepared.translationSource;
+  lyricsLines = cloneLyricLines(prepared.lines);
+  renderLyrics(renderOptions || {});
+  updateCustomLyricControls();
+  return true;
+}
+function preferredLyricSourceForSong(song) {
+  var key = songCustomLyricKey(song);
+  var hasCustom = hasCustomLyricForSong(song);
+  if (!hasCustom) return 'original';
+  var pref = key ? customLyricPrefs[key] : '';
+  if (pref === 'custom') return 'custom';
+  if (pref === 'original') return 'original';
+  return originalLyricsState.timingSource === 'fallback' ? 'custom' : 'original';
+}
+function applyPreferredLyricsForCurrent(silent) {
+  var song = currentLyricSong();
+  var renderOptions = { preserveSame: true, reason: 'applyPreferredLyricsForCurrent' };
+  if (preferredLyricSourceForSong(song) === 'custom' && applyCustomLyricState(song, true, renderOptions)) return;
+  applyOriginalLyricsState(renderOptions);
+  if (!silent) updateCustomLyricControls();
+}
+function setLyricSourceMode(mode, silent) {
+  var song = currentLyricSong();
+  var key = songCustomLyricKey(song);
+  mode = mode === 'custom' ? 'custom' : 'original';
+  if (mode === 'custom') {
+    if (!applyCustomLyricState(song, true)) {
+      if (!silent) openCustomLyricModal();
+      return false;
+    }
+    if (!silent) openCustomLyricModal();
+  } else {
+    applyOriginalLyricsState();
+  }
+  if (key) {
+    customLyricPrefs[key] = mode;
+    saveCustomLyricPrefs();
+  }
+  if (!silent) showToast(mode === 'custom' ? '已切换到自定义歌词' : '已切换到原歌词');
+  updateCustomLyricControls();
+  return true;
+}
+function updateCustomLyricControls() {
+  var song = currentLyricSong();
+  var hasCustom = hasCustomLyricForSong(song);
+  var originalBtn = document.getElementById('lyric-source-original');
+  var customBtn = document.getElementById('lyric-source-custom');
+  if (originalBtn) {
+    originalBtn.classList.toggle('active', lyricSourceMode !== 'custom');
+    originalBtn.title = '使用网易云或本地解析歌词';
+  }
+  if (customBtn) {
+    customBtn.classList.toggle('active', lyricSourceMode === 'custom');
+    customBtn.classList.toggle('has-custom', hasCustom);
+    customBtn.title = hasCustom ? '打开并编辑自定义歌词' : '新增自定义歌词';
+  }
+}
+function updateLyricDisplayModeControls() {
+  var mode = normalizeLyricDisplayMode(fx && fx.lyricDisplayMode);
+  document.querySelectorAll('#lyric-display-mode-seg button').forEach(function (btn) {
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  });
+}
+function updateLyricTranslationModeControls() {
+  var mode = normalizeLyricTranslationMode(fx && fx.lyricTranslationMode);
+  document.querySelectorAll('#lyric-translation-mode-seg button').forEach(function (btn) {
+    btn.classList.toggle('active', btn.dataset.translation === mode);
+  });
+}
+function updateLyricMotionStyleControls() {
+  var style = normalizeLyricMotionStyle(fx && fx.lyricMotionStyle);
+  var seg = document.getElementById('lyric-motion-style-seg');
+  if (seg) seg.classList.toggle('glitch-selected', style === 'glitch');
+  document.querySelectorAll('#lyric-motion-style-seg button').forEach(function (btn) {
+    btn.classList.toggle('active', btn.dataset.motion === style);
+  });
+  updateLyricGlitchControls();
+}
+function updateLyricGlitchControls() {
+  var style = normalizeLyricMotionStyle(fx && fx.lyricMotionStyle);
+  var panel = document.getElementById('lyric-glitch-controls');
+  if (panel) panel.classList.toggle('show', style === 'glitch');
+  var bindBtn = document.getElementById('lyric-glitch-camera-bind');
+  if (bindBtn) {
+    bindBtn.classList.toggle('active', !!(fx && fx.lyricGlitchCameraBind));
+    bindBtn.textContent = fx && fx.lyricGlitchCameraBind ? '已跟随鼓点故障' : '跟随鼓点故障';
+  }
+}
+function toggleLyricGlitchCameraBind() {
+  fx.lyricGlitchCameraBind = !fx.lyricGlitchCameraBind;
+  updateLyricGlitchControls();
+  refreshStageLyricDisplayMode();
+  saveLyricLayout({ user: true, reason: 'lyricGlitchCameraBind' });
+  showToast(fx.lyricGlitchCameraBind ? '故障歌词已跟随鼓点' : '故障歌词已取消鼓点跟随');
+}
+function refreshStageLyricDisplayMode() {
+  refreshCurrentLyricStyle();
+}
+function refreshStageLyricVisualOptions() {
+  refreshStageLyricDisplayMode();
+  pushDesktopLyricsState(true);
+}
+function setLyricDisplayMode(mode) {
+  fx.lyricDisplayMode = normalizeLyricDisplayMode(mode);
+  updateLyricDisplayModeControls();
+  refreshStageLyricDisplayMode();
+  saveLyricLayout({ user: true, reason: 'lyricDisplayMode' });
+  showToast('歌词行数已切换');
+}
+function setLyricTranslationMode(mode) {
+  fx.lyricTranslationMode = normalizeLyricTranslationMode(mode);
+  updateLyricTranslationModeControls();
+  refreshStageLyricDisplayMode();
+  saveLyricLayout({ user: true, reason: 'lyricTranslationMode' });
+  showToast('双语翻译已切换');
+}
+function setLyricMotionStyle(style) {
+  fx.lyricMotionStyle = normalizeLyricMotionStyle(style);
+  updateLyricMotionStyleControls();
+  refreshStageLyricDisplayMode();
+  saveLyricLayout({ user: true, reason: 'lyricMotionStyle' });
+  showToast('歌词动画已切换');
+}
+function setCustomLyricStatus(text, tone) {
+  var el = document.getElementById('custom-lyric-status');
+  if (!el) return;
+  el.textContent = text || '';
+  el.classList.toggle('good', tone === 'good');
+  el.classList.toggle('fail', tone === 'fail');
+}
+function openCustomLyricModal() {
+  var song = currentLyricSong();
+  if (!song) {
+    showToast('先播放或选择一首歌');
+    return;
+  }
+  if (immersiveMode) setImmersiveMode(false);
+  var entry = getCustomLyricEntry(song);
+  var title = document.getElementById('custom-lyric-title');
+  var sub = document.getElementById('custom-lyric-sub');
+  var input = document.getElementById('custom-lyric-input');
+  if (title) title.textContent = song.name || '当前歌曲';
+  if (sub) sub.textContent = (song.artist || (song.type === 'podcast' ? 'Podcast' : '')) + (entry ? ' · 已保存自定义歌词' : ' · 可粘贴 LRC 或逐行输入');
+  if (input) input.value = entry ? (entry.text || '') : '';
+  setCustomLyricStatus(entry ? '已读取本地自定义歌词' : '提示：带 [00:12.00] 时间轴会更精准；纯文本会自动铺开', entry ? 'good' : '');
+  openGsapModal(document.getElementById('custom-lyric-modal'));
+  setTimeout(function () { if (input) input.focus(); }, 120);
+}
+function closeCustomLyricModal() {
+  closeGsapModal(document.getElementById('custom-lyric-modal'));
+}
+function saveCustomLyricForCurrent() {
+  var song = currentLyricSong();
+  var key = songCustomLyricKey(song);
+  var input = document.getElementById('custom-lyric-input');
+  var text = input ? String(input.value || '').trim() : '';
+  if (!song || !key) {
+    setCustomLyricStatus('请先播放或选择一首歌', 'fail');
+    showToast('先播放或选择一首歌');
+    return;
+  }
+  if (!text) {
+    setCustomLyricStatus('请输入歌词内容', 'fail');
+    return;
+  }
+  var lines = parseCustomLyricText(text);
+  if (!lines.length) {
+    setCustomLyricStatus('没有识别到可显示的歌词行', 'fail');
+    return;
+  }
+  customLyricMap[key] = { text: text, updatedAt: Date.now() };
+  customLyricPrefs[key] = 'custom';
+  var saved = saveCustomLyricMap();
+  saveCustomLyricPrefs();
+  applyCustomLyricState(song, true);
+  setCustomLyricStatus(saved ? ('已保存 ' + lines.length + ' 行，并切换为自定义歌词') : '已应用，但本地存储空间不足', saved ? 'good' : 'fail');
+  showToast(saved ? '自定义歌词已保存' : '自定义歌词已应用');
+  setTimeout(function () { closeCustomLyricModal(); }, 520);
+}
+function deleteCustomLyricForCurrent() {
+  var song = currentLyricSong();
+  var key = songCustomLyricKey(song);
+  if (!song || !key) {
+    setCustomLyricStatus('请先播放或选择一首歌', 'fail');
+    return;
+  }
+  if (!customLyricMap[key]) {
+    setCustomLyricStatus('当前歌曲没有自定义歌词', 'fail');
+    return;
+  }
+  delete customLyricMap[key];
+  delete customLyricPrefs[key];
+  saveCustomLyricMap();
+  saveCustomLyricPrefs();
+  applyOriginalLyricsState();
+  var input = document.getElementById('custom-lyric-input');
+  if (input) input.value = '';
+  setCustomLyricStatus('已删除，恢复原歌词', 'good');
+  showToast('已恢复原歌词');
+}
+var QISHUI_LIKE_ACCOUNT_ACTIONS_ENABLED = true;
+var QISHUI_PLAYLIST_WRITE_ACTIONS_ENABLED = true;
+var SONG_ACCOUNT_ACTION_ADAPTERS = {
+  netease: {
+    provider: 'netease',
+    label: '网易云音乐',
+    like: true,
+    collect: true,
+    createPlaylist: true,
+    likeCheckUrl: '/api/song/like/check',
+    likeCheckParam: 'ids',
+    likeUrl: '/api/song/like',
+    playlistAddUrl: '/api/playlist/add-song',
+    playlistCreateUrl: '/api/playlist/create',
+    playlistTracksUrl: '/api/playlist/tracks'
+  },
+  kugou: {
+    provider: 'kugou',
+    label: '酷狗音乐',
+    like: true,
+    collect: true,
+    createPlaylist: false,
+    likeCheckUrl: '/api/kugou/song/like/check',
+    likeCheckParam: 'hashes',
+    likeUrl: '/api/kugou/song/like',
+    playlistAddUrl: '/api/kugou/playlist/add-song',
+    playlistCreateUrl: '',
+    playlistTracksUrl: '/api/kugou/playlist/tracks'
+  },
+  spotify: {
+    provider: 'spotify',
+    label: 'Spotify',
+    like: true,
+    collect: true,
+    createPlaylist: true,
+    likeCheckUrl: '/api/spotify/song/like/check',
+    likeCheckParam: 'ids',
+    likeUrl: '/api/spotify/song/like',
+    playlistAddUrl: '/api/spotify/playlist/add-song',
+    playlistCreateUrl: '/api/spotify/playlist/create',
+    playlistTracksUrl: '/api/spotify/playlist/tracks'
+  },
+  qishui: {
+    provider: 'qishui',
+    label: '汽水音乐',
+    like: QISHUI_LIKE_ACCOUNT_ACTIONS_ENABLED,
+    collect: QISHUI_PLAYLIST_WRITE_ACTIONS_ENABLED,
+    createPlaylist: false,
+    likeCheckUrl: QISHUI_LIKE_ACCOUNT_ACTIONS_ENABLED ? '/api/qishui/song/like/check' : '',
+    likeCheckParam: 'ids',
+    likeUrl: QISHUI_LIKE_ACCOUNT_ACTIONS_ENABLED ? '/api/qishui/song/like' : '',
+    playlistAddUrl: QISHUI_PLAYLIST_WRITE_ACTIONS_ENABLED ? '/api/qishui/playlist/add-song' : '',
+    playlistCreateUrl: '',
+    playlistTracksUrl: '/api/qishui/playlist/tracks'
+  },
+  qq: {
+    provider: 'qq',
+    label: 'QQ 音乐',
+    like: false,
+    collect: false,
+    createPlaylist: false,
+    readOnly: true
+  }
+};
+function songAccountProvider(song) {
+  if (!song || song.type === 'local' || song.type === 'podcast' || song.source === 'podcast') return 'local';
+  if (typeof songProviderKey === 'function') return songProviderKey(song);
+  if (song.provider === 'spotify' || song.source === 'spotify' || song.type === 'spotify' || song.spotifyId || song.spotifyUri) return 'spotify';
+  if (song.provider === 'qq' || song.source === 'qq' || song.type === 'qq') return 'qq';
+  if (song.provider === 'qishui' || song.source === 'qishui' || song.type === 'qishui') return 'qishui';
+  if (song.provider === 'kugou' || song.source === 'kugou' || song.type === 'kugou' || song.hash || song.audioHash) return 'kugou';
+  return 'netease';
+}
+function songAccountAdapter(songOrProvider) {
+  var provider = typeof songOrProvider === 'string' ? songOrProvider : songAccountProvider(songOrProvider);
+  return SONG_ACCOUNT_ACTION_ADAPTERS[provider] || null;
+}
+function songAccountIdentityValues(song, provider) {
+  song = song || {};
+  provider = provider || songAccountProvider(song);
+  var raw = [];
+  if (provider === 'kugou') {
+    raw = [song.hash, song.audioHash, song.fileHash, song.providerSongId, song.id];
+  } else if (provider === 'spotify') {
+    raw = [song.spotifyId, song.providerSongId, song.id];
+    var uri = String(song.spotifyUri || song.uri || '');
+    if (/^spotify:track:/i.test(uri)) raw.push(uri.split(':').pop());
+  } else if (provider === 'qishui') {
+    raw = [song.providerSongId, song.trackId, song.track_id, song.id];
+  } else {
+    raw = [song.id];
+  }
+  var seen = Object.create(null);
+  return raw.map(function (value) {
+    var normalized = String(value == null ? '' : value).trim();
+    return provider === 'kugou' ? normalized.toLowerCase() : normalized;
+  }).filter(function (value) {
+    if (!value || seen[value]) return false;
+    seen[value] = true;
+    return true;
+  });
+}
+function songAccountId(song, provider) {
+  return songAccountIdentityValues(song, provider)[0] || '';
+}
+function songAccountStateKey(song) {
+  var provider = songAccountProvider(song);
+  var id = songAccountId(song, provider);
+  return provider && id ? (provider + ':' + id) : '';
+}
+function playlistAccountProvider(playlist) {
+  var provider = String(playlist && (playlist.provider || playlist.source) || '').toLowerCase();
+  return /^(mineradio|netease|qq|kugou|qishui|spotify)$/.test(provider) ? provider : 'netease';
+}
+function songAccountLoginStatus(provider) {
+  if (provider === 'spotify') return spotifyLoginStatus || {};
+  if (provider === 'qishui') return qishuiLoginStatus || {};
+  if (provider === 'kugou') return kugouLoginStatus || {};
+  if (provider === 'qq') return qqLoginStatus || {};
+  return loginStatus || {};
+}
+function isSongAccountLoggedIn(provider) {
+  var status = songAccountLoginStatus(provider);
+  if (provider === 'kugou') return !!(status.loggedIn && status.playbackKeyReady);
+  if (provider === 'qishui') return !!(status.loggedIn && (status.webSession || status.cookieReady));
+  return !!status.loggedIn;
+}
+function songAccountUnsupportedMessage(provider, action) {
+  var adapter = songAccountAdapter(provider);
+  if (adapter && adapter.readOnly) return adapter.label + '当前仅支持读取账号收藏，暂不支持写回';
+  if (provider === 'qishui') return '汽水音乐当前会话暂不支持此账号操作';
+  if (provider === 'local') return '本地文件暂不支持同步' + (action === 'collect' ? '到歌单' : '红心');
+  return (adapter && adapter.label || '当前平台') + '暂不支持此操作';
+}
+function isCloudSong(song) {
+  return !!(song && song.id && songAccountProvider(song) === 'netease');
+}
+function isSongLiked(song) {
+  var key = songAccountStateKey(song);
+  return !!(key && likedSongMap[key]);
+}
+function ensureLoggedInForAction(provider) {
+  provider = provider || 'netease';
+  if (isSongAccountLoggedIn(provider)) return true;
+  var adapter = songAccountAdapter(provider);
+  showToast('登录' + (adapter && adapter.label || '对应平台') + '后可同步账号收藏');
+  showLoginModal({ provider: provider });
+  return false;
+}
+function updateLikeButtons(song) {
+  song = song || currentCoverSong();
+  var liked = isSongLiked(song);
+  var stateKey = songAccountStateKey(song);
+  var busy = !!(stateKey && likeBusyMap[stateKey]);
+  var btn = document.getElementById('heart-btn');
+  if (btn) {
+    btn.classList.toggle('liked', liked);
+    btn.classList.toggle('busy', busy);
+    btn.title = liked ? '取消红心' : '红心喜欢';
+  }
+  var collectBtn = document.getElementById('collect-btn');
+  if (collectBtn) collectBtn.classList.toggle('busy', collectBusy);
+}
+function heartIconSvg() {
+  return '<svg class="heart-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21.45c-.32 0-.62-.12-.86-.34l-1.23-1.12C5.54 16.03 2.25 13.05 2.25 8.9 2.25 5.48 4.88 2.9 8.28 2.9c1.7 0 3.35.72 4.52 1.96C13.97 3.62 15.62 2.9 17.32 2.9c3.4 0 6.03 2.58 6.03 6 0 4.15-3.29 7.13-7.66 11.09l-1.23 1.12c-.24.22-.54.34-.86.34z"/></svg>';
+}
+function playlistPlusIconSvg() {
+  return '<svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10"/><path d="M4 11h10"/><path d="M4 16h7"/><path d="M18 14v6"/><path d="M15 17h6"/></svg>';
+}
+function artistCollectTrayIconSvg() {
+  return '<svg fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v9"/><path d="M7.5 9.5h9"/><path d="M4.5 12.5v6h15v-6"/></svg>';
+}
+function artistNextPlusIconSvg() {
+  return '<svg fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5v13"/><path d="M5.5 12h13"/></svg>';
+}
+function songActionHtml(kind, source, index, song) {
+  var liked = isSongLiked(song);
+  if (kind === 'like') {
+    return '<button class="song-action-btn' + (liked ? ' liked' : '') + '" title="' + (liked ? '取消红心' : '红心喜欢') + '" onclick="event.stopPropagation();toggleLike' + source + '(' + index + ')">' + heartIconSvg() + '</button>';
+  }
+  return '<button class="song-action-btn" title="收藏到歌单" onclick="event.stopPropagation();collect' + source + '(' + index + ')">' + playlistPlusIconSvg() + '</button>';
+}
+function syncLikeStatusForSongs(songs) {
+  if (!songs || !songs.length) return;
+  var groups = Object.create(null);
+  songs.forEach(function (song) {
+    var provider = songAccountProvider(song);
+    var adapter = songAccountAdapter(provider);
+    var id = songAccountId(song, provider);
+    if (!adapter || !adapter.like || !adapter.likeCheckUrl || !id || !isSongAccountLoggedIn(provider)) return;
+    if (!groups[provider]) groups[provider] = { adapter: adapter, ids: [], seen: Object.create(null) };
+    if (groups[provider].seen[id]) return;
+    groups[provider].seen[id] = true;
+    groups[provider].ids.push(id);
+  });
+  var providers = Object.keys(groups);
+  if (!providers.length) return;
+  var token = ++likeStatusToken;
+  var requests = [];
+  providers.forEach(function (provider) {
+    var group = groups[provider];
+    var batchSize = provider === 'spotify' || provider === 'qishui' ? 40 : (provider === 'kugou' ? 50 : 200);
+    for (var offset = 0; offset < group.ids.length; offset += batchSize) {
+      (function (batchIds) {
+        var url = group.adapter.likeCheckUrl + '?' + group.adapter.likeCheckParam + '=' + encodeURIComponent(batchIds.join(','));
+        requests.push(apiJson(url).then(function (r) {
+          if (token < likeStatusToken - 3 || !r || !r.liked) return;
+          var responseLiked = r.liked || {};
+          batchIds.forEach(function (id) {
+            var responseId = provider === 'kugou' ? String(id).toLowerCase() : String(id);
+            var liked = responseLiked[responseId];
+            if (liked == null) liked = responseLiked[id];
+            if (liked == null) return;
+            if (provider === 'qishui' && r.complete === false && !liked) return;
+            likedSongMap[provider + ':' + responseId] = !!liked;
+          });
+        }).catch(function (err) {
+          console.warn(provider + ' like check failed:', err);
+        }));
+      })(group.ids.slice(offset, offset + batchSize));
+    }
+  });
+  Promise.all(requests).then(function () {
+    if (token < likeStatusToken - 3) return;
+    safeRenderQueuePanel('like-status-sync', { scrollCurrent: miniQueueOpen });
+    if ($results && $results.classList.contains('show')) refreshSearchResultActionStates();
+    updateLikeButtons();
+  });
+}
+function syncLikeStatusForSong(song) {
+  var adapter = songAccountAdapter(song);
+  if (!adapter || !adapter.like) { updateLikeButtons(song); return; }
+  syncLikeStatusForSongs([song]);
+}
+function isLikedPlaylistContext(id, title, meta) {
+  var rawId = String(id || '');
+  var idParts = rawId.match(/^(netease|qq|kugou|qishui|spotify):(.*)$/);
+  var provider = idParts ? idParts[1] : playlistAccountProvider(meta);
+  var sid = idParts ? idParts[2] : rawId;
+  var text = String(title || (meta && meta.name) || '').trim();
+  var hit = userPlaylists.find(function (pl) {
+    return playlistAccountProvider(pl) === provider && String(pl.id || '') === sid;
+  });
+  if (hit) {
+    if (Number(hit.specialType || 0) === 5) return true;
+    text = text || hit.name || '';
+  }
+  return /我喜欢|喜欢的音乐|liked/i.test(text);
+}
+function markSongsLiked(songs, liked) {
+  (songs || []).forEach(function (song) {
+    var key = songAccountStateKey(song);
+    if (key) likedSongMap[key] = !!liked;
+  });
+}
+function refreshSearchResultActionStates() {
+  if (!playlist || !$results || !$results.children.length) return;
+  Array.prototype.forEach.call($results.querySelectorAll('[data-like-index]'), function (btn) {
+    var i = Number(btn.getAttribute('data-like-index'));
+    var song = playlist[i];
+    var liked = isSongLiked(song);
+    btn.classList.toggle('liked', liked);
+    btn.title = liked ? '取消红心' : '红心喜欢';
+  });
+}
+async function toggleLikeSong(song) {
+  var provider = songAccountProvider(song);
+  var adapter = songAccountAdapter(provider);
+  if (!adapter || !adapter.like || !adapter.likeUrl) {
+    showToast(songAccountUnsupportedMessage(provider, 'like'));
+    return;
+  }
+  if (!ensureLoggedInForAction(provider)) return;
+  var id = songAccountId(song, provider);
+  var stateKey = songAccountStateKey(song);
+  if (!id || !stateKey) {
+    showToast('当前歌曲缺少' + adapter.label + '歌曲标识');
+    return;
+  }
+  if (likeBusyMap[stateKey]) return;
+  var next = !likedSongMap[stateKey];
+  likeBusyMap[stateKey] = true;
+  likedSongMap[stateKey] = next;
+  updateLikeButtons(song);
+  safeRenderQueuePanel('like-toggle-optimistic', { scrollCurrent: miniQueueOpen });
+  refreshSearchResultActionStates();
+  try {
+    var r = await apiJson(adapter.likeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id, like: next, song: song })
+    });
+    if (r && (r.error || r.success === false)) throw new Error(r.error || r.message || 'LIKE_FAILED');
+    likedSongMap[stateKey] = r && r.liked != null ? !!r.liked : next;
+    showToast(next ? '已加入红心喜欢' : '已取消红心');
+  } catch (err) {
+    likedSongMap[stateKey] = !next;
+    var errorText = String(err && err.message || '');
+    if (/SCOPE|PERMISSION/i.test(errorText)) {
+      showToast('当前授权缺少收藏写入权限，请重新授权');
+    } else if (/LOGIN_REQUIRED|AUTH_REQUIRED/i.test(errorText)) {
+      showToast(adapter.label + '登录状态已失效，请重新登录');
+    } else {
+      showToast(errorText ? ('红心操作失败: ' + errorText) : '红心操作失败');
+    }
+  } finally {
+    delete likeBusyMap[stateKey];
+    updateLikeButtons(song);
+    safeRenderQueuePanel('like-toggle-final', { scrollCurrent: miniQueueOpen });
+    refreshSearchResultActionStates();
+  }
+}
+function toggleLikeCurrent() { toggleLikeSong(currentCoverSong()); }
+function toggleLikeSearchResult(i) { if (playlist[i]) toggleLikeSong(playlist[i]); }
+function toggleLikeQueueIndex(i) { if (playQueue[i]) toggleLikeSong(playQueue[i]); }
+function toggleLikeDetailSong(song) { toggleLikeSong(song); }
+function openCollectModal(song) {
+  if (!song) return;
+  collectTargetSong = song;
+  renderCollectModal();
+  openGsapModal(document.getElementById('collect-modal'));
+  var provider = songAccountProvider(song);
+  var refresh = isSongAccountLoggedIn(provider) && typeof refreshUserPlaylists === 'function'
+    ? refreshUserPlaylists(true)
+    : (typeof refreshBuiltInPlaylists === 'function' ? refreshBuiltInPlaylists(true) : Promise.resolve());
+  Promise.resolve(refresh).then(function () { renderCollectModal(); }).catch(function () { renderCollectModal(); });
+}
+function openCollectModalForCurrent() { openCollectModal(currentCoverSong()); }
+function collectSearchResult(i) { if (playlist[i]) openCollectModal(playlist[i]); }
+function collectQueueIndex(i) { if (playQueue[i]) openCollectModal(playQueue[i]); }
+function collectDetailSong(song) { openCollectModal(song); }
+function closeCollectModal() {
+  closeGsapModal(document.getElementById('collect-modal'), function () {
+    collectTargetSong = null;
+    var input = document.getElementById('collect-new-name');
+    if (input) input.value = '';
+  });
+}
+function renderCollectModal() {
+  var current = document.getElementById('collect-current');
+  var list = document.getElementById('collect-list');
+  if (!current || !list) return;
+  var song = collectTargetSong || {};
+  var cover = songCoverSrc(song, 80);
+  current.innerHTML = (cover ? '<img src="' + cover + '" alt="">' : '<div class="cover-placeholder"></div>') +
+    '<div style="min-width:0"><div class="collect-title">' + escHtml(song.name || '当前歌曲') + '</div><div class="collect-sub">' + escHtml(song.artist || '') + '</div></div>';
+  var provider = songAccountProvider(song);
+  var adapter = songAccountAdapter(provider);
+  var localRows = (builtInPlaylists || []).map(function (pl) {
+    var thumb = pl.cover ? coverUrlWithSize(pl.cover, 80) : '';
+    return '<div class="collect-item" data-collect-key="builtin:' + escHtml(String(pl.id || '')) + '" onclick="addCollectTargetToBuiltInPlaylist(this.getAttribute(\'data-built-in-pid\'))" data-built-in-pid="' + escHtml(String(pl.id || '')) + '">' +
+      (thumb ? '<img src="' + thumb + '" alt="">' : '<div class="cover-placeholder built-in">MR</div>') +
+      '<div style="min-width:0"><div class="collect-title">' + escHtml(pl.name || '') + '</div><div class="collect-sub">' + (pl.trackCount || 0) + ' 首 · 可混合全部平台</div></div>' +
+      '</div>';
+  }).join('');
+  var html = '<div class="collect-section-title"><span>Mineradio 内置歌单</span><small>保存在本机，不受平台账号限制</small></div>' +
+    (localRows || '<div class="collect-empty compact">还没有内置歌单，在上方输入名称即可创建</div>');
+  var canWritePlatform = !!(adapter && adapter.collect && adapter.playlistAddUrl && isSongAccountLoggedIn(provider));
+  if (canWritePlatform) {
+    var mine = userPlaylists.filter(function (pl) {
+      return playlistAccountProvider(pl) === provider && !pl.subscribed && !pl.virtual;
+    });
+    if (mine.length) {
+      html += '<div class="collect-section-title secondary"><span>同步到' + escHtml(adapter.label) + '</span><small>写入当前平台账号</small></div>' + mine.map(function (pl) {
+        var thumb = pl.cover ? coverUrlWithSize(pl.cover, 80) : '';
+        return '<div class="collect-item" data-collect-key="platform:' + escHtml(String(pl.id || '')) + '" data-collect-pid="' + escHtml(String(pl.id || '')) + '" onclick="addCollectTargetToPlaylist(this.getAttribute(\'data-collect-pid\'))">' +
+          (thumb ? '<img src="' + thumb + '" alt="">' : '<div class="cover-placeholder"></div>') +
+          '<div style="min-width:0"><div class="collect-title">' + escHtml(pl.name || '') + '</div><div class="collect-sub">' + (pl.trackCount || 0) + ' 首</div></div>' +
+          '</div>';
+      }).join('');
+    }
+  }
+  list.innerHTML = html;
+  if (window.gsap) animateListItems(list, '.collect-item', { x: 0, y: 6, stagger: 0.012, duration: 0.18, limit: 18 });
+}
+function setCollectBusyPid(pid, busy, kind) {
+  var list = document.getElementById('collect-list');
+  if (!list) return;
+  var key = (kind || 'platform') + ':' + String(pid);
+  list.querySelectorAll('.collect-item').forEach(function (item) {
+    item.classList.toggle('busy', !!busy && item.getAttribute('data-collect-key') === key);
+  });
+}
+async function createPlaylistFromCollect() {
+  var input = document.getElementById('collect-new-name');
+  var name = input ? input.value.trim() : '';
+  if (!name) { showToast('先输入歌单名称'); return; }
+  try {
+    var created = await createBuiltInPlaylist(name, collectTargetSong);
+    if (!created) return;
+    if (input) input.value = '';
+    closeCollectModal();
+  } catch (err) {
+    console.warn('[BuiltInPlaylistCreateCollect]', err);
+    showToast('创建内置歌单失败');
+  }
+}
+async function addCollectTargetToBuiltInPlaylist(pid) {
+  if (collectBusy || !collectTargetSong || !pid) return;
+  collectBusy = true;
+  setCollectBusyPid(pid, true, 'builtin');
+  try {
+    var added = await addTrackToBuiltInPlaylist(pid, collectTargetSong);
+    if (added) closeCollectModal();
+  } catch (err) {
+    console.warn('[BuiltInPlaylistCollect]', err);
+    showToast('加入内置歌单失败');
+  } finally {
+    collectBusy = false;
+    setCollectBusyPid(pid, false, 'builtin');
+  }
+}
+function collectResultMessage(r) {
+  if (!r) return '收藏失败';
+  var msg = r.error || r.message || r.msg || '';
+  if (/LOGIN_REQUIRED|AUTH_REQUIRED/i.test(String(msg))) return '平台登录状态已失效，请重新登录';
+  if (/SCOPE|PERMISSION/i.test(String(msg))) return '当前授权缺少收藏写入权限，请重新授权';
+  if (/exist|重复|已存在|already/i.test(String(msg))) return '歌曲已在歌单中';
+  return msg ? ('收藏失败: ' + msg) : '收藏失败';
+}
+function playlistTracksPageUrl(adapter, pid, offset, limit) {
+  var url = adapter.playlistTracksUrl + '?id=' + encodeURIComponent(pid);
+  if (limit) url += '&limit=' + encodeURIComponent(String(limit));
+  if (offset) url += '&offset=' + encodeURIComponent(String(offset));
+  return url;
+}
+function playlistContainsAccountSong(tracks, song, provider) {
+  var expected = songAccountIdentityValues(song, provider);
+  if (!expected.length) return false;
+  var expectedSet = Object.create(null);
+  expected.forEach(function (id) { expectedSet[id] = true; });
+  return (tracks || []).some(function (track) {
+    return songAccountIdentityValues(track, provider).some(function (id) { return !!expectedSet[id]; });
+  });
+}
+async function verifySongInPlaylist(pid, song) {
+  var provider = songAccountProvider(song);
+  var adapter = songAccountAdapter(provider);
+  if (!pid || !adapter || !adapter.playlistTracksUrl || !songAccountId(song, provider)) return false;
+  var pageLimit = provider === 'spotify' || provider === 'qishui' ? 50 : 200;
+  for (var attempt = 0; attempt < 3; attempt++) {
+    if (attempt) {
+      await new Promise(function (resolve) { setTimeout(resolve, attempt === 1 ? 360 : 820); });
+    }
+    try {
+      var detail = await apiJson(playlistTracksPageUrl(adapter, pid, 0, pageLimit));
+      var tracks = (detail && detail.tracks) || [];
+      if (playlistContainsAccountSong(tracks, song, provider)) return true;
+      var total = Math.max(0, Number(detail && (detail.total || (detail.playlist && detail.playlist.trackCount))) || 0);
+      var lastOffset = total > pageLimit ? Math.max(0, total - pageLimit) : 0;
+      if (lastOffset) {
+        var lastPage = await apiJson(playlistTracksPageUrl(adapter, pid, lastOffset, pageLimit));
+        if (playlistContainsAccountSong((lastPage && lastPage.tracks) || [], song, provider)) return true;
+      }
+    } catch (e) {
+      console.warn(provider + ' collect verify failed:', e);
+    }
+  }
+  return false;
+}
+async function addCollectTargetToPlaylist(pid) {
+  if (collectBusy || !collectTargetSong || !pid) return;
+  var targetSong = collectTargetSong;
+  var provider = songAccountProvider(targetSong);
+  var adapter = songAccountAdapter(provider);
+  if (!adapter || !adapter.collect || !adapter.playlistAddUrl) {
+    showToast(songAccountUnsupportedMessage(provider, 'collect'));
+    return;
+  }
+  if (!ensureLoggedInForAction(provider)) return;
+  collectBusy = true;
+  setCollectBusyPid(pid, true);
+  updateLikeButtons();
+  showToast('正在收藏到歌单...');
+  try {
+    var songId = songAccountId(targetSong, provider);
+    if (!songId) throw new Error('当前歌曲缺少' + adapter.label + '歌曲标识');
+    var r = await apiJson(adapter.playlistAddUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pid: pid, id: songId, song: targetSong })
+    });
+    if (!r || r.error || r.success === false) throw new Error(collectResultMessage(r));
+    showToast('已收藏到歌单');
+    closeCollectModal();
+    refreshUserPlaylists(true);
+    setTimeout(function () {
+      verifySongInPlaylist(pid, targetSong).then(function (ok) {
+        if (!ok) console.warn(provider + ' collect submitted but verify did not find song yet:', pid, songId);
+      });
+    }, 900);
+  } catch (err) {
+    showToast(err && err.message ? err.message : '收藏失败');
+  } finally {
+    collectBusy = false;
+    setCollectBusyPid(pid, false);
+    updateLikeButtons();
+  }
+}
+function cloneSong(song) { return hydrateCustomCover(Object.assign({}, song)); }
+function avatarSrc(url) {
+  if (!url) return '';
+  return coverProxySrc(url, true);
+}
+
+// ============================================================
+//  搜索
 ;

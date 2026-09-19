@@ -522,7 +522,8 @@
           </div>
           <div id="guessList" class="guess-fm"></div>
         </div>
-        <div class="rec-refresh-bar"><span class="rrb-title">为你推荐</span><button id="recRefreshBtn" class="rec-btn rec-btn-ghost" title="清缓存重新拉取推荐"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>刷新推荐</button></div>        <div id="recSections"></div>
+        <div class="rec-refresh-bar"><span class="rrb-title">为你推荐</span><button id="recRefreshBtn" class="rec-btn rec-btn-ghost" title="清缓存重新拉取推荐"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>刷新推荐</button></div>
+        <div id="recSections"></div>
       </div>
     </section>
 
@@ -693,6 +694,207 @@
   <div id="stage3dOverlay" class="hidden">
     <div id="stage3dHost"></div>
     <button id="btnCloseStage3D" title="退出 3D 舞台 (Esc)">✕</button>
+
+<!-- ===== MR 视觉控制台（歌词舞台部分，HTML 原样复制自 Mineradio index.html fx-panel；GPL-3.0）===== -->
+<button id="btnStageFx" title="视觉控制台 (DIY)">DIY</button>
+<div id="mrFxDrawer" class="hidden">
+<div id="fx-panel">
+<div class="fx-head"><div><div class="fx-title">视觉控制台</div><div class="fx-sub">LYRA ARIA VISUALS · DIY</div></div></div>
+<div class="cover-color-pop" id="cover-color-pop">
+        <div class="cover-color-head"><span>Cover Picker</span><button class="cover-color-close" type="button"
+            onclick="closeCoverColorPicker()">×</button></div>
+        <div class="cover-color-body">
+          <div class="cover-color-art" id="cover-color-art" onclick="pickCoverColorFromArt(event)"
+            onmousemove="moveCoverColorLoupe(event)" onmouseleave="hideCoverColorLoupe()"></div>
+          <div class="cover-color-side">
+            <div class="cover-color-preview" id="cover-color-preview"></div>
+            <div class="cover-color-hint" id="cover-color-hint">点击专辑封面任意位置取色，或使用下方推荐色。</div>
+            <div class="cover-color-swatches" id="cover-color-swatches"></div>
+          </div>
+        </div>
+      </div>
+      <div class="color-lab-pop" id="color-lab-pop">
+        <div class="color-lab-head"><span id="color-lab-title">Color</span><button class="color-lab-close" type="button"
+            onclick="closeColorLab()">×</button></div>
+        <div class="color-lab-sv" id="color-lab-sv">
+          <div class="color-lab-cursor" id="color-lab-cursor"></div>
+        </div>
+        <div class="color-lab-row">
+          <div class="color-lab-preview" id="color-lab-preview"></div>
+          <input class="color-lab-hue" id="color-lab-hue" type="range" min="0" max="360" step="1">
+          <input class="color-lab-hex" id="color-lab-hex" type="text" value="#F00000" maxlength="7">
+        </div>
+        <div class="color-lab-presets" id="color-lab-presets"></div>
+      </div>
+      <div class="cover-color-loupe" id="cover-color-loupe"></div>
+<div class="fx-section-label">主控</div>
+<div class="fx-slider"><label>律动强度</label><input id="fx-intensity" type="range" min="0.2" max="1.6"
+          step="0.01"><output></output></div>
+<div class="fx-slider"><label>歌词溢光</label><input id="fx-lyricglow" type="range" min="0" max="0.85"
+          step="0.01"><output></output></div>
+<div class="fx-section-label">叠加效果</div>
+<div class="fx-toggle-grid">
+<div class="fx-toggle" id="t-float" onclick="toggleFx('floatLayer')"><span>浮空粒子层</span><span
+                class="dot"></span></div>
+<div class="fx-toggle" id="t-cinema" onclick="toggleFx('cinema')"><span>电影镜头</span><span class="dot"></span>
+            </div>
+<div class="fx-toggle" id="t-bloom" onclick="toggleFx('bloom')"><span>粒子溢光</span><span class="dot"></span>
+            </div>
+<div class="fx-toggle" id="t-edge" onclick="toggleFx('edge')"><span>轮廓高亮</span><span class="dot"></span>
+            </div>
+<div class="fx-toggle" id="t-lyricGlow" onclick="toggleFx('lyricGlow')"><span>歌词溢光</span><span
+                class="dot"></span></div>
+<div class="fx-toggle" id="t-lyricGlowBeat" onclick="toggleFx('lyricGlowBeat')"><span>鼓点溢光</span><span
+                class="dot"></span></div>
+<div class="fx-toggle" id="t-lyricGlowParticles" onclick="toggleFx('lyricGlowParticles')">
+              <span>歌词光粒</span><span class="dot"></span></div>
+<div class="fx-toggle" id="t-backgroundStarRiver" onclick="toggleFx('backgroundStarRiver')">
+              <span>背景星河</span><span class="dot"></span></div>
+<div class="fx-toggle" id="t-lyricVerticalFloat" onclick="toggleFx('lyricVerticalFloat')">
+              <span>歌词上下浮动</span><span class="dot"></span></div>
+</div>
+<div class="fx-fold" id="fx-lyric-fold">
+        <div class="fx-fold-head" onclick="document.getElementById('fx-lyric-fold').classList.toggle('open')">
+          <span class="fx-fold-title"><strong>歌词外观</strong><small>颜色 / 来源 / 位置</small></span><span
+            class="arrow">▶</span>
+        </div>
+        <div class="fx-fold-body">
+          <div class="fx-section-label">歌词颜色</div>
+          <div class="lyric-color-grid" id="lyric-color-grid"></div>
+          <div class="lyric-color-row">
+            <input id="lyric-color-picker" class="lyric-color-picker" type="color" value="#a9b8c8" title="色轮取色">
+            <div class="lyric-color-value" id="lyric-color-value">封面取色</div>
+            <button class="fx-mini-btn ghost" id="lyric-auto-btn" type="button"
+              onclick="setLyricColorAuto()">封面</button>
+          </div>
+          <div class="fx-section-label">高亮颜色</div>
+          <div class="lyric-color-row">
+            <input id="lyric-highlight-picker" class="lyric-color-picker" type="color" value="#fff0b8" title="高亮取色">
+            <div class="lyric-color-value" id="lyric-highlight-value">跟随歌词</div>
+            <button class="fx-mini-btn ghost" id="lyric-highlight-auto-btn" type="button"
+              onclick="setLyricHighlightAuto()">跟随</button>
+          </div>
+          <div class="fx-section-label">溢光颜色</div>
+          <div class="lyric-color-row linked" id="lyric-glow-row" onclick="handleLyricGlowRowClick(event)">
+            <input id="lyric-glow-picker" class="lyric-color-picker" type="color" value="#9db8cf" title="溢光取色">
+            <div class="lyric-color-value" id="lyric-glow-value">跟随高亮</div>
+            <button class="fx-mini-btn ghost active" id="lyric-glow-link-btn" type="button"
+              onclick="toggleLyricGlowLink(event)">链接</button>
+          </div>
+          <div class="lyric-glow-effect-row">
+            <button class="fx-mini-btn ghost" id="lyric-glow-enable-btn" type="button"
+              onclick="toggleFx('lyricGlow')">后层溢光</button>
+            <button class="fx-mini-btn ghost" id="lyric-glow-beat-btn" type="button"
+              onclick="toggleFx('lyricGlowBeat')">跟随鼓点</button>
+          </div>
+          <div class="fx-section-label">歌词源</div>
+          <div class="lyric-source-row">
+            <div class="fx-seg lyric-source-seg" id="lyric-source-seg">
+              <button id="lyric-source-original" type="button" class="active"
+                onclick="setLyricSourceMode('original')">原词</button>
+              <button id="lyric-source-custom" type="button" onclick="setLyricSourceMode('custom')">自定义</button>
+            </div>
+          </div>
+          <div class="fx-section-label">歌词行数</div>
+          <div class="fx-seg lyric-display-mode-seg" id="lyric-display-mode-seg">
+            <button type="button" data-mode="single" onclick="setLyricDisplayMode('single')">单行</button>
+            <button type="button" data-mode="dual" onclick="setLyricDisplayMode('dual')">双行</button>
+            <button type="button" data-mode="triple" onclick="setLyricDisplayMode('triple')">三行</button>
+            <button type="button" data-mode="cinema" onclick="setLyricDisplayMode('cinema')">沉浸</button>
+            <button type="button" data-mode="custom" onclick="setLyricDisplayMode('custom')">自定</button>
+          </div>
+          <div class="fx-slider"><label>显示行数</label><input id="fx-lyriccustomlines" type="range" min="1" max="10"
+              step="1"><output></output></div>
+          <div class="fx-section-label">双语翻译</div>
+          <div class="fx-seg lyric-translation-mode-seg" id="lyric-translation-mode-seg">
+            <button type="button" data-translation="off" onclick="setLyricTranslationMode('off')">关闭</button>
+            <button type="button" data-translation="current" onclick="setLyricTranslationMode('current')">当前</button>
+            <button type="button" data-translation="dual" onclick="setLyricTranslationMode('dual')">双行</button>
+            <button type="button" data-translation="multi" onclick="setLyricTranslationMode('multi')">多行</button>
+          </div>
+          <div class="fx-section-label">歌词动画</div>
+          <div class="fx-seg lyric-motion-style-seg" id="lyric-motion-style-seg">
+            <button type="button" data-motion="float" onclick="setLyricMotionStyle('float')">漂浮</button>
+            <button type="button" data-motion="smooth" onclick="setLyricMotionStyle('smooth')">柔滑</button>
+            <button type="button" data-motion="glass" onclick="setLyricMotionStyle('glass')">玻璃</button>
+            <button type="button" data-motion="shine" onclick="setLyricMotionStyle('shine')">线光</button>
+            <button type="button" data-motion="glitch" onclick="setLyricMotionStyle('glitch')">故障</button>
+          </div>
+          <div class="lyric-glitch-controls" id="lyric-glitch-controls">
+            <button id="lyric-glitch-camera-bind" class="fx-mini-btn ghost lyric-glitch-bind" type="button"
+              onclick="toggleLyricGlitchCameraBind()">跟随鼓点故障</button>
+            <div class="fx-slider"><label>故障强度</label><input id="fx-lyricglitchintensity" type="range" min="0" max="1.5"
+                step="0.01"><output></output></div>
+            <div class="fx-slider"><label>切片幅度</label><input id="fx-lyricglitchslice" type="range" min="0" max="1.4"
+                step="0.01"><output></output></div>
+            <div class="fx-slider"><label>色散强度</label><input id="fx-lyricglitchchroma" type="range" min="0" max="1.6"
+                step="0.01"><output></output></div>
+            <div class="fx-slider"><label>触发速度</label><input id="fx-lyricglitchrate" type="range" min="0.45" max="2.2"
+                step="0.01"><output></output></div>
+            <div class="fx-slider"><label>抖动幅度</label><input id="fx-lyricglitchjitter" type="range" min="0" max="1.8"
+                step="0.01"><output></output></div>
+          </div>
+          <div class="fx-slider"><label>上下句清晰</label><input id="fx-lyriccontextopacity" type="range" min="0.25" max="1"
+              step="0.01"><output></output></div>
+          <div class="fx-slider"><label>上下句间距</label><input id="fx-lyriccontextspread" type="range" min="0.60"
+              max="2.40" step="0.01"><output></output></div>
+          <div class="fx-slider"><label>译文间距</label><input id="fx-lyrictranslationgap" type="range" min="0.28"
+              max="2.20" step="0.01"><output></output></div>
+          <div class="fx-slider"><label>边缘渐隐</label><input id="fx-lyricedgefade" type="range" min="0" max="1"
+              step="0.01"><output></output></div>
+          <div class="fx-slider"><label>动画柔顺</label><input id="fx-lyricmotionsoftness" type="range" min="0.15" max="1.2"
+              step="0.01"><output></output></div>
+          <div class="fx-section-label">歌词字体</div>
+          <div class="fx-seg lyric-texture-quality-seg" id="lyric-texture-quality-seg" role="group"
+            aria-label="歌词纹理清晰度">
+            <button type="button" data-lyric-texture-clarity="1" onclick="setLyricTextureClarity(1)"
+              title="1 倍基础纹理，节省显存，适合低配设备或超长歌词"><span>1×</span><small>标清</small></button>
+            <button type="button" data-lyric-texture-clarity="2" onclick="setLyricTextureClarity(2)"
+              title="2 倍可见歌词纹理，兼顾清晰度与流畅度"><span>2×</span><small>高清</small></button>
+            <button type="button" data-lyric-texture-clarity="3" onclick="setLyricTextureClarity(3)"
+              title="3 倍可见歌词纹理，适合大屏或歌词放大"><span>3×</span><small>超清</small></button>
+            <button type="button" data-lyric-texture-clarity="4" onclick="setLyricTextureClarity(4)"
+              title="4 倍可见歌词纹理，使用受控高清缓存以保护显存"><span>4×</span><small>极致</small></button>
+          </div>
+          <div class="fx-font-grid expanded" id="lyric-font-grid">
+            <button type="button" data-font="sans" onclick="setLyricFont('sans')">默认</button>
+            <button type="button" data-font="hei" onclick="setLyricFont('hei')">黑体</button>
+            <button type="button" data-font="song" onclick="setLyricFont('song')">宋体</button>
+            <button type="button" data-font="bold-song" onclick="setLyricFont('bold-song')">粗宋</button>
+            <button type="button" data-font="stone-song" onclick="setLyricFont('stone-song')">石印宋</button>
+            <button type="button" data-font="kai-song" onclick="setLyricFont('kai-song')">楷宋</button>
+            <button type="button" data-font="serif-en" onclick="setLyricFont('serif-en')">Serif</button>
+            <button type="button" data-font="gothic" onclick="setLyricFont('gothic')">Gothic</button>
+            <button type="button" data-font="editorial" onclick="setLyricFont('editorial')">Editorial</button>
+            <button type="button" data-font="humanist" onclick="setLyricFont('humanist')">Humanist</button>
+            <button type="button" data-font="mono" onclick="setLyricFont('mono')">等宽</button>
+            <button type="button" data-font="display" onclick="setLyricFont('display')">标题</button>
+            <button type="button" class="font-upload-btn" onclick="triggerLyricFontUpload()">上传字体</button>
+          </div>
+          <div class="fx-slider"><label>字间距</label><input id="fx-lyricspacing" type="range" min="-0.04" max="0.18"
+              step="0.005"><output></output></div>
+          <div class="fx-slider"><label>行距</label><input id="fx-lyriclineheight" type="range" min="0.72" max="1.80"
+              step="0.01"><output></output></div>
+          <div class="fx-slider"><label>字重</label><input id="fx-lyricweight" type="range" min="500" max="900"
+              step="50"><output></output></div>
+          <div class="fx-section-label">歌词布局</div>
+          <div class="fx-slider"><label>歌词大小</label><input id="fx-lyricscale" type="range" min="0.35" max="1.65"
+              step="0.01"><output></output></div>
+          <div class="fx-slider"><label>水平位置</label><input id="fx-lyricx" type="range" min="-4.0" max="4.0"
+              step="0.01"><output></output></div>
+          <div class="fx-slider"><label>垂直位置</label><input id="fx-lyricy" type="range" min="-2.4" max="2.7"
+              step="0.01"><output></output></div>
+          <div class="fx-slider"><label>景深位置</label><input id="fx-lyricz" type="range" min="-3.2" max="3.2"
+              step="0.01"><output></output></div>
+          <div class="fx-slider"><label>上下角度</label><input id="fx-lyrictiltx" type="range" min="-84" max="84"
+              step="1"><output></output></div>
+          <div class="fx-slider"><label>左右角度</label><input id="fx-lyrictilty" type="range" min="-84" max="84"
+              step="1"><output></output></div>
+        </div>
+      </div>
+
+      
+</div></div>
   </div>
 
   <script src="karaoke.js"></script>

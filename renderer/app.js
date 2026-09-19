@@ -6228,6 +6228,8 @@
       $('#stStage3d').checked = false;
       syncStage3d();
     });
+    // DIY 视觉控制台抽屉（MR fx-panel 歌词舞台部分）
+    $('#btnStageFx').addEventListener('click', () => $('#mrFxDrawer').classList.toggle('hidden'));
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && stage3dOn() && !$('#stage3dOverlay').classList.contains('hidden')) {
         try { localStorage.setItem('mp_stage3d', '0'); } catch { /* 忽略 */ }

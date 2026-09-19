@@ -106,8 +106,45 @@ function readAudioOutputDevicePreference() { return ''; }
 function readAudioOutputMirrorPreference() { return []; }
 function readAudioInputBridgePreference() { return { enabled: false, deviceId: '' }; }
 function loadListenStatsState() { return { history: [], songs: {}, artists: {}, updatedAt: 0 }; }
-function readSavedLyricLayout() { return {}; }   // MR 04-visual-settings-persistence.js:199；fx 全用出厂默认
+function readSavedLyricLayout() { return {}; }   // bundle 内 04-persistence 的真实现会在加载时覆盖本桩（提升机制）
 function readHotkeySettings() { return {}; }     // MR 07-fx/06-hotkeys.js:9；快捷键不移植
+// 未移植子系统对应的面板助手桩（依赖歌单架/预设档案/设置 UI 的部分，DOM 不存在即无操作）
+function bindHotkeySettings() {}
+function bindAudioOutputControls() {}
+function buildPresetGrid() {}
+function renderUserFxArchives() {}
+function liftFxFloatingPopups() {}
+function relabelFxPanelControls() {}
+function organizeFxPanel() {}
+function showToast(msg) { try { console.log('[MR 视觉]', msg); } catch { /* 忽略 */ } }
+function escHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; } // MR 05-playback/00-api-quality-output.js:20 原文
+// 以下函数属于未移植子系统（背景媒体/封面粒子/sonic 声波地/Wallpaper Engine/浮窗管理/主循环唤醒），
+// bundle 内无定义，按无操作桩补齐——它们在设置链路里只影响未移植层
+function repositionFxFloatingPanels() {}
+function updateCustomBackgroundControls() {}
+function applyControlGlassChromaticOffset() {}
+function normalizeControlGlassChromaticOffset(v) { return clampRange(Number(v) || 30, 30, 140); }
+function applyCoverParticleResolution() {}
+function sonicAudioNormalizeFx() {}
+function wakeMainLoopFromBackground() {}
+function syncWallpaperEngineCaptureFrameRate() { return Promise.resolve(); }
+function applyFxPreset() {}
+function refreshPresetGrid() {}
+function updateUiAccentControls() {} // 界面高亮色（我们有自己的 accent 体系，不接 MR 的）
+function updateHomeAccentControls() {}
+function updateHomeIconControls() {}
+function updateVisualIconControls() {}
+function updateIconAccentControls() {}
+function updateBgMediaControls() {}
+function updateWallpaperEngineControls() {}
+function updatePerformanceControls() {}
+function updateDesktopLyricsControls() {}
+function updateVisualTintControls() {}
+function updateBgColorControls() {}
+function bindColorLabPicker() {} // ColorLab 弹窗（未复制其 HTML），色轮预设网格已由 buildLyricColorControls 构建
+function syncFxUniforms() {}     // 封面粒子 uniforms 同步（未移植层）；歌词键直接读 fx，不受影响
+function bindColorLabRows() {}   // ColorLab 行绑定（同上，弹窗 HTML 未复制）
+function pushDesktopLyricsState() {} // 桌面歌词窗 fx 同步（我们的桌面歌词窗是独立 DOM 实现，不需要此推送）
 function normalizePerformanceBackgroundMode(v) { return 'auto'; } // MR 04:57-63；深底模式不移植，恒 auto
 function normalizePerformanceQuality(v) {          // MR 04-visual-settings-persistence.js:66-69 原文
   var value = String(v || '');
@@ -425,6 +462,17 @@ async function mrMount(host) {
   fx.lyricCameraLock = false;
   // 歌词组根节点：MR 由封面粒子模块创建，这里由适配层直接创建（vendored 03-lyrics-star-river.js 同款函数）
   if (typeof createLyricsParticles === 'function' && stageLyrics && !stageLyrics.group) createLyricsParticles();
+  // MR 视觉控制台绑定（DIY）：[id, fxKey] 滑条映射 + 分段按钮 + 歌词色轮，均为此前 vendor 的原函数
+  if (typeof bindFxPanel === 'function' && !MrStage.fxBound) {
+    try {
+      bindFxPanel();
+      if (typeof updateFxInputs === 'function') updateFxInputs(); // MR 滑条初值同步（05-fx-panel-performance.js:223）
+      MrStage.fxBound = true;
+    } catch (e) {
+      MrStage.lastError = 'MR_FX_BIND: ' + String(e && e.message || e);
+      console.error('[mr-adapter]', MrStage.lastError);
+    }
+  }
   mrEnsureAudioGraph(); // 双分析器（fft2048, smoothing 0.58/0.10）→ bass/beat 驱动星河与溢光
   mrResize();
   if (!MrStage.raf) { MrStage.prevTime = performance.now(); MrStage.raf = requestAnimationFrame(mrFrame); }
