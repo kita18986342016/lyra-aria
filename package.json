@@ -9,7 +9,7 @@
     "dist": "electron-builder --win dir"
   },
   "author": "DSH",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "devDependencies": {
     "electron": "^43.4.0",
     "electron-builder": "^25.1.8"
