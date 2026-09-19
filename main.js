@@ -516,7 +516,6 @@ function scaleDIB(src, tw, th) {
   return out;
 }
 
-// 单实例锁：防止双开导致双托盘/双窗口/JSON 竞态
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
@@ -2196,16 +2195,27 @@ function main() {
           const hit = await strictAltHit(song.title, song.artist);
           if (!hit) return { ok: false, reason: '该歌曲来自已下线的 QQ 音源，未找到可用的换源版本' };
           const r = await leizResolveCore(hit.source, hit.ref, 'lossless');
-          if (r.ok) { r.data.switchedSource = hit.source; r.data.switchedRef = hit.ref; }
+          if (r.ok && r.data) {
+            r.data.switchedSource = hit.source; r.data.switchedRef = hit.ref;
+            const u = r.data.url || r.data.src;
+            if (u) r.data.streamUrl = makeStreamUrl({ url: u, reResolve: { kind: 'leiz', source: hit.source, ref: hit.ref, level: 'lossless' } });
+          }
           return r;
         }
         if (source === 'bilibili') {
           const r = await biliResolveFull(String(song.ref || '')); // 统一入口：缓存→自建→LeiZ 兜底
           if (!r || !r.ok || !r.data) return { ok: false, reason: (r && r.reason) || '解析失败' };
-          return { ok: true, data: { url: r.data.url, bitrate: r.data.bitrate, format: r.data.format, level: r.data.level } };
+          const out = { url: r.data.url, bitrate: r.data.bitrate, format: r.data.format, level: r.data.level };
+          if (r.data.url) out.streamUrl = makeStreamUrl({ url: r.data.url, reResolve: { kind: 'bili', bvid: String(song.ref || '') } });
+          return { ok: true, data: out };
         }
         if (source === 'netease' || source === 'kugou') {
-          return await leizResolveCore(source, String(song.ref || ''), String(quality || song.level || 'lossless'));
+          const r = await leizResolveCore(source, String(song.ref || ''), String(quality || song.level || 'lossless'));
+          if (r.ok && r.data) {
+            const u = r.data.url || r.data.src;
+            if (u) r.data.streamUrl = makeStreamUrl({ url: u, reResolve: { kind: 'leiz', source, ref: String(song.ref || ''), level: String(quality || song.level || 'lossless') } });
+          }
+          return r;
         }
         return { ok: false, reason: '未知音源：' + source };
       } catch (err) {
@@ -3768,8 +3778,113 @@ function main() {
     }
   });
 
+  // ---------- v1.4.2 本地流代理（Mineradio 同款架构：127.0.0.1 HTTP 服务器；直链只存在于主进程）----------
+  // 渲染层 <audio> 拿到的是 http://127.0.0.1:<port>/stream/<token>?k=<key>；上游 403/过期时主进程拿 reResolve
+  // 信息自动重新解析一次（用户无感续播）。key 为每次启动随机生成，防止本机其他程序蹭直链。
+  const STREAM_TOKEN_TTL = 30 * 60 * 1000;
+  let streamServer = null, streamPort = 0, streamKey = '';
+  const streamTokens = new Map(); // token → { url, reResolve:{kind,source,ref,level,bvid}|null, ts }
+  function makeStreamUrl(entry) {
+    if (!streamServer) return ''; // 服务器未就绪（如端口全占）→ 前端回退直连直链
+    const token = crypto.randomBytes(12).toString('hex');
+    streamTokens.set(token, Object.assign({ ts: Date.now() }, entry));
+    if (streamTokens.size > 300) streamTokens.delete(streamTokens.keys().next().value);
+    return 'http://127.0.0.1:' + streamPort + '/stream/' + token + '?k=' + streamKey;
+  }
+  function streamContentType(url, upstreamType) {
+    const ct = String(upstreamType || '');
+    if (/audio|video|octet-stream/.test(ct)) return ct;
+    try {
+      const p = new URL(url).pathname.toLowerCase();
+      if (/\.flac$/.test(p)) return 'audio/flac';
+      if (/\.m4a$|\.mp4$/.test(p)) return 'audio/mp4';
+      if (/\.ogg$/.test(p)) return 'audio/ogg';
+      if (/\.wav$/.test(p)) return 'audio/wav';
+    } catch { /* 忽略 */ }
+    return 'audio/mpeg';
+  }
+  async function handleStream(req, res) {
+    try {
+      const u = new URL(req.url, 'http://127.0.0.1');
+      // CORS 预检（file:// 源带 Range 头的 fetch 会先发 OPTIONS；<audio> 媒体请求不受此限）
+      if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'range', 'access-control-allow-methods': 'GET', 'access-control-allow-private-network': 'true' }); res.end(); return; }
+      if (u.searchParams.get('k') !== streamKey) { res.writeHead(403); res.end(); return; }
+      const m = u.pathname.match(/^\/stream\/([0-9a-f]{24})$/);
+      const entry = m && streamTokens.get(m[1]);
+      if (!entry) { res.writeHead(404); res.end('not found'); return; }
+      if (Date.now() - entry.ts > STREAM_TOKEN_TTL) { streamTokens.delete(m[1]); res.writeHead(410); res.end('expired'); return; }
+      const range = req.headers.range || 'bytes=0-';
+      let referer = '';
+      try { if (/qq\.com$/.test(new URL(entry.url).hostname)) referer = 'https://y.qq.com/'; } catch { /* 忽略 */ }
+      const pull = (url) => {
+        const ac = new AbortController();
+        const headers = { Range: range };
+        if (referer) headers.Referer = referer;
+        res.on('close', () => { try { ac.abort(); } catch { /* 已结束 */ } }); // 客户端断开 → 取消上游
+        return fetch(url, { headers, signal: ac.signal });
+      };
+      const badStatus = (up) => !up || (up.status !== 200 && up.status !== 206);
+      let up = null;
+      try { up = await pull(entry.url); } catch (err) { console.error('[stream] 上游请求失败 code=UPSTREAM_FETCH_FAILED ' + ((err && err.message) || err)); }
+      if (badStatus(up)) {
+        console.error('[stream] 上游状态异常 code=UPSTREAM_BAD_STATUS status=' + (up ? up.status : 0));
+        try { if (up && up.body) up.body.cancel(); } catch { /* 忽略 */ }
+        up = null;
+      }
+      // 上游失效 → 用 reResolve 信息重新解析一次（直链过期的无感续播）
+      if (!up && entry.reResolve) {
+        console.error('[stream] 直链失效，自动重新解析 code=STREAM_RERESOLVE kind=' + entry.reResolve.kind);
+        let re = null;
+        try {
+          if (entry.reResolve.kind === 'leiz') re = await leizResolveCore(entry.reResolve.source, entry.reResolve.ref, entry.reResolve.level);
+          else if (entry.reResolve.kind === 'bili') re = await biliResolveFull(entry.reResolve.bvid);
+        } catch (err) { console.error('[stream] 重解析失败 code=STREAM_RERESOLVE_FAILED ' + ((err && err.message) || err)); }
+        const nu = re && re.ok && re.data && (re.data.url || re.data.src);
+        if (nu) {
+          entry.url = nu; entry.ts = Date.now();
+          try { up = await pull(nu); } catch (err) { console.error('[stream] 重拉失败 code=UPSTREAM_REPULL_FAILED ' + ((err && err.message) || err)); }
+          if (badStatus(up)) up = null;
+        }
+      }
+      if (!up) { res.writeHead(502); res.end('upstream unavailable'); return; }
+      const h = { 'accept-ranges': 'bytes', 'access-control-allow-origin': '*', 'access-control-allow-private-network': 'true', 'content-type': streamContentType(entry.url, up.headers.get('content-type')) };
+      for (const k of ['content-length', 'content-range']) { const v = up.headers.get(k); if (v) h[k] = v; }
+      res.writeHead(up.status, h);
+      const reader = up.body.getReader();
+      (async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (res.destroyed) { try { await reader.cancel(); } catch { /* 忽略 */ } break; }
+            if (!res.write(Buffer.from(value))) await new Promise((r2) => res.once('drain', r2));
+          }
+          res.end();
+        } catch { try { res.destroy(); } catch { /* 忽略 */ } }
+      })();
+    } catch (err) {
+      console.error('[stream] 处理异常 code=STREAM_HANDLER_ERROR ' + ((err && err.message) || err));
+      try { res.writeHead(500); res.end(); } catch { /* 忽略 */ }
+    }
+  }
+  function startStreamServer() {
+    const tryPort = (port, left) => new Promise((resolve) => {
+      if (left <= 0) return resolve(null);
+      const srv = http.createServer(handleStream);
+      srv.once('error', () => { try { srv.close(); } catch { /* 忽略 */ } resolve(tryPort(port + 1, left - 1)); });
+      srv.listen(port, '127.0.0.1', () => resolve(srv));
+    });
+    return tryPort(30000, 100).then((srv) => {
+      if (!srv) { console.error('[stream] 本地流服务器启动失败 code=STREAM_SERVER_NO_PORT'); return; }
+      streamServer = srv; streamPort = srv.address().port;
+      streamKey = crypto.randomBytes(16).toString('hex');
+      srv.unref(); // 不阻止进程退出
+      console.error('[stream] 本地流服务器已启动 port=' + streamPort);
+    });
+  }
   app.whenReady().then(async () => {
-    Menu.setApplicationMenu(null); // 移除默认菜单栏（File/Edit/View/Window）
+    Menu.setApplicationMenu(null); // 移除默认菜单栏（File/Edit/View/Window）
+    startStreamServer(); // v1.4.2 本地流代理（失败只影响 streamUrl，前端自动回退直连直链）
     // B 站 CDN 热链保护：<audio> 发不了自定义头，用 webRequest 统一补 Referer（音视频直链/封面必备）
     try {
       session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['*://*.bilivideo.com/*', '*://*.akamaized.net/*', '*://*.bilitv.com/*'] }, (details, callback) => {

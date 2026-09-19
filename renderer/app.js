@@ -3580,6 +3580,8 @@
             }
           }
           audio.src = r.data.url;
+          // v1.4.2：优先本地流地址（直链只在主进程，过期由主进程自动重解析续播）；服务器未就绪时回退直连
+          if (r.data.streamUrl) audio.src = r.data.streamUrl;
           if (seekTo) audio.addEventListener('loadedmetadata', () => { audio.currentTime = seekTo; }, { once: true });
           if (autoPlay) {
             const p = audio.play();
