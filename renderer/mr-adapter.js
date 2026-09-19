@@ -323,6 +323,7 @@ function mrFrame(now) {
   updateParticlePointerFrame();
   uniforms.uVinylSpin.value = (uniforms.uVinylSpin.value + dt * (0.40 + smoothBass * 0.09) * (isFinite(fx.speed) ? Math.max(0.05, fx.speed) : 1)) % (Math.PI * 2);
   uniforms.uBurstAmt.value *= 0.90;
+  if (typeof tickPresetTransition === 'function') tickPresetTransition(); // MR 11-main-loop.js:593 同款
   if (typeof updateBackgroundStarRiverState === 'function') updateBackgroundStarRiverState(dt, false);
   updateRipples(dt);
   updateFloatLayer(dt);
