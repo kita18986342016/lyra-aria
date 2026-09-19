@@ -33,6 +33,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "desktop/**",
       "core/**",
       "renderer/**",
       "assets/**",
