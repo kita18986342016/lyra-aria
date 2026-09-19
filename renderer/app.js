@@ -4486,22 +4486,22 @@
   function segmentLine(el, p, words) {
     if (words && words.chars && words.chars.length) {
       // 逐字模式：每个字一段，s0/s1 = 归一化时间（0..1），跨行自然折行、按字依次填充
-      const dur = words.dur;
-      const items = words.chars.map((c, i) => {
-        const s0 = Math.min(1, Math.max(0, (c.t - words.t) / dur));
-        const s1 = i < words.chars.length - 1 ? Math.min(1, Math.max(0, (words.chars[i + 1].t - words.t) / dur)) : 1;
-        return { t: c.ch || ' ', s0, s1: Math.max(s0 + 0.001, s1) };
-      });
-      el.dataset.segTotal = '1'; // 归一化时间域
-      el.dataset.segMode = 'word';
+      // v1.4.2 逐字模式改造（借鉴 Mineradio karaokeWordRanges）：每字时间段换算成像素区间，
+      // 扫色前缘在像素域连续推进（原按时间平分——字宽不均导致颜色快慢不一、与演唱错位）。
+      const kcFont = getComputedStyle((el.querySelector && el.querySelector('.lrc-main, .d-main')) || el).font;
+      ensureSegMeter(kcFont); // 惰性创建测宽元素（原 bug：直接传未初始化的 __segMeter=null）
+      const built = LyricKaraoke.buildWordRanges(words.chars, words.t, words.dur, kcFont, __segMeter);
+      el._kwBuilt = built;
+      el.dataset.segTotal = String(built.totalPx);
+      el.dataset.segMode = 'px'; // 像素域（与 LRC 折行模式同域）
       // 逐字模式：每个字一个 .line-seg。须内联横排（style.css 的 .line-seg 是 block=一个折行片段；
       // 逐字卡拉OK应单字横向排开、必要时整句折行，否则每个字独占一行——「歌词一字一行」bug）
       // CSP style-src 'self' 禁内联 style 属性 → 生成后用 CSSOM 把 display 覆盖为 inline，保持渐变 .line-seg 遍历逻辑不变
-      el.innerHTML = items.map((it) =>
-        `<span class="line-seg" data-s0="${it.s0.toFixed(4)}" data-s1="${it.s1.toFixed(4)}">${escHtmlSeg(it.t)}</span>`
+      el.innerHTML = built.ranges.map((r) =>
+        `<span class="line-seg" data-s0="${r.px0.toFixed(1)}" data-s1="${r.px1.toFixed(1)}">${escHtmlSeg(r.ch)}</span>`
       ).join('');
       el.querySelectorAll(':scope > .line-seg').forEach((seg) => { seg.style.display = 'inline'; });
-      applyKaraokeP(el, p, words);
+      applyKaraokeP(el, p, words, words.t);
       return;
     }
     const text = el.textContent || '';
@@ -4560,13 +4560,25 @@
   }
   // 每帧：更新当前行（或各段）的渐变进度；未切段的首次调用时惰性切段
   // el = 行容器（.lyric-line / .d-lyric）；卡拉OK目标 = 内部 .lrc-main/.d-main（译文行不参与渐变）
-  function applyKaraokeP(el, p, words) {
+  function applyKaraokeP(el, p, words, tAbs) {
     const target = (el.querySelector && el.querySelector('.lrc-main, .d-main')) || el;
     target.dataset.lastP = String(p);
     const segs = target.querySelectorAll(':scope > .line-seg');
     if (segs.length) {
       const total = parseFloat(target.dataset.segTotal) || 1;
-      const consumed = p * total;
+      // v1.4.2：逐字模式 → 像素前缘直通（不缓动，保逐字精度，MR 同款分流）；
+      //          LRC 模式 → 目标进度缓动逼近（平时 0.35 平滑，seek 跳变 >0.42 直接快追，防硬跳）
+      let consumed;
+      if (el._kwBuilt && tAbs != null) {
+        const front = LyricKaraoke.wordFrontPx(el._kwBuilt, tAbs);
+        consumed = (front == null ? p : front) * total;
+      } else {
+        const shown = parseFloat(target.dataset.shownP) || 0;
+        const diff = p - shown;
+        const np = Math.abs(diff) > 0.42 ? p : shown + diff * 0.35;
+        target.dataset.shownP = String(np.toFixed(4));
+        consumed = np * total;
+      }
       segs.forEach((seg) => {
         const s0 = parseFloat(seg.dataset.s0) || 0;
         const s1 = parseFloat(seg.dataset.s1) || 1;
@@ -4582,19 +4594,27 @@
       target._segTimer = setTimeout(() => {
         if (target.closest && target.closest('.lyric-line, .d-lyric') && target.closest('.lyric-line, .d-lyric').classList.contains('active')) {
           target._segged = false;
+          target._kwBuilt = null;
           segmentLine(target, parseFloat(target.dataset.lastP) || 0, target._lastWords);
         }
       }, 450);
     } else {
+      // v1.4.2 自愈：行文本已存在却从未切段（空文本期被标记 segged 的死锁）→ 补切段
+      if ((target.textContent || '').trim()) {
+        target._segged = false;
+        target._kwBuilt = null;
+        segmentLine(target, p, words, tAbs);
+        return;
+      }
       target.style.setProperty('--p', p.toFixed(3)); // 兜底（空行等）
     }
   }
   // 窗口尺寸/字号变化后重新切段（面板/详情当前行）
   function reSegmentActiveLyrics() {
     const panelEl = document.querySelector('#lyricBox .lyric-line.active .lrc-main');
-    if (panelEl) { panelEl._segged = false; segmentLine(panelEl, parseFloat(panelEl.dataset.lastP) || 0, panelEl._lastWords); }
+    if (panelEl) { panelEl._segged = false; panelEl._kwBuilt = null; segmentLine(panelEl, parseFloat(panelEl.dataset.lastP) || 0, panelEl._lastWords); }
     const detailEl = document.querySelector('#pdLyrics .d-lyric.active .d-main');
-    if (detailEl) { detailEl._segged = false; segmentLine(detailEl, parseFloat(detailEl.dataset.lastP) || 0, detailEl._lastWords); }
+    if (detailEl) { detailEl._segged = false; detailEl._kwBuilt = null; segmentLine(detailEl, parseFloat(detailEl.dataset.lastP) || 0, detailEl._lastWords); }
   }
   window.addEventListener('resize', reSegmentActiveLyrics);
 
@@ -4615,8 +4635,10 @@
       const line = state.lrc[idx];
       const next = state.lrc[idx + 1];
       const dur = next ? next.t - line.t : 3;
-      const p = Math.min(1, Math.max(0, (t - line.t) / dur));
-      applyKaraokeP(els[idx], p, currentLineWords(idx));
+      const words = currentLineWords(idx);
+      // v1.4.2：无逐字时 smoothstep 平滑扫（+20ms 提前量，MR 同款）；有逐字时 p 仅作兜底显示域
+      const p = words ? Math.min(1, Math.max(0, (t - line.t) / dur)) : LyricKaraoke.lineProgress(t, line.t, dur);
+      applyKaraokeP(els[idx], p, words, t);
     }
   }
 

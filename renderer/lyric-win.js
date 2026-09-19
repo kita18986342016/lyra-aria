@@ -21,7 +21,8 @@
   let transLines = [];   // [{t, text}] 译文（桌面歌词翻译，随全量歌词下发）
   let lineIdx = -1;      // 当前行索引
   let wordSegs = [];     // 逐字时间轴 [{t(秒), chars:[{ch,t(秒)}]}]（在线歌词逐字卡拉OK）
-  let curWord = null;    // 当前行命中的逐字段 {t, chars, dur}
+  let curWord = null;
+  let curBuilt = null; // v1.4.2：当前行扫色区间（像素域，借鉴 Mineradio karaokeWordRanges）    // 当前行命中的逐字段 {t, chars, dur}
 
   function escW(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -75,7 +76,7 @@
       if (d < bestD) { bestD = d; best = w; }
     }
     if (best && best.chars && best.chars.length) {
-      units = best.chars.map((c) => ({ t: Math.min(1, Math.max(0, (c.t - line.t) / lineDur)), ch: c.ch || ' ' }));
+      units = best.chars.map((c) => ({ ch: c.ch || ' ' })); // 占位：px 区间在下方统一测量
     } else {
       const segs = text.match(/[\u4e00-\u9fff]|[a-zA-Z0-9']+|\s+|./g) || [text];
       const us = [];
@@ -86,13 +87,41 @@
         else if (us.length) us[us.length - 1] += s;
         else us.push(s); // 首个非中文单元
       }
-      const n = Math.max(1, us.length);
-      units = us.map((ch, i) => ({ t: i / n, ch }));
+      units = us.map((ch) => ({ ch }));
+    }
+    // v1.4.2 扫色改造（借鉴 Mineradio）：进度统一在像素域计算——
+    //   有逐字数据：每字时间段映射到像素区间（wordFrontPx，与实际演唱对齐）；
+    //   无逐字：整行 smoothstep 平滑扫（原按字数平均分时间 → 颜色与演唱错位）。
+    //   span 的 data-s0/s1 由『归一化时间』改为『归一化像素宽度』，--p 语义不变。
+    let meter = document.getElementById('karaMeter');
+    if (!meter) {
+      meter = document.createElement('span');
+      meter.id = 'karaMeter';
+      meter.style.cssText = 'position:absolute;left:-99999px;top:0;visibility:hidden;white-space:nowrap;';
+      $('#stage').appendChild(meter);
+    }
+    meter.style.font = getComputedStyle($('#text')).font;
+    curBuilt = null;
+    if (best && best.chars && best.chars.length) {
+      curBuilt = window.LyricKaraoke.buildWordRanges(best.chars, line.t, lineDur, meter.style.font, meter);
+      units = curBuilt.ranges.map((r) => ({ ch: r.ch, px0: r.px0, px1: r.px1 }));
+    } else {
+      let acc = 0, prevText = '', prevW = 0;
+      units = units.map((u) => {
+        const t2 = prevText + u.ch;
+        meter.textContent = t2;
+        const w2 = meter.getBoundingClientRect().width;
+        const cw = Math.max(0, w2 - prevW);
+        const uo = { ch: u.ch, px0: acc, px1: acc + cw };
+        acc += cw; prevText = t2; prevW = w2;
+        return uo;
+      });
+      curBuilt = { ranges: units, totalPx: acc };
     }
     curWord = null;
     $('#text').innerHTML = units.map((u, i) => {
-      const s0 = u.t;
-      const s1 = i < units.length - 1 ? Math.min(1, Math.max(0, units[i + 1].t)) : 1;
+      const s0 = curBuilt.totalPx > 0 ? u.px0 / curBuilt.totalPx : 0;
+      const s1 = curBuilt.totalPx > 0 ? u.px1 / curBuilt.totalPx : 1;
       return `<span class="sweep" data-s0="${s0.toFixed(4)}" data-s1="${Math.max(s0 + 0.001, s1).toFixed(4)}">${escW(u.ch)}</span>`;
     }).join('');
     // 半字防线：动态阈值是按字号估算的，字体渲染宽度若有差异导致溢出，
@@ -174,7 +203,13 @@
   }
   function applyProgress(p, caller) {
     window.__lyrDbg.lastApply = { p: +p.toFixed(3), curTime: +curTime.toFixed(3), lineT: +lineT.toFixed(3), dur: +dur.toFixed(3), caller: caller || '?' };
-    const pc = Math.min(1, Math.max(0, p));
+    let pc = Math.min(1, Math.max(0, p));
+    if (curBuilt && curBuilt.ranges.length && curBuilt.ranges[0].tEnd) {
+      const f = window.LyricKaraoke.wordFrontPx(curBuilt, curTime);
+      if (f != null) pc = f; // 逐字：像素前缘直通（不缓动，保逐字精度，MR 同款分流）
+    } else {
+      pc = window.LyricKaraoke.lineProgress(curTime, lineT, dur > 0 ? dur : 3); // LRC：平滑扫 + 20ms 提前量
+    }
     if ($('#text').querySelector(':scope > .sweep')) { applyWordProgress(pc); return; }
     // 无逐字 span 时（占位等）直接整行颜色：播放过 → 蓝
     const t = Math.min(1, Math.max(0, pc));
