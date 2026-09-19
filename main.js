@@ -1481,6 +1481,7 @@ function main() {
       d = r2 && r2.data ? r2.data : null;
       url = d && (d.url || d.src) ? (d.url || d.src) : null;
       if (!url) throw new Error('无法解析播放地址（' + (r2 && r2.message ? r2.message : '未知错误') + '）');
+      if (!(await verifyDirectUrl(url))) throw new Error('音源地址异常，请重试或重新下载'); // v1.4.2 韧性：下载直链同样先验魔数
       // 从 content-disposition/url 推断扩展名（higher/128 均为 mp3，兜底 .mp3）
       let ext = '.mp3';
       const fn = (d.filename || '').toLowerCase();
@@ -2056,12 +2057,88 @@ function main() {
         req.setTimeout(20000, () => { req.destroy(); resolve({ ok: false, status: 0, message: '请求超时' }); });
       });
     }
+    // ---------- v1.4.2 播放韧性（移植自 Mineradio 2.2.0, GPL-3.0, server.js:3550-3620，适配 leiz 返回结构） ----------
+    // 直链魔数探测：直链交给渲染层/下载器之前先抓 8KB 验证是真音频（ID3/fLaC/OggS/RIFF/ftyp/MPEG frame sync），
+    // 拦下"换源成功但实际是错误页/JSON"的静默失败。超时 8s 为本项目取舍（Mineradio 用 2s/次×多次是给 QQ vkey 预算的）。
+    const PROBE_BYTES = 8192;
+    const PROBE_TIMEOUT_MS = 8000;
+    const PROBE_POS_TTL_MS = 10 * 60 * 1000; // 正缓存 10min（与直链短时效同量级）
+    const PROBE_NEG_TTL_MS = 30 * 1000;      // 负缓存 30s（网络抖动不长期拉黑同一首）
+    const probeCache = new Map(); // key: 直链 url → { ok, ts }
+    function probeMagic(buf) {
+      if (!buf || !buf.length) return '';
+      if (buf.length >= 3 && buf.subarray(0, 3).toString('ascii') === 'ID3') return 'mp3-id3';
+      if (buf.length >= 4 && buf.subarray(0, 4).toString('ascii') === 'fLaC') return 'flac';
+      if (buf.length >= 4 && buf.subarray(0, 4).toString('ascii') === 'OggS') return 'ogg';
+      if (buf.length >= 12 && buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WAVE') return 'wave';
+      if (buf.length >= 12 && buf.subarray(4, 8).toString('ascii') === 'ftyp') return 'mp4';
+      const scan = Math.min(buf.length - 1, 2048);
+      for (let i = 0; i < scan; i++) {
+        if (buf[i] === 0xff && (buf[i + 1] & 0xe0) === 0xe0) return 'mpeg-frame'; // 裸 mp3 无文件头，扫 frame sync
+      }
+      return '';
+    }
+    function probePlaybackAudioUrl(audioUrl) {
+      return new Promise((resolve) => {
+        let u;
+        try { u = new URL(audioUrl); } catch { return resolve(false); }
+        if (!/^https?:$/.test(u.protocol)) return resolve(false);
+        const mod = /^https:/i.test(audioUrl) ? https : require('http'); // leiz 直链 http/https 都有
+        const req = mod.get(audioUrl, { headers: { Range: 'bytes=0-' + (PROBE_BYTES - 1), 'User-Agent': 'Mozilla/5.0 MusicPlayer/1.2.9' } }, (res) => {
+          const st = res.statusCode;
+          if (st !== 200 && st !== 206) { res.resume(); return resolve(false); }
+          const ct = String(res.headers['content-type'] || '').toLowerCase();
+          const chunks = []; let bytes = 0;
+          res.on('data', (c) => { chunks.push(c); bytes += c.length; if (bytes >= PROBE_BYTES) req.destroy(); });
+          res.on('end', () => finish());
+          res.on('close', () => finish());
+          let done = false;
+          function finish() {
+            if (done) return; done = true;
+            const sample = Buffer.concat(chunks).subarray(0, PROBE_BYTES);
+            const looksText = /text\/html|application\/(json|xml)|text\/plain/.test(ct);
+            resolve(sample.length >= 512 && !looksText && !!probeMagic(sample));
+          }
+        });
+        req.on('error', () => resolve(false));
+        req.setTimeout(PROBE_TIMEOUT_MS, () => { try { req.destroy(); } catch { /* */ } resolve(false); });
+      });
+    }
+    async function verifyDirectUrl(url) {
+      if (!url || !/^https?:/i.test(url)) return false;
+      const now = Date.now();
+      const c = probeCache.get(url);
+      if (c && now - c.ts < (c.ok ? PROBE_POS_TTL_MS : PROBE_NEG_TTL_MS)) return c.ok;
+      const ok = await probePlaybackAudioUrl(url);
+      probeCache.set(url, { ok, ts: now });
+      if (probeCache.size > 500) probeCache.delete(probeCache.keys().next().value); // 简易 FIFO 上限
+      return ok;
+    }
+    // 失败原因翻译成人话。事实边界：本地自产消息（请求超时/响应解析失败/HTTP 状态/Node 网络错误）为精确映射；
+    // 上游(leiz) message 的 版权/付费 关键词匹配是推测档（待实测校准），未命中原文透出并打日志收集真实文案。
+    // 2026-09-19 实测捕获的上游原文："Song URL not found or requires higher VIP privileges"（坏 id）→ 不存在优先于会员提示
+    const FAIL_REASON_MAP = [
+      [/版权|无版权|copyright/i, '这首歌因版权限制暂不可播'],
+      [/not found|不存在/i, '歌曲可能已下架或不存在'],
+      [/付费|vip|会员|购买|数字专辑/i, '这首歌需要对应平台会员'],
+    ];
+    function humanizeFailReason(msg) {
+      const s = String(msg || '');
+      if (/请求超时|timed? ?out/i.test(s)) return '网络不稳，稍后再试';
+      if (/ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|socket|network|网络/i.test(s)) return '网络连接失败';
+      if (/响应解析失败/i.test(s)) return '服务响应异常';
+      if (/^HTTP 404/.test(s)) return '歌曲可能已下架';
+      if (/^HTTP (401|403)/.test(s)) return '服务鉴权异常';
+      for (const [re, txt] of FAIL_REASON_MAP) if (re.test(s)) { console.error('[fail-reason] 命中推测档映射, 上游原文:', s); return txt; }
+      if (s && !/^HTTP \d+$/.test(s)) console.error('[fail-reason] 未映射的上游失败信息:', s);
+      return s || '未知错误';
+    }
     ipcMain.handle('leiz:search', async (e, source, query, limit) => {
       if (!isTrusted(e) || !['netease', 'kugou'].includes(source) || typeof query !== 'string' || !query.trim()) return { ok: false, reason: '参数错误' };
       // limit：每源条数（5~100，默认 30）——LeiZ 支持 limit 参数（page/offset 无效）
       const lmt = Number.isFinite(Number(limit)) ? Math.min(100, Math.max(5, Math.round(Number(limit)))) : 30;
       const r = await leizGet('/' + source + '/search?q=' + encodeURIComponent(query.trim()) + '&limit=' + lmt);
-      return r.ok ? { ok: true, data: r.data } : { ok: false, reason: r.message || ('HTTP ' + r.status) };
+      return r.ok ? { ok: true, data: r.data } : { ok: false, reason: humanizeFailReason(r.message || ('HTTP ' + r.status)) };
     });
     // ref: 网易云=song id；酷狗=分享链接或 hash（url/hash/id 三选一，推荐 url）
     ipcMain.handle('leiz:resolve', async (e, source, ref, level) => {
@@ -2089,7 +2166,11 @@ function main() {
         p = /^https?:\/\//.test(ref) ? '/kugou?url=' + encodeURIComponent(ref) : '/kugou?hash=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
       }
       const r = await leizGet(p);
-      return r.ok ? { ok: true, data: r.data } : { ok: false, reason: r.message || ('HTTP ' + r.status) };
+      if (!r.ok) return { ok: false, reason: humanizeFailReason(r.message || ('HTTP ' + r.status)) };
+      // v1.4.2 韧性：直链先验魔数再交付，拦"换源成功实为错误页"的静默失败
+      const durl = r.data && (r.data.url || r.data.src);
+      if (durl && !(await verifyDirectUrl(durl))) return { ok: false, reason: '音源地址异常，请尝试换源或稍后再试' };
+      return { ok: true, data: r.data };
     });
     ipcMain.handle('leiz:lyrics', async (e, source, ref, level) => {
       if (!isTrusted(e) || !['netease', 'kugou'].includes(source) || typeof ref !== 'string' || !ref) return { ok: false, reason: '参数错误' };
@@ -2101,7 +2182,7 @@ function main() {
         p = /^https?:\/\//.test(ref) ? '/kugou?type=lyrics&url=' + encodeURIComponent(ref) : '/kugou?type=lyrics&hash=' + encodeURIComponent(ref);
       }
       const r = await leizGet(p);
-      return r.ok ? { ok: true, data: r.data } : { ok: false, reason: r.message || ('HTTP ' + r.status) };
+      return r.ok ? { ok: true, data: r.data } : { ok: false, reason: humanizeFailReason(r.message || ('HTTP ' + r.status)) };
     });
     // 歌单：ref 可为链接或 id（网易云 id/url 二选一；酷狗支持数字 id 或 m.kugou.com/plist/list/N 链接——gcid 链接上游暂不可用）
     ipcMain.handle('leiz:playlist', async (e, source, ref) => {
@@ -2118,7 +2199,7 @@ function main() {
         }
       }
       const r = await leizGet(p);
-      return r.ok ? { ok: true, data: r.data } : { ok: false, reason: r.message || ('HTTP ' + r.status) };
+      return r.ok ? { ok: true, data: r.data } : { ok: false, reason: humanizeFailReason(r.message || ('HTTP ' + r.status)) };
     });
 
     // ---------- B 站收藏夹导入 + 播放解析（一期：公开收藏夹；播放走 LeiZ /bilibili 合并流）----------
@@ -2249,7 +2330,7 @@ function main() {
       const r = await leizGet('/bilibili?bvid=' + encodeURIComponent(bvid) + '&qn=16');
       // 注意：leizGet 已拆信封——r.data 即视频数据（kind/bvid/dash/merged...），无 success 包装
       if (!r.ok || !r.data) {
-        return { ok: false, reason: r.message || ('HTTP ' + r.status) };
+        return { ok: false, reason: humanizeFailReason(r.message || ('HTTP ' + r.status)) };
       }
       const d = r.data;
       const audioArr = (d.dash && d.dash.audio) || [];

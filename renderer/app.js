@@ -1420,7 +1420,14 @@
     for (const w of ['变速', '加速', '减速', 'slowed', 'sped up', 'pitch', 'remix', 'cover', '翻唱', '伴奏', '铃声', '现场', 'live版', 'dj版', '纯音乐', '串烧', '慢摇', '钢琴版', '吉他版', '变奏']) x = x.split(w).join(' ');
     return x.replace(/\s+/g, ' ').trim().toLowerCase();
   }
-  async function findAltSource(song) {
+  // v1.4.2 失败预算（借鉴 Mineradio 分层预算思想）：两源串行最坏可拖 20s+ → 总预算 8s 封顶，超时按无换源处理
+  function findAltSource(song) {
+    return Promise.race([
+      findAltSourceInner(song),
+      new Promise((res) => setTimeout(() => res(null), 8000))
+    ]).catch(() => null);
+  }
+  async function findAltSourceInner(song) {
     // 精确匹配（用户决策）：歌名去空格小写后完全相等——Live版/翻唱/治愈版等改版歌只换「同一版本」，
     // 不剥版本词去搜原版（有人就是爱听改版；悄悄塞原版=骗人）。歌手整词相等（非子串，防「王菲」误配「菲儿乐队」）。
     const want = normTitleStrict(song.title);
@@ -3561,7 +3568,7 @@
               return;
             }
             state.errStreak++;
-            if (state.errStreak >= 6 || state.errStreak >= Math.max(1, state.queue.length)) { state.errStreak = 0; toast('连续播放失败，已停止'); }
+            if (state.errStreak >= 2 || state.errStreak >= Math.max(1, state.queue.length)) { state.errStreak = 0; toast('连续 2 首无法播放，已停止自动切歌'); } // v1.4.2：对齐 Mineradio 队列熔断思想（连续 2 次推进失败即停）
             else playNext();
           }
         }
@@ -3617,7 +3624,7 @@
     if (fromUser) { const s0 = list[idx]; if (s0) s0.retried = 0; }
     if (state.mode === 'shuffle' && !keepShuffle) rebuildShuffle(); // 新会话（用户点歌/恢复）→ 重排随机顺序
     state.selectedId = song.id;
-    state.errStreak = 0;
+    if (fromUser) state.errStreak = 0; // v1.4.2 修复：原为无条件清零，自动连播也走这里 → 连续失败熔断从未生效
     state._tailFaded = false; // 新歌：结尾淡出标志复位
     lastAudioTime = 0; // 切歌：时间基准归零（新歌从 0 开始，防旧值干扰）
     if (autoPlay) {
@@ -6344,9 +6351,9 @@
           renderList();
         }
         state.errStreak++;
-        if (state.errStreak >= 6 || state.errStreak >= Math.max(1, state.queue.length)) {
+        if (state.errStreak >= 2 || state.errStreak >= Math.max(1, state.queue.length)) {
           state.errStreak = 0;
-          toast('连续播放失败，已停止');
+          toast('连续 2 首无法播放，已停止自动切歌');
           return;
         }
         if (state.queue.length) playNext();
