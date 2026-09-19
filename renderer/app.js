@@ -3708,6 +3708,7 @@
         if (song.picUrl) {
           pimg.src = song.picUrl; pimg.classList.remove('hidden'); pnote.style.display = 'none';
           bindOnlineCoverFallback(pimg, song.picUrl);
+          if (window.LyricStage3D) LyricStage3D.refreshPalette(song.picUrl); // 3D 舞台封面取色
           if (state.bgMode === 'cover') {
             const bgImg = $('#appBgImg');
             if (bgImg.src !== song.picUrl) bgImg.src = song.picUrl;
@@ -3724,6 +3725,7 @@
           if (state.playingId !== song.id) return;
           if (src) { pimg.src = src; pimg.classList.remove('hidden'); pnote.style.display = 'none'; }
           else { pimg.classList.add('hidden'); pnote.style.display = ''; }
+          if (src && window.LyricStage3D) LyricStage3D.refreshPalette(src); // 3D 舞台封面取色
           // 方案二：窗口背景同步封面（封面铺满，DWM 缩略图捕获窗口内容 = 封面）
           if (state.bgMode === 'cover') {
             const bgImg = $('#appBgImg');
@@ -4414,15 +4416,18 @@
       if (LyricStage3D.active()) LyricStage3D.unmount();
       return;
     }
-    if (LyricStage3D.active()) { LyricStage3D.resize(); return; }
+    LyricStage3D.setAudio(audio); // MR 契约：全局 audio + 音频图（bass/beat 分析）
+    LyricStage3D.setLrc(state.lrc, state.wordSegs, lyrTransOn() ? state.translatedLrc : null);
+    if (LyricStage3D.active()) { LyricStage3D.resize(); LyricStage3D.refreshPalette(); return; }
     if (stage3dMounting) return;
     stage3dMounting = true;
     try {
       await LyricStage3D.mount(host);
-      lastLyricIdx = -1; // 挂载完成 → 下一帧强制重喂当前行
+      LyricStage3D.setLrc(state.lrc, state.wordSegs, lyrTransOn() ? state.translatedLrc : null); // 挂载期间歌词可能已加载
+      LyricStage3D.refreshPalette();
     } catch (e) {
       LyricStage3D.markFailed();
-      toast('3D 舞台不可用（WebGL 初始化失败），已回退普通歌词');
+      toast('3D 舞台不可用（初始化失败），已回退普通歌词');
     }
     stage3dMounting = false;
     syncStage3d(); // mount 落地后再同步一次 stage3d-on 显隐
@@ -4458,6 +4463,8 @@
     // 全量歌词下发歌词窗（自主滚动：行定位在歌词窗本地，主窗 rAF/事件被遮挡/最小化节流也不影响）
     // 桌面歌词翻译：翻译开关开着且译文存在 → 随下发（歌词窗当前行下方显示译文）
     window.api.sendLyricLrc({ lines: state.lrc, words: state.wordSegs, trans: lyrTransOn() ? (state.translatedLrc || null) : null });
+    // 3D 舞台（MR 移植）：歌词/逐字轴就绪即同步进它的全局 lyricsLines 契约
+    if (window.LyricStage3D) LyricStage3D.setLrc(state.lrc, state.wordSegs, lyrTransOn() ? state.translatedLrc : null);
     sendLyricLine();
     updateLyricHighlight(); // 立即定位当前行（暂停/面板未打开时 rAF 不跑，这里主动刷新）
     // 详情页歌词同步（自动进入封面页时歌词异步加载完成 → 重渲染）
@@ -4670,19 +4677,6 @@
       // v1.4.2：无逐字时 smoothstep 平滑扫（+20ms 提前量，MR 同款）；有逐字时 p 仅作兜底显示域
       const p = words ? Math.min(1, Math.max(0, (t - line.t) / dur)) : LyricKaraoke.lineProgress(t, line.t, dur);
       applyKaraokeP(els[idx], p, words, t);
-      // 3D 舞台喂同一套算法产出：逐字=wordFrontPx 像素前缘，LRC=lineProgress（shader 内 mix+feather 扫色）
-      if (LyricStage3D.active()) {
-        const sp = (words && els[idx]._kwBuilt) ? (LyricKaraoke.wordFrontPx(els[idx]._kwBuilt, t) || p) : p;
-        LyricStage3D.update({
-          now: performance.now(), playing: !audio.paused,
-          prev: idx > 0 ? (state.lrc[idx - 1].text || '') : '',
-          text: line.text || '',
-          next: next ? (next.text || '') : '',
-          progress: sp, hasNative: !!words,
-        });
-      }
-    } else if (LyricStage3D.active() && !$('#lyricPanel').classList.contains('hidden')) {
-      LyricStage3D.update({ now: performance.now(), playing: !audio.paused, prev: '', text: '', next: '', progress: 0, hasNative: false });
     }
   }
 

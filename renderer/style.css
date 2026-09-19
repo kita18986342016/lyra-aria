@@ -832,7 +832,11 @@ html[data-skin] .fav-btn { opacity: .62; color: var(--text); } /* 皮肤下未�
 /* ========== 3D 歌词舞台（v1.4.2 第二期） ========== */
 #stage3dHost { flex: 1; position: relative; overflow: hidden; }
 #stage3dHost .stage3d-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-#lyricPanel.stage3d-on #lyricBox { visibility: hidden; }
+#lyricPanel.stage3d-on #lyricBox { display: none; }
+/* MR 舞台底：深空径向渐变（MR scene.background=null，氛围由页面底色承担——docs 移植结论） */
+#stage3dHost { background: radial-gradient(ellipse at 50% 42%, #182234 0%, #0a101c 55%, #03060c 100%); }
+#lyricPanel.stage3d-on { background: #0a101c; }
+#lyricPanel.stage3d-on .lyric-head { color: #dfe7f2; }
 
 /* ========== 播放队列抽屉 ========== */
 #queuePanel {
