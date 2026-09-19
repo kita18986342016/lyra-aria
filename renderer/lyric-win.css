@@ -265,3 +265,11 @@ body.taskbar #lineNext { font-size: 11px; }
 
 /* 锁定（鼠标穿透）时去掉拖动光标 */
 body.locked #stage { cursor: default; }
+
+/* v1.4.2：锁定态解锁提示（锁定=真穿透，按钮不可点，文字提示解锁途径） */
+#lockHint { display: none; font-size: 12px; color: rgba(255,255,255,.75); margin-right: 6px; }
+body.locked.hover #lockHint { display: inline; }
+
+/* v1.4.2：锁定态解锁提示（锁定=真穿透，按钮不可点，文字提示解锁途径） */
+#lockHint { display: none; font-size: 12px; color: rgba(255,255,255,.75); margin-right: 6px; }
+body.locked.hover #lockHint { display: inline; }

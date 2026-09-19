@@ -160,7 +160,7 @@
     document.body.dataset.font = FONT_STYLES.includes(cfg.lyricFont) ? cfg.lyricFont : 'default';
     // 顶部工具条图标随状态切换（图标=当前状态）：锁定态=锁形（点击解除）；解锁态=开锁形（点击锁定）
     $('#unlockBtn').innerHTML = cfg.locked ? ICON_LOCK : ICON_UNLOCK;
-    $('#unlockBtn').title = cfg.locked ? '解除锁定' : '重新锁定';
+    $('#unlockBtn').title = cfg.locked ? '锁定中：中键点击歌词或 Ctrl+Alt+L 解锁' : '重新锁定';
     // 右下角播放模式按钮（列表循环/单曲循环/随机）
     const m = cfg.playMode || 'order';
     $('#cMode').innerHTML = MODE_ICONS[m] || ICON_MODE_ORDER;

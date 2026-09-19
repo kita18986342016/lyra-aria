@@ -805,7 +805,7 @@ function main() {
   let lyricLine = null;
   let lyricLrc = null; // 最近一次全量歌词缓存（悬浮窗重载后重发，恢复两句显示）
   let lyricHover = false; // 锁定状态下鼠标是否悬停在歌词上（悬停则显示解锁工具条）
-  let lyricNearBtn = false; // 锁定状态下鼠标是否在解锁按钮附近（仅此小范围解除穿透，其余区域保持穿透）
+  let lyricMmbPrev = false; // 中键上一轮按下状态（沿检测用）
   let lyricAdaptiveH = 0; // 渲染层 syncWinHeight 最近申请的自适应高度（0=未知，兜底 160）；防拉伸兜底用它而非固定 160
 
   // 从任务栏/任务视图/Alt+Tab 彻底隐藏歌词窗：Electron 43 的 skipTaskbar 在此组合下
@@ -817,7 +817,8 @@ function main() {
     const user32T = koffiT.load('user32.dll');
     const getEx = user32T.func('GetWindowLongPtrW', 'intptr_t', ['intptr_t', 'int']);
     const setEx = user32T.func('SetWindowLongPtrW', 'intptr_t', ['intptr_t', 'int', 'intptr_t']);
-    taskbarHider = { getEx, setEx };
+    const getAsyncKey = user32T.func('GetAsyncKeyState', 'int16', ['int']);
+    taskbarHider = { getEx, setEx, getAsyncKey };
   } catch { taskbarHider = null; }
   function hideLyricFromTaskbar() {
     if (!taskbarHider || !lyricWin || lyricWin.isDestroyed()) return;
@@ -842,9 +843,9 @@ function main() {
       webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true }
     });
     lyricWin.webContents.setBackgroundThrottling(false); // 非聚焦窗口保持 rAF：卡拉OK渐变不被节流
-    // floating 层级：实测 screen-saver 层级会导致窗口被标记 WS_EX_APPWINDOW（任务栏出现歌词页）
-    // 防主窗口覆盖改由 hover 轮询里的 moveTop() 兜底
-    lyricWin.setAlwaysOnTop(true, 'floating');
+    // screen-saver 层级（借鉴 Mineradio）：盖住全屏视频；副作用（WS_EX_APPWINDOW 出现在任务栏）
+    // 由 hideLyricFromTaskbar()（koffi 补 WS_EX_TOOLWINDOW）在 show/配置/周期轮询三处清除
+    lyricWin.setAlwaysOnTop(true, 'screen-saver');
     lyricWin.loadFile(path.join(__dirname, 'renderer', 'lyric-win.html'));
     lyricWin.webContents.on('did-finish-load', () => {
       applyLyricConfig();
@@ -885,17 +886,16 @@ function main() {
     let moveTimer = null;
     lyricWin.on('move', () => {
       if (config.lyricWin.mode !== 'desktop') return;
+      // v1.4.2：实时夹取（原 350ms 延迟弹回会造成边缘抽搐感）；保存仍防抖
+      if (!lyricWin || lyricWin.isDestroyed()) return;
+      const b = lyricWin.getBounds();
+      const clamped = clampLyricWinBounds(b);
+      if (clamped.x !== b.x || clamped.y !== b.y) {
+        lyricWin.setPosition(clamped.x, clamped.y); // 出屏 → 立即弹回
+        return;
+      }
       clearTimeout(moveTimer);
-      moveTimer = setTimeout(() => {
-        if (!lyricWin || lyricWin.isDestroyed()) return;
-        const b = lyricWin.getBounds();
-        const clamped = clampLyricWinBounds(b);
-        if (clamped.x !== b.x || clamped.y !== b.y) {
-          lyricWin.setPosition(clamped.x, clamped.y); // 出屏 → 弹回
-        } else {
-          saveLyricPos();
-        }
-      }, 350);
+      moveTimer = setTimeout(saveLyricPos, 400);
     });
     // 右键菜单
     lyricWin.webContents.on('context-menu', () => {
@@ -932,6 +932,18 @@ function main() {
     } catch { return b; }
   }
 
+  // v1.4.2（借鉴 Mineradio）：显示器增删/分辨率变化/睡眠唤醒布局变化 → 重新夹取歌词窗，防"跑出屏幕找不到"
+  ['display-metrics-changed', 'display-added', 'display-removed'].forEach((evName) => {
+    try {
+      screen.on(evName, () => {
+        if (config.lyricWin.enabled && lyricWin && !lyricWin.isDestroyed()) {
+          positionLyricWin();
+          hideLyricFromTaskbar();
+        }
+      });
+    } catch { /* 忽略 */ }
+  });
+
   function positionLyricWin() {
     if (!lyricWin) return;
     const scr = screen.getPrimaryDisplay();
@@ -963,9 +975,11 @@ function main() {
     // 兜底：强制固定尺寸 840x160（忽略历史污染尺寸）
     const cur = lyricWin.getSize();
     if (cur[0] !== 840 || cur[1] !== 160) lyricWin.setSize(840, 160);
-    // 锁定=穿透；但悬停时临时恢复交互（右键可调）
+    // v1.4.2 修复：锁定=真穿透（不再因悬停恢复交互——那会挡住下层窗口点击，用户实测抱怨点）。
+    // 解锁途径：①中键点击歌词区域（koffi GetAsyncKeyState 轮询，借鉴 Mineradio）②全局快捷键 Ctrl+Alt+L
+    // ③主窗口设置。forward:true 保证穿透时渲染层仍收得到 mousemove（悬停提示条用）。
     // 注意：不调用 setFocusable（实测会导致窗口出现 WS_EX_APPWINDOW → 任务栏出现歌词页）
-    lyricWin.setIgnoreMouseEvents(lc.locked && !lyricHover, { forward: true });
+    lyricWin.setIgnoreMouseEvents(!!lc.locked, { forward: true });
     lyricWin.webContents.send('lyricwin:config', { ...lc, playMode: config.mode });
     hideLyricFromTaskbar(); // 每次配置应用后确保 TOOLWINDOW（防止穿透/显示切换覆盖）
   }
@@ -3622,28 +3636,32 @@ function main() {
       if (!config.lyricWin.enabled || !lyricWin || lyricWin.isDestroyed()) return;
       // 持续置顶：防止主窗口（大窗）盖住歌词窗导致无法点击/拖动
       try { lyricWin.moveTop(); } catch { /* 忽略 */ }
+      // 中键沿检测（借鉴 Mineradio GetAsyncKeyState 轮询）：锁定时中键点击歌词=解锁；解锁时=锁定
+      try {
+        if (taskbarHider && taskbarHider.getAsyncKey) {
+          const pressed = (taskbarHider.getAsyncKey(0x04) & 0x8000) !== 0; // VK_MBUTTON
+          if (pressed && !lyricMmbPrev) {
+            const pt = screen.getCursorScreenPoint();
+            const b = lyricWin.getBounds();
+            if (pt.x >= b.x && pt.x <= b.x + b.width && pt.y >= b.y && pt.y <= b.y + b.height) {
+              config.lyricWin.locked = !config.lyricWin.locked;
+              store.save('config.json', config);
+              applyLyricConfig();
+            }
+          }
+          lyricMmbPrev = pressed;
+        }
+      } catch { /* 忽略 */ }
       if (!config.lyricWin.locked) return;
       try {
         const pt = screen.getCursorScreenPoint();
         // 实测：本机 getCursorScreenPoint 与 getBounds 同坐标系（数值一致），无需缩放换算
         const b = lyricWin.getBounds();
         const inside = pt.x >= b.x && pt.x <= b.x + b.width && pt.y >= b.y && pt.y <= b.y + b.height;
-        // 解锁热点：仅解锁按钮本体附近极小范围解除穿透（视口坐标，按钮 ~(407,20,26,26)）
-        const vx = pt.x - b.x, vy = pt.y - b.y;
-        const nearBtn = inside && vx >= 392 && vx <= 448 && vy >= 8 && vy <= 58;
         if (inside !== lyricHover) {
           lyricHover = inside;
           if (inside) lyricWin.moveTop(); // 持续置顶：防主窗口盖住歌词窗
           lyricWin.webContents.send('lyricwin:hoverui', inside);
-        }
-        if (nearBtn !== lyricNearBtn) {
-          lyricNearBtn = nearBtn;
-          if (nearBtn) {
-            lyricWin.moveTop();
-            lyricWin.setIgnoreMouseEvents(false); // 按钮附近：可点击解锁
-          } else {
-            lyricWin.setIgnoreMouseEvents(true, { forward: true }); // 其余区域：保持穿透
-          }
         }
       } catch { /* 忽略 */ }
     }, 100);
