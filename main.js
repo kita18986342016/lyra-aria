@@ -2045,7 +2045,7 @@ function main() {
           });
         });
         req.on('error', (e) => resolve({ ok: false, status: 0, message: e.message }));
-        req.setTimeout(20000, () => { req.destroy(); resolve({ ok: false, status: 0, message: '请求超时' }); });
+        req.setTimeout(20000, () => { req.destroy(); resolve({ ok: false, status: 0, message: 'LEIZ_REQUEST_TIMEOUT' }); }); // 具名错误码：日志可检索
       });
     }
     // ---------- v1.4.2 播放韧性（移植自 Mineradio 2.2.0, GPL-3.0, server.js:3550-3620，适配 leiz 返回结构） ----------
@@ -2100,7 +2100,9 @@ function main() {
       const now = Date.now();
       const c = probeCache.get(url);
       if (c && now - c.ts < (c.ok ? PROBE_POS_TTL_MS : PROBE_NEG_TTL_MS)) return c.ok;
+      const t0 = Date.now();
       const ok = await probePlaybackAudioUrl(url);
+      if (!ok) console.error('[probe] 直链校验失败 code=PROBE_REJECTED url=' + url.slice(0, 80) + ' costMs=' + (Date.now() - t0));
       probeCache.set(url, { ok, ts: now });
       if (probeCache.size > 500) probeCache.delete(probeCache.keys().next().value); // 简易 FIFO 上限
       return ok;
@@ -2253,7 +2255,7 @@ function main() {
           });
         });
         req.on('error', (e) => resolve({ ok: false, status: 0, message: e.message }));
-        req.setTimeout(20000, () => { req.destroy(); resolve({ ok: false, status: 0, message: '请求超时' }); });
+        req.setTimeout(20000, () => { req.destroy(); resolve({ ok: false, status: 0, message: 'LEIZ_REQUEST_TIMEOUT' }); }); // 具名错误码：日志可检索
       });
     }
     // 收藏夹识别：URL 里的 fid= 数字，或纯数字 media_id；自动翻页拉全（上限 400，防误粘超大收藏夹）
