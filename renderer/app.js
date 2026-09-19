@@ -125,17 +125,15 @@
   };
   // 推荐页平台筛选持久化（state 早于 store 定义，故在此装载）
   state.recPlatFilter = store.get('mp_rec_plat_filter', 'all');
-  // 每源在线搜索条数：读 mp_search_n（JSON {netease,kugou,qq}，三源统一钳 5-100，默认 10；QQ 音源无限制）
-  const QQ_LIMIT_MAX = 100, QQ_LIMIT_DEFAULT = 10;
+  // 每源在线搜索条数：读 mp_search_n（JSON {netease,kugou}，钳 5-100，默认 10）
   const readSearchConf = () => {
-    let o = { netease: 10, kugou: 10, qq: QQ_LIMIT_DEFAULT };
+    let o = { netease: 10, kugou: 10 };
     try {
       const raw = localStorage.getItem('mp_search_n');
       if (raw) { const p = JSON.parse(raw); if (p && typeof p === 'object') o = Object.assign(o, p); }
     } catch { /* 忽略 */ }
     const c1 = (n) => Math.max(5, Math.min(100, Math.round(Number(n)) || 10));
-    const cq = (n) => Math.max(5, Math.min(QQ_LIMIT_MAX, Math.round(Number(n)) || QQ_LIMIT_DEFAULT));
-    return { netease: c1(o.netease || 10), kugou: c1(o.kugou || 10), qq: cq(o.qq || QQ_LIMIT_DEFAULT) };
+    return { netease: c1(o.netease || 10), kugou: c1(o.kugou || 10) };
   };
   const writeSearchConf = (conf) => {
     const c = readSearchConf();
@@ -143,8 +141,8 @@
     store.set('mp_search_n', JSON.stringify(merged));
   };
   // 启用的在线搜索音源（mp_search_srcs = JSON 数组；未设置时用 DEFAULT_SRCS）
-  const ALL_SRCS = ['netease', 'kugou', 'qq']; // 注册表：以后加音源在这里扩展；⚠️ [1.4.2-DELETE] 'qq' 将于 v1.4.2 移除
-  const DEFAULT_SRCS = ['netease', 'kugou', 'qq'];   // 默认启用集（QQ 源=波点酷我曲库）
+  const ALL_SRCS = ['netease', 'kugou']; // 注册表：以后加音源在这里扩展（v1.4.2 起 QQ 音源已移除）
+  const DEFAULT_SRCS = ['netease', 'kugou'];   // 默认启用集
   function enabledSources() {
     try {
       const raw = localStorage.getItem('mp_search_srcs');
@@ -446,12 +444,10 @@
     const sc = readSearchConf();
     const sN = $('#stSearchNetease'); if (sN) sN.value = sc.netease;
     const sK = $('#stSearchKugou'); if (sK) sK.value = sc.kugou;
-    const sQ = $('#stSearchQQ'); if (sQ) sQ.value = sc.qq;
-    // 音源启用开关同步（mp_search_srcs；未设置=默认网易云+酷狗+QQ(波点酷我曲库)）
+    // 音源启用开关同步（mp_search_srcs；未设置=默认网易云+酷狗）
     const en = enabledSources();
     const sE1 = $('#stSrcNetease'); if (sE1) sE1.checked = en.includes('netease');
     const sE2 = $('#stSrcKugou'); if (sE2) sE2.checked = en.includes('kugou');
-    const sE3 = $('#stSrcQQ'); if (sE3) sE3.checked = en.includes('qq');
     // 音质三档高亮（online 播放 / 下载），兼容旧值 higher→high
     const setQ3 = (sel, key, dft) => {
       const wrap = document.getElementById(sel);
@@ -1433,17 +1429,12 @@
     const normSoft = (x) => String(x || '').toLowerCase().replace(/[s（）()[]]+/g, '');
     const albumEq = (a, b) => { const x = normSoft(a), y = normSoft(b); return !!x && !!y && (x === y || (x.includes(y) || y.includes(x)) && Math.min(x.length, y.length) >= 2); };
     let best = null, bestScore = -1, bestSrc = '';
-    for (const src of ['kugou', 'netease', 'qq']) {
+    for (const src of ['kugou', 'netease']) {
       if (src === song.source) continue;
       try {
         let items = null;
-        if (src === 'qq') {
-          const r = await window.api.qqSearch(String(song.title || ''), 10).catch(() => null);
-          items = r && r.ok ? r.data : null;
-        } else {
-          const r = await window.api.leizSearch(src, String(song.title || ''), 10).catch(() => null);
-          items = r && r.ok ? r.data : null;
-        }
+        const r = await window.api.leizSearch(src, String(song.title || ''), 10).catch(() => null);
+        items = r && r.ok ? r.data : null;
         if (!Array.isArray(items)) continue;
         for (const it of items) {
           if (!it) continue;
@@ -2315,7 +2306,6 @@
     // item 7：音源筛选（netease/kugou/qq 按 source；local=非在线）
     if (state.filterSrc === 'netease') l = l.filter((s) => s.online && s.source === 'netease');
     else if (state.filterSrc === 'kugou') l = l.filter((s) => s.online && s.source === 'kugou');
-    else if (state.filterSrc === 'qq') l = l.filter((s) => s.online && s.source === 'qq');
     else if (state.filterSrc === 'local') l = l.filter((s) => !s.online);
     // item 7：音质筛选（在线按 level，本地按 bitrate/container 推导；无法判定则不匹配）
     if (state.filterQ !== 'all') {
@@ -2328,7 +2318,7 @@
   }
 
   // ---------- 在线搜索（网易云/酷狗 LeiZ + QQ=波点酷我曲库）----------
-  const SRC_NAMES = { netease: '网易云', kugou: '酷狗', qq: 'QQ', bilibili: 'B站' };
+  const SRC_NAMES = { netease: '网易云', kugou: '酷狗', bilibili: 'B站' }; // v1.4.2 起 QQ 音源已移除
   const SRCS = ALL_SRCS; // 兼容旧引用：遍历时请用 enabledSources() 过滤
   // 每源结果计数
   function srcCount(src) { return state.searchResults.filter((s) => s.source === src).length; }
@@ -2416,41 +2406,15 @@
       if (wrap) wrap.classList.add('hidden');
       return;
     }
-    const cap = (s) => s === 'qq' ? QQ_LIMIT_MAX : 100;
+    const cap = () => 100;
     const anyBelow = enabledSources().some((s) => srcCount(s) < cap(s));
     btn.classList.toggle('hidden', !anyBelow);
     if (wrap) wrap.classList.toggle('hidden', !anyBelow);
     btn.disabled = state.showMoreActive;
     btn.textContent = state.showMoreActive ? '正在加载更多…' : '显示更多';
   }
-  // QQ 直链缓存（省积分：直链 vkey 1h 过期；50 分钟内重复播放同一首直接用缓存，不重新计费解析）
-  // 内存 Map + localStorage 持久化（重启后仍可用；超过 TTL 的条目视为过期但可作兜底）
-  const QQ_URL_TTL = 50 * 60 * 1000;
-  const QQ_CACHE_KEY = 'mp_qq_url_cache';
-  let qqUrlCache = (() => { try { return JSON.parse(localStorage.getItem(QQ_CACHE_KEY) || '{}'); } catch { return {}; } })();
-  function qqCachePut(id, url) {
-    if (!id || !url) return;
-    qqUrlCache[id] = { url, ts: Date.now() };
-    try { localStorage.setItem(QQ_CACHE_KEY, JSON.stringify(qqUrlCache)); } catch { /* 存储满忽略 */ }
-  }
-  function qqCacheGet(id) {
-    const c = qqUrlCache[id];
-    return c && c.url ? c : null;
-  }
   // 从搜索源结果构建在线歌曲对象（统一 level 映射，item 10）
-  // QQ 源（官方）：ref 存 songmid（播放时 vkey 解析）
   function buildOnlineSong(source, it, quality) {
-    if (source === 'qq') {
-      // QQ 源=波点（酷我曲库）：播放时主进程解析（无损 flac/320k / 128k 兜底）
-      if (!it || !it.id) return null;
-      return {
-        id: 'online:qq:' + it.id,
-        online: true, source, ref: String(it.id),
-        title: it.name || '', artist: Array.isArray(it.artists) ? it.artists.join('、') : (it.artists || ''), album: it.album || '',
-        duration: it.duration || 0, picUrl: it.picUrl || '', level: 'lossless',
-        payplay: it.payplay || 0
-      };
-    }
     if (source === 'netease') {
       if (!it || !it.id) return null;
       return {
@@ -2490,12 +2454,7 @@
   }
   async function searchSource(source, query, limit, quality) {
     let r;
-    if (source === 'qq') {
-      // QQ 源=波点（酷我官方）：超时 10s
-      r = await withTimeout(window.api.bdSearch(query, limit).catch(() => null), 10000);
-    } else {
-      r = await withTimeout(window.api.leizSearch(source, query, limit).catch(() => null), 10000);
-    }
+    r = await withTimeout(window.api.leizSearch(source, query, limit).catch(() => null), 10000);
     // 若不是当前搜索/已被别的搜索替代则忽略
     if (state.onlineQuery !== query) return;
     state.srcDone[source] = true;
@@ -2579,7 +2538,7 @@
     updateShowMoreBtn();
     const quality = store.get('mp_online_quality', 'lossless');
     const q = state.onlineQuery;
-    const tasks = enabledSources().filter((s) => srcCount(s) < (s === 'qq' ? QQ_LIMIT_MAX : 100)).map((s) => searchSource(s, q, s === 'qq' ? QQ_LIMIT_MAX : 100, quality));
+    const tasks = enabledSources().filter((s) => srcCount(s) < 100).map((s) => searchSource(s, q, 100, quality));
     await Promise.all(tasks);
     state.showMoreActive = false;
     updateShowMoreBtn();
@@ -2851,7 +2810,7 @@
     $('#oplImportOverlay').classList.remove('hidden');
     $('#oplImportInput').value = '';
     $('#oplImportInput').focus();
-    const lb = $('#oplBodianList');
+    const lb = $('#oplImportHint');
     if (lb) lb.classList.add('hidden');
   }
   function closeOplImport() {
@@ -2945,11 +2904,10 @@
     for (const it of rawSongs) {
       if (!it) continue;
       if (source === 'qq') {
-        // QQ 歌单：主进程已按可播源保留/换源（kugou|netease|qq），payplay=1 的歌跳过（避免导入后播放失败）
-        if (it.payplay === 1) continue; // 两源都换不到 → 跳过（避免导入后播放失败）
-        const songSource = it.source || 'qq';
-        const songRef = songSource === 'qq' ? String(it.ref || '') : String(it.ref || '');
-        if (!songRef) continue;
+        // QQ 歌单：主进程已严格换源为酷狗/网易云，未匹配到的歌已跳过（避免导入后播放失败）
+        const songSource = it.source || '';
+        const songRef = String(it.ref || '');
+        if (!songSource || !songRef) continue;
         songs.push({
           id: 'online:' + songSource + ':' + songRef,
           online: true, source: songSource, ref: songRef,
@@ -2981,9 +2939,9 @@
       toast('歌单为空或解析失败');
       return;
     }
-    // 导入自动适配最佳：非原版标题跨源换原版（bilibili/qq 除外——qq 主进程自带换源）
+    // 导入自动适配最佳：非原版标题跨源换原版（bilibili 除外；qq 已在主进程严格换源为酷狗/网易云，一并参与适配）
     let adaptedReplaced = 0;
-    if (source === 'netease' || source === 'kugou') {
+    if (source === 'netease' || source === 'kugou' || source === 'qq') {
       const ad = await window.api.importAdapt(songs).catch(() => null);
       if (ad && Array.isArray(ad.songs)) { songs.length = 0; songs.push(...ad.songs); adaptedReplaced = ad.replaced || 0; }
     }
@@ -3517,6 +3475,15 @@
     return state.queue[state.queueIndex] || null;
   }
 
+  // v1.4.2 QQ 音源已移除：存量 qq/波点歌曲在播放前严格换源到酷狗/网易云（findAltSource 精确匹配），命中则原地改写 song
+  async function relegacySource(song) {
+    if (song.source !== 'qq' && song.source !== 'bodian') return true;
+    const alt = await findAltSource(song).catch(() => null);
+    if (!alt || !alt.ref || (alt.source !== 'kugou' && alt.source !== 'netease')) return false;
+    song.source = alt.source; song.ref = alt.ref; song.level = alt.level || song.level;
+    song.id = 'online:' + alt.source + ':' + alt.ref;
+    return true;
+  }
   // ---------- 播放核心（队列与视图解耦） ----------
   // 加载并播放单曲：play 被拒（数据未就绪）→ 等 canplay 自动补播，保证一次点击即响
   // autoPlay=false 时仅加载（恢复上次进度用），保持暂停
@@ -3528,12 +3495,10 @@
       audio.dataset.songId = song.id;
       (async () => {
         let r = null;
-        if (song.source === 'qq') {
-          // QQ 源=波点（酷我官方）：ref 存 rid；播放直链动态生成（无损 flac/320k / 128k 兜底）
-          const rr = await window.api.bdResolve(String(song.ref || ''), song.title || '', song.artist || '').catch(() => null);
-          if (rr && rr.ok && rr.data && rr.data.url) r = { ok: true, data: { url: rr.data.url, bitrate: rr.data.bitrate, format: rr.data.format } };
-          else if (rr && rr.reason) r = { ok: false, reason: rr.reason };
-          return _playResolved(r);
+        if (song.source === 'qq' || song.source === 'bodian') {
+          // v1.4.2 QQ 音源已移除：存量歌曲播放前严格换源（酷狗/网易云），命中则原地改写后按新源解析
+          const fixed = await relegacySource(song);
+          if (!fixed) return _playResolved({ ok: false, reason: '该歌曲来自已下线的 QQ 音源，未找到可用的换源版本' });
         }
         if (song.source === 'bilibili') {
           toast('正在解析 B 站视频…');
@@ -4233,20 +4198,14 @@
     $('#lyricBox').innerHTML = '';
     window.api.sendLyricLrc({ lines: [] });
     let r = null;
-    if (song.source === 'qq') {
-      // QQ 源=波点歌词（mlyric f=bodian，免登录）→ {original}；失败兜底网易云
-      const bl = await window.api.bdLyrics(String(song.ref || ''), song.title || '', song.artist || '').catch(() => null);
-      if (bl && bl.ok && bl.lyrics) {
-        r = { ok: true, data: { lyrics: bl.lyrics } };
-      } else {
-        // 兜底：网易云搜索取 id → 网易云歌词（与旧 mq:lyrics-fallback 同逻辑，改走 LeiZ 通道）
-        const q = ((song.title || '') + ' ' + String(song.artist || '').replace(/^未知$/, '')).trim();
-        const fs = await window.api.leizSearch('netease', q, 5).catch(() => null);
-        const first = fs && fs.ok && Array.isArray(fs.data) && fs.data[0] && fs.data[0].id ? fs.data[0] : null;
-        if (first) {
-          const ly = await window.api.leizLyrics('netease', String(first.id), 'lossless').catch(() => null);
-          r = ly && ly.ok && ly.data && ly.data.lyrics ? { ok: true, data: { lyrics: ly.data.lyrics } } : null;
-        }
+    if (song.source === 'qq' || song.source === 'bodian') {
+      // v1.4.2 QQ 音源已移除：存量歌曲歌词走网易云兜底（歌名+歌手搜网易云取 id 再拉歌词）
+      const q = ((song.title || '') + ' ' + String(song.artist || '').replace(/^未知$/, '')).trim();
+      const fs = await window.api.leizSearch('netease', q, 5).catch(() => null);
+      const first = fs && fs.ok && Array.isArray(fs.data) && fs.data[0] && fs.data[0].id ? fs.data[0] : null;
+      if (first) {
+        const ly = await window.api.leizLyrics('netease', String(first.id), 'lossless').catch(() => null);
+        r = ly && ly.ok && ly.data && ly.data.lyrics ? { ok: true, data: { lyrics: ly.data.lyrics } } : null;
       }
     } else {
       r = await window.api.leizLyrics(song.source, song.ref, song.level || 'lossless').catch(() => null);
@@ -5856,7 +5815,6 @@
         $('#settingsPanel').classList.remove('hidden');
         // 每次打开设置面板都同步外观/音质控件高亮与 localStorage（① 音质组初次失选 / ⑩ 选项不同步）
         syncAppearanceControls();
-        if (typeof refreshQQStatus === 'function') refreshQQStatus(); // QQ 登录态状态回显
         updateRecAccountBar(); // 同步设置-账号管理区登录状态（否则登录后打开仍显示旧状态）
         if (typeof loadLocalAccUI === 'function') loadLocalAccUI(); // 本地账号（名字/头像）回显
         let sec = 'general';
@@ -6908,7 +6866,7 @@
       const rowDl = mkRow('fpDl');
       [['all', '全部'], ['down', '已下载'], ['undown', '未下载']].forEach(([v, t]) => { const x = el('button', null, t); x.dataset.dl = v; rowDl.appendChild(x); });
       const rowSrc = mkRow('fpSrc');
-      [['all', '全部'], ['netease', '网易云'], ['kugou', '酷狗'], ['qq', 'QQ'], ['local', '曲库']].forEach(([v, t]) => { const x = el('button', null, t); x.dataset.src = v; rowSrc.appendChild(x); });
+      [['all', '全部'], ['netease', '网易云'], ['kugou', '酷狗'], ['local', '曲库']].forEach(([v, t]) => { const x = el('button', null, t); x.dataset.src = v; rowSrc.appendChild(x); });
       const rowQ = mkRow('fpQ');
       [['all', '全部'], ['standard', '标准'], ['high', '高品'], ['lossless', '无损']].forEach(([v, t]) => { const x = el('button', null, t); x.dataset.q = v; rowQ.appendChild(x); });
       const ok = el('button', 'fp-ok'); ok.id = 'fpOk'; ok.textContent = '确定';
@@ -7099,37 +7057,6 @@
     if (sn) sn.addEventListener('change', () => { const c = readSearchConf(); c.netease = Math.max(5, Math.min(100, Math.round(Number(sn.value) || 30))); sn.value = c.netease; writeSearchConf({ netease: c.netease }); toast(`每源条数已更新（网易云 ${c.netease}）`); });
     const sk = $('#stSearchKugou');
     if (sk) sk.addEventListener('change', () => { const c = readSearchConf(); c.kugou = Math.max(5, Math.min(100, Math.round(Number(sk.value) || 30))); sk.value = c.kugou; writeSearchConf({ kugou: c.kugou }); toast(`每源条数已更新（酷狗 ${c.kugou}）`); });
-    const sq = $('#stSearchQQ');
-    if (sq) sq.addEventListener('change', () => { const c = readSearchConf(); c.qq = Math.max(5, Math.min(QQ_LIMIT_MAX, Math.round(Number(sq.value) || QQ_LIMIT_DEFAULT))); sq.value = c.qq; writeSearchConf({ qq: c.qq }); toast(`QQ搜索条数已更新（${c.qq} 首，上限 ${QQ_LIMIT_MAX}）`); });
-    // QQ 登录态：粘贴 y.qq.com Cookie → 主进程校验并持久化；启动时回显状态
-    const stQQCookie = $('#stQQCookie');
-    const stQQCookieSave = $('#stQQCookieSave');
-    const stQQCookieStatus = $('#stQQCookieStatus');
-    const refreshQQStatus = async () => {
-      try {
-        const st = await window.api.qqStatus().catch(() => null);
-        if (st && st.loggedIn) {
-          stQQCookieStatus.textContent = '已配置（QQ ' + st.uin + '）';
-          stQQCookieStatus.classList.add('ok');
-        } else {
-          stQQCookieStatus.textContent = '未配置';
-          stQQCookieStatus.classList.remove('ok');
-        }
-      } catch { /* 忽略 */ }
-    };
-    if (stQQCookieSave) stQQCookieSave.addEventListener('click', async () => {
-      const c = (stQQCookie && stQQCookie.value || '').trim();
-      if (!c) { toast('请先粘贴 y.qq.com 的 Cookie'); return; }
-      const r = await window.api.qqSetCookie(c).catch(() => null);
-      if (r && r.ok) {
-        toast('QQ 登录态已保存（QQ ' + r.uin + '）');
-        if (stQQCookie) stQQCookie.value = '';
-        refreshQQStatus();
-      } else {
-        toast('保存失败：' + ((r && r.reason) || '网络异常'));
-      }
-    });
-    refreshQQStatus();
     // 音源启用开关：勾选/取消 → 更新 mp_search_srcs + 来源按钮显隐；至少保留一个启用
     const bindSrcToggle = (sel, src) => {
       const ck = $(sel);
@@ -7147,7 +7074,6 @@
     };
     bindSrcToggle('#stSrcNetease', 'netease');
     bindSrcToggle('#stSrcKugou', 'kugou');
-    bindSrcToggle('#stSrcQQ', 'qq'); // QQ 与其他音源一致，可开可关（至少保留一个音源的守卫在 bindSrcToggle 内）
     syncSrcButtons(); // 启动即按启用音源隐藏来源按钮（全部/曲库恒显）
     // 音质三档绑定（item 18）：在线播放 #stOnlineQuality / 下载 #stDlQuality3（各存 mp_online_quality / mp_dl_quality）
     const bindQuality3 = (sel, key, dft) => {

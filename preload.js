@@ -113,13 +113,7 @@ contextBridge.exposeInMainWorld('api', {
   leizSearch: (source, q, limit) => ipcRenderer.invoke('leiz:search', source, q, limit),
   leizResolve: (source, ref, level) => ipcRenderer.invoke('leiz:resolve', source, ref, level),
   leizLyrics: (source, ref, level) => ipcRenderer.invoke('leiz:lyrics', source, ref, level),
-  // QQ 音乐官方接口（2026-08 起弃用第三方 API；登录态 Cookie 只存主进程，渲染层只拿状态摘要）
-  // ⚠️ [1.4.2-DELETE] 以下 qq* 桥接随 QQ 音源一并移除
-  qqStatus: () => ipcRenderer.invoke('qq:status'),
-  qqSetCookie: (cookie) => ipcRenderer.invoke('qq:setCookie', cookie),
-  qqSearch: (query, limit) => ipcRenderer.invoke('qq:search', query, limit),
-  qqLyrics: (songmid) => ipcRenderer.invoke('qq:lyrics', songmid),
-  qqResolve: (songmid) => ipcRenderer.invoke('qq:resolve', songmid),
+  // QQ 歌单导入（官方 musicu.fcg 匿名拉取 + leiz 换源；v1.4.2 起 QQ 音源已移除，仅保留歌单导入）
   qqPlaylist: (disstid) => ipcRenderer.invoke('qq:playlist', disstid),
   // QQ 歌单导入进度（主进程逐批推送 done/total）；返回取消订阅函数
   onQqPlaylistProgress: (cb) => {
@@ -127,13 +121,6 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('qq-playlist-progress', h);
     return () => ipcRenderer.removeListener('qq-playlist-progress', h);
   },
-  // 波点音乐（酷我曲库）官方音源：搜索/播放/歌词全走酷我官方接口
-  bdStatus: () => ipcRenderer.invoke('bd:status'),
-  bdSearch: (query, limit) => ipcRenderer.invoke('bd:search', query, limit),
-  bdResolve: (musicId, title, artist) => ipcRenderer.invoke('bd:resolve', musicId, title, artist),
-  bdLyrics: (musicId, title, artist) => ipcRenderer.invoke('bd:lyrics', musicId, title, artist),
-  bdPlaylists: () => ipcRenderer.invoke('bd:playlists'),
-  bdPlaylistMusic: (pid) => ipcRenderer.invoke('bd:playlistMusic', pid),
   qqResolveLink: (url) => ipcRenderer.invoke('qq:resolveLink', url),
   accMyPlaylists: (platform) => ipcRenderer.invoke('acc:my-playlists', platform),
   netCaptchaSend: (phone) => ipcRenderer.invoke('acc:net-captcha-send', phone),

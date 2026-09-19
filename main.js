@@ -1451,16 +1451,28 @@ function main() {
     }
     async function dlResolveUrl(song) {
       // 返回 { url, ext }；质量按 song.level（netease: higher/lossless；kugou: 320/lossless），
-      // 未指定时默认 网易云 higher / 酷狗 128（保证 mp3）；QQ 源=波点酷我曲库（ref=rid，免费无损 flac/320k）
+      // 未指定时默认 网易云 higher / 酷狗 128（保证 mp3）
       const lv = (song && song.level) || '';
       let url, d;
-      if (song.source === 'qq') {
-        // QQ 源已切波点（酷我曲库）：ref 存 rid
-        const rid = String(song.ref || '');
-        if (!rid) throw new Error('QQ 歌曲缺少音乐 ID');
-        const rr = await bodianAcc.resolveUrl(rid, song.title || '', String(song.artist || '').split('、').filter(Boolean));
-        if (!rr.ok || !rr.url) throw new Error(rr.reason || '无法解析播放地址（QQ）');
-        return { url: rr.url, ext: (rr.format === 'flac') ? '.flac' : '.mp3' };
+      if (song.source === 'qq' || song.source === 'bodian') {
+        // v1.4.2 QQ 音源已移除：存量 qq/波点歌曲下载时严格换源（酷狗→网易云，歌名+歌手全等）后按新源解析
+        const artists = String(song.artist || '').split(/[、,，/]/).map((x) => x.trim()).filter(Boolean);
+        const bare = String(song.title || '').trim();
+        const qFull = (bare + ' ' + (artists[0] || '')).trim();
+        let hit = null;
+        if (qFull) {
+          try { const kg = await leizGet('/kugou/search?q=' + encodeURIComponent(qFull) + '&limit=8'); if (kg.ok && Array.isArray(kg.data)) hit = pickFallback(kg.data, song.title, artists, 'kugou', true); } catch { /* 忽略 */ }
+        }
+        if (!hit && qFull) {
+          try { const ne = await leizGet('/netease/search?q=' + encodeURIComponent(qFull) + '&limit=8'); if (ne.ok && Array.isArray(ne.data)) hit = pickFallback(ne.data, song.title, artists, 'netease', true); } catch { /* 忽略 */ }
+        }
+        if (!hit) throw new Error('该歌曲来自已下线的 QQ 音源，未找到可用的换源版本');
+        song.source = hit.source; song.ref = hit.ref;
+        // level 归一值 → 新源特有值（kugou: flac/hires；netease: exhigh/jymaster）
+        const srcLevelMap = hit.source === 'kugou'
+          ? { standard: '128', high: '320', lossless: 'flac', master: 'hires' }
+          : { standard: 'standard', high: 'exhigh', lossless: 'lossless', master: 'jymaster' };
+        song.level = srcLevelMap[lv] || (hit.source === 'kugou' ? '128' : 'higher');
       }
       const qs = song.source === 'kugou'
         ? '/kugou?hash=' + encodeURIComponent(song.ref) + (lv ? '&level=' + encodeURIComponent(lv) : '')
@@ -1535,16 +1547,12 @@ function main() {
       try {
         let r = null;
         const s = task.song || {};
-        if (s.source === 'qq') {
-          // QQ 源=波点歌词（mlyric f=bodian）优先；失败 → 网易云兜底（同歌名+歌手搜）
-          const bl = await bodianAcc.lyrics(String(s.ref || ''), s.title || '', s.artist || '');
-          if (bl.ok && bl.lyrics && bl.lyrics.original) r = { ok: true, data: { lyrics: bl.lyrics } };
-          if (!r) {
-            const q = ((s.title || '') + ' ' + String(s.artist || '').replace(/^未知$/, '')).trim();
-            const sr = await leizGet('/netease/search?q=' + encodeURIComponent(q) + '&limit=5');
-            const first = sr.ok && Array.isArray(sr.data) && sr.data[0] && sr.data[0].id ? sr.data[0] : null;
-            if (first) r = await leizGet('/netease?type=lyrics&id=' + encodeURIComponent(first.id) + '&level=lossless');
-          }
+        if (s.source === 'qq' || s.source === 'bodian') {
+          // v1.4.2 QQ 音源已移除：存量歌曲歌词走网易云兜底（歌名+歌手搜网易云取 id 再拉歌词）
+          const q = ((s.title || '') + ' ' + String(s.artist || '').replace(/^未知$/, '')).trim();
+          const sr = await leizGet('/netease/search?q=' + encodeURIComponent(q) + '&limit=5');
+          const first = sr.ok && Array.isArray(sr.data) && sr.data[0] && sr.data[0].id ? sr.data[0] : null;
+          if (first) r = await leizGet('/netease?type=lyrics&id=' + encodeURIComponent(first.id) + '&level=lossless');
         } else {
           r = await leizGet('/' + s.source + '?type=lyrics&' + (s.source === 'kugou' ? 'hash=' : 'id=') + encodeURIComponent(s.ref));
         }
@@ -2643,87 +2651,53 @@ function main() {
       const r = await adaptImportSongs({ songs });
       return { ok: true, songs: r.songs, replaced: r.adaptedReplaced, checked: r.adaptedChecked };
     });
-    // ---------- QQ 音乐官方接口（2026-08 起弃用第三方 API：官方搜索/歌单/歌词 + vkey 直链，只播免费歌）----------
-    // ⚠️ [1.4.2-DELETE] 本区 qq:* handlers + bodian 链路计划于 v1.4.2 移除（公告已预告）
-    // 登录态（y.qq.com Cookie）只存主进程 accounts.json；搜索/歌单/歌词匿名可用，播放直链需 Cookie
-    ipcMain.handle('qq:status', (e) => {
-      if (!isTrusted(e)) return { loggedIn: false, uin: '' };
-      const q = qqAcc.getState();
-      return { loggedIn: !!(q.cookie), uin: q.uin || qqAcc.parseUin(q.cookie) };
-    });
-    // 设置 QQ 登录态：粘贴 y.qq.com 的 Cookie（含 uin / qm_keyst 等票据）
-    ipcMain.handle('qq:setCookie', (e, cookie) => {
-      if (!isTrusted(e)) return { ok: false, reason: '拒绝访问' };
-      const c = String(cookie || '').trim();
-      if (!c) return { ok: false, reason: 'Cookie 为空' };
-      if (!/uin=/.test(c)) return { ok: false, reason: 'Cookie 缺少 uin，请复制 y.qq.com 的完整 Cookie' };
-      const uin = qqAcc.parseUin(c);
-      if (!uin) return { ok: false, reason: '无法从 Cookie 解析 QQ 号' };
-      qqAcc.setState({ cookie: c, uin });
-      saveAccounts();
-      return { ok: true, uin };
-    });
-    // 搜索：官方 search_for_qq_cp，只返回免费歌（payplay=0）
-    ipcMain.handle('qq:search', async (e, query, limit) => {
-      if (!isTrusted(e) || typeof query !== 'string' || !query.trim()) return { ok: false, reason: '参数错误' };
-      return qqAcc.search(query, limit);
-    });
-    // 歌词：官方 fcg_query_lyric_new（匿名可用）
-    ipcMain.handle('qq:lyrics', async (e, songmid) => {
-      if (!isTrusted(e) || typeof songmid !== 'string' || !songmid) return { ok: false, reason: '参数错误' };
-      return qqAcc.lyrics(songmid);
-    });
-    // 播放直链：vkey 需登录 Cookie；免费歌返回 purl，会员歌返回空（调用方换源）
-    ipcMain.handle('qq:resolve', async (e, songmid) => {
-      if (!isTrusted(e) || typeof songmid !== 'string' || !songmid) return { ok: false, reason: '参数错误' };
-      return qqAcc.resolveUrl(songmid);
-    });
-    // ---------- 波点音乐（酷我曲库）官方音源（2026-08 新增第四音源）----------
-    // 搜索/播放/歌词全走酷我官方接口；凭据（波点 uid/token）只存主进程，用于付费歌解锁尝试
-    ipcMain.handle('bd:status', (e) => {
-      if (!isTrusted(e)) return { loggedIn: false, uid: '' };
-      const b = bodianAcc.getState();
-      return { loggedIn: !!(b.uid && b.token), uid: b.uid || '' };
-    });
-    // 搜索：search.kuwo.cn（vipver=1），返回 rid/歌名/歌手/时长/锁定标记
-    ipcMain.handle('bd:search', async (e, query, limit) => {
-      if (!isTrusted(e) || typeof query !== 'string' || !query.trim()) return { ok: false, reason: '参数错误' };
-      return bodianAcc.search(query, limit);
-    });
-    // 播放直链：免费歌无损 flac/320k 免登录；付费歌先试解锁（有账号）→ 同歌可播 rid → 128k 兜底；
-    // 传入的 musicId 无效（旧 QQ 歌单 songmid 等）时按歌名+歌手搜波点匹配第一首再解析
-    ipcMain.handle('bd:resolve', async (e, musicId, title, artist) => {
-      if (!isTrusted(e) || typeof musicId !== 'string' || !musicId) return { ok: false, reason: '参数错误' };
-      const arts = typeof artist === 'string' && artist ? artist.split('、').filter(Boolean) : [];
-      let r = await bodianAcc.resolveUrl(musicId, String(title || ''), arts);
-      if (!r.ok && title) {
-        const q = (String(title) + ' ' + (arts[0] || '')).trim();
-        if (q) {
-          const s = await bodianAcc.search(q, 8);
-          if (s.ok && Array.isArray(s.data) && s.data.length) {
-            const it = s.data.find((x) => x && x.id && !x.payplay) || s.data[0];
-            r = await bodianAcc.resolveUrl(String(it.id), String(title), arts);
+    // ---------- QQ 歌单导入（官方 musicu.fcg 匿名拉取；v1.4.2 起 QQ 音源已移除，拉到的曲目走 leiz 严格换源补齐酷狗/网易云版本）----------
+    // QQ 歌单导入：官方接口匿名拉全量 → 10 路并发逐首 leiz 严格换源（酷狗→网易云，歌名+歌手全等才换，宁缺毋滥）；未匹配到的歌跳过（避免导入后播放失败）
+    ipcMain.handle('qq:playlist', async (e, disstid) => {
+      if (!isTrusted(e) || typeof disstid !== 'string' || !disstid) return { ok: false, reason: '参数错误' };
+      const pl = await qqPlaylist.playlistAll(disstid);
+      if (!pl.ok) return { ok: false, reason: pl.reason || '歌单获取失败' };
+      const out = new Array(pl.songs.length); // 预分配保序（并发 worker 按索引写入）
+      let replaced = 0, failed = 0, kept = 0;
+      const CONCURRENCY = 10;
+      const resolveOne = async (s) => {
+        const bare = String(s.name || '').trim();
+        const firstArtist = Array.isArray(s.artists) ? (s.artists[0] || '') : '';
+        const qFull = (bare + ' ' + firstArtist).trim();
+        let hit = null;
+        if (qFull) {
+          try { const kg = await leizGet('/kugou/search?q=' + encodeURIComponent(qFull) + '&limit=8'); if (kg.ok && Array.isArray(kg.data)) hit = pickFallback(kg.data, s.name, s.artists, 'kugou', true); } catch { /* 单歌失败不拖垮整体 */ }
+        }
+        if (!hit && qFull) {
+          try { const ne = await leizGet('/netease/search?q=' + encodeURIComponent(qFull) + '&limit=8'); if (ne.ok && Array.isArray(ne.data)) hit = pickFallback(ne.data, s.name, s.artists, 'netease', true); } catch { /* 忽略 */ }
+        }
+        return { hit };
+      };
+      let idx = 0;
+      const win = BrowserWindow.fromWebContents(e.sender);
+      const pushProgress = (done, total) => {
+        try { if (win && !win.isDestroyed()) win.webContents.send('qq-playlist-progress', { done, total }); } catch { /* 窗口已关忽略 */ }
+      };
+      let doneCount = 0;
+      const worker = async () => {
+        while (idx < pl.songs.length) {
+          const i = idx++;
+          const { hit } = await resolveOne(pl.songs[i]);
+          doneCount++;
+          if (doneCount % 25 === 0 || doneCount === pl.songs.length) pushProgress(doneCount, pl.songs.length);
+          if (hit) {
+            replaced++; // 全部为换源命中（酷狗/网易云）
+            out[i] = { source: hit.source, ref: hit.ref, title: hit.title, artist: hit.artist, album: hit.album, duration: hit.duration, picUrl: hit.picUrl || pl.songs[i].picUrl || '' };
+          } else {
+            failed++;
           }
         }
-      }
-      if (r.ok) return { ok: true, data: { url: r.url, bitrate: r.bitrate, duration: r.duration, size: r.size, format: r.format } };
-      return { ok: false, reason: r.reason };
+      };
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pl.songs.length) }, worker));
+      const flat = out.filter(Boolean);
+      return { ok: true, data: { name: pl.name || 'QQ 歌单', picUrl: pl.picUrl, desc: pl.desc || '', songs: flat, total: pl.songs.length }, replaced, failed, kept };
     });
-    // 歌词：mlyric f=bodian（免登录）
-    ipcMain.handle('bd:lyrics', async (e, musicId, title, artist) => {
-      if (!isTrusted(e) || typeof musicId !== 'string' || !musicId) return { ok: false, reason: '参数错误' };
-      return bodianAcc.lyrics(musicId, String(title || ''), String(artist || ''));
-    });
-    // 波点账号歌单（QQ 绑定同步的原曲歌单）
-    ipcMain.handle('bd:playlists', async (e) => {
-      if (!isTrusted(e)) return { ok: false, reason: '权限不足' };
-      return bodianAcc.userPlaylists();
-    });
-    // 波点歌单歌曲（source=5 全量）
-    ipcMain.handle('bd:playlistMusic', async (e, pid) => {
-      if (!isTrusted(e) || typeof pid !== 'string' || !pid) return { ok: false, reason: '参数错误' };
-      return bodianAcc.playlistMusic(pid);
-    });
+
     // 解析 QQ 歌单短链（c6.y.qq.com/base/fcgi-bin/u?__=xxx 跳转链）→ 最终 URL
     ipcMain.handle('qq:resolveLink', async (e, url) => {
       if (!isTrusted(e) || typeof url !== 'string' || !/^https?:\/\//.test(url)) return { ok: false, reason: '参数错误' };
@@ -2752,122 +2726,13 @@ function main() {
       if (!resolved) return { ok: false, reason: '链接解析失败' };
       return { ok: true, url: resolved };
     });
-    // QQ 歌单导入（原逻辑保留为后备；渲染层优先走波点绑定歌单）
-    ipcMain.handle('qq:playlist', async (e, disstid) => {
-      if (!isTrusted(e) || typeof disstid !== 'string' || !disstid) return { ok: false, reason: '参数错误' };
-      const pl = await qqAcc.playlistAll(disstid);
-      if (!pl.ok) return { ok: false, reason: pl.reason || '歌单获取失败' };
-      const out = new Array(pl.songs.length); // 预分配保序（并发 worker 按索引写入）
-      let replaced = 0, failed = 0, kept = 0;
-      // 换源并发池：酷我(波点)→酷狗→网易云，命中即停；10 路并发（网络瓶颈，串行导入大歌单太慢）
-      const CONCURRENCY = 10;
-      const resolveOne = async (s) => {
-        const base = {
-          title: s.name, artist: Array.isArray(s.artists) ? s.artists.join('、') : '', album: s.album,
-          duration: s.duration, picUrl: s.picUrl, qqMid: s.id
-        };
-        // 全部歌都经酷我(波点)/酷狗/网易云换源：QQ 源已切波点（ref=酷我 rid 才能播）
-        const bare = String(s.name || '').trim();
-        const firstArtist = Array.isArray(s.artists) ? (s.artists[0] || '') : '';
-        const qFull = (bare + ' ' + firstArtist).trim();
-        let hit = null;
-        // 波点优先：「歌名+歌手」先搜（精确命中目标版本，避免纯歌名撞热门翻唱/他人版本），
-        // miss 再纯歌名兜底（歌名强匹配保底）；命中即停（减少走酷狗/网易云 = 更快）
-        if (bare || qFull) {
-          for (const qq of [qFull, bare].filter(Boolean)) {
-            try {
-              const bd = await bodianAcc.search(qq, 20);
-              if (bd.ok && Array.isArray(bd.data)) hit = pickFallback(bd.data, s.name, s.artists, 'bodian');
-            } catch { /* 单歌失败不拖垮整体 */ }
-            if (hit) break;
-          }
-        }
-        // 波点命中但仅付费 128k（payplay 锁定）+ 「导入自动换源」开关 → 严格换源找其他平台高音质版本；
-        // 严格匹配（歌名+歌手完全相等）无结果则保持波点 128k，宁缺毋滥
-        if (hit && hit.source === 'qq' && hit.payplay && config.autoSrcUpgrade) {
-          const keep = hit;
-          hit = null;
-          if (qFull) {
-            try {
-              const kg = await leizGet('/kugou/search?q=' + encodeURIComponent(qFull) + '&limit=8');
-              if (kg.ok && Array.isArray(kg.data)) hit = pickFallback(kg.data, s.name, s.artists, 'kugou', true);
-            } catch { /* 忽略 */ }
-          }
-          if (!hit && qFull) {
-            try {
-              const ne = await leizGet('/netease/search?q=' + encodeURIComponent(qFull) + '&limit=8');
-              if (ne.ok && Array.isArray(ne.data)) hit = pickFallback(ne.data, s.name, s.artists, 'netease', true);
-            } catch { /* 忽略 */ }
-          }
-          if (!hit) hit = keep;
-        }
-        // 波点命中但版本不对（命中标题带 变速/DJ/翻唱 等标记而歌单原名单是干净名）→ 严格换源找原版；
-        // 找不到原版才保留波点命中（宁可用变速版也不给失败）
-        if (hit && hit.source === 'qq' && !(hit.payplay && config.autoSrcUpgrade) && isNonOrigTitle(String(hit.title || '') + ' ' + String(hit.artist || '')) && !isNonOrigTitle(String(s.name || ''))) {
-          let orig = null;
-          if (qFull) {
-            try {
-              const kg = await leizGet('/kugou/search?q=' + encodeURIComponent(qFull) + '&limit=8');
-              if (kg.ok && Array.isArray(kg.data)) orig = pickFallback(kg.data, s.name, s.artists, 'kugou', true);
-            } catch { /* 忽略 */ }
-          }
-          if (!orig && qFull) {
-            try {
-              const ne = await leizGet('/netease/search?q=' + encodeURIComponent(qFull) + '&limit=8');
-              if (ne.ok && Array.isArray(ne.data)) orig = pickFallback(ne.data, s.name, s.artists, 'netease', true);
-            } catch { /* 忽略 */ }
-          }
-          if (orig) { hit = orig; }
-        }
-        // 波点 miss → 严格换源（酷狗/网易云，歌名+歌手严格相等才换，避免换错版本）
-        if (!hit && qFull) {
-          try {
-            const kg = await leizGet('/kugou/search?q=' + encodeURIComponent(qFull) + '&limit=8');
-            if (kg.ok && Array.isArray(kg.data)) hit = pickFallback(kg.data, s.name, s.artists, 'kugou', true);
-          } catch { /* 忽略 */ }
-        }
-        if (!hit && qFull) {
-          try {
-            const ne = await leizGet('/netease/search?q=' + encodeURIComponent(qFull) + '&limit=8');
-            if (ne.ok && Array.isArray(ne.data)) hit = pickFallback(ne.data, s.name, s.artists, 'netease', true);
-          } catch { /* 忽略 */ }
-        }
-        return { base, hit };
-      };
-      let idx = 0;
-      const win = BrowserWindow.fromWebContents(e.sender);
-      const pushProgress = (done, total) => {
-        try { if (win && !win.isDestroyed()) win.webContents.send('qq-playlist-progress', { done, total }); } catch { /* 窗口已关忽略 */ }
-      };
-      let doneCount = 0;
-      const worker = async () => {
-        while (idx < pl.songs.length) {
-          const i = idx++;
-          const { base, hit } = await resolveOne(pl.songs[i]);
-          doneCount++;
-          if (doneCount % 25 === 0 || doneCount === pl.songs.length) pushProgress(doneCount, pl.songs.length);
-          if (hit) {
-            if (hit.source === 'qq') replaced++; // 酷我命中 → 显示为 QQ 源（播放走波点）
-            else kept++;
-            // 封面优先保留 QQ 原曲封面（gtimg CDN 稳定）；换源封面(kuwo 等)仅作兜底——实测 kuwo albumcover 常 404
-            out[i] = Object.assign({ source: hit.source, ref: hit.ref, qqMid: pl.songs[i].id }, base, { title: hit.title, artist: hit.artist, album: hit.album, duration: hit.duration, picUrl: base.picUrl || hit.picUrl });
-          } else {
-            failed++;
-            out[i] = Object.assign({ source: 'qq', ref: pl.songs[i].id, payplay: pl.songs[i].payplay ? 1 : 0 }, base);
-          }
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pl.songs.length) }, worker));
-      const flat = out.filter(Boolean);
-      return { ok: true, data: { name: pl.name || 'QQ 歌单', picUrl: pl.picUrl, desc: pl.desc || '', songs: flat, total: pl.songs.length }, replaced, failed, kept };
-    });
+
     // 会员歌换源匹配：同歌名同歌手（宽松：小写去空格比较歌名；歌手任一匹配）
     // strict=true（换到酷狗/网易云等外部源）：歌手名与歌曲名须严格相等，否则宁愿保持原源 128k（避免换错版本）
     function pickFallback(list, qqTitle, qqArtists, source, strict) {
       const norm = (t) => String(t || '').trim().toLowerCase().replace(/\s+/g, '');
       const want = norm(qqTitle);
       const artists = (Array.isArray(qqArtists) ? qqArtists : []).map(norm).filter(Boolean);
-      const mkb = (it) => ({ source: 'qq', ref: String(it.id), title: it.name || it.title, artist: Array.isArray(it.artists) ? it.artists.join('、') : String(it.artists || ''), album: it.album || '', duration: it.duration || 0, picUrl: it.picUrl || '', payplay: it.payplay ? 1 : 0 });
       const mkk = (it) => ({ source: 'kugou', ref: String(it.hash), title: it.name || it.title, artist: String(it.artists || ''), album: it.album || '', duration: it.duration || 0, picUrl: it.picUrl || '' });
       const mkn = (it) => ({ source: 'netease', ref: String(it.id), title: it.name || it.title, artist: String(it.artists || ''), album: it.album || '', duration: it.duration || 0, picUrl: it.picUrl || '' });
       // 歌手验证：pass1 歌名≥1分+歌手匹配；pass2 歌名≥1分不验歌手（保底同歌名任意版本）；
@@ -2887,7 +2752,6 @@ function main() {
       const ranked = list.map((it) => ({ it, s: score(it) })).filter((x) => x.s >= 0).sort((a, b) => b.s - a.s);
       const mk = (it) => {
         // 波点：rid 即保留（含 PAY 锁定歌——播放时 resolveUrl 自动走 antiserver 128k 兜底，保证能播且保持 QQ 源）
-        if (source === 'bodian' && it.id) return mkb(it);
         if (source === 'kugou' && it.hash) return mkk(it);
         if (source === 'netease' && it.id) return mkn(it);
         return null;
@@ -2921,10 +2785,7 @@ function main() {
     // 模块：core/netease.js（weapi/eapi 扫码+密码登录、推荐、歌单全量）、core/kugou.js（扫码登录、推荐歌单）
     const neteaseAcc = require('./core/netease');
     const kugouAcc = require('./core/kugou');
-    const qqAcc = require('./core/qq');
-    const bodianAcc = require('./core/bodian');
-    // 波点内置账号（播放器共用同一波点身份解锁付费歌；uid/token 过期时播放自动回落 128k 完整版兜底）
-    const BUILTIN_BODIAN = { uid: '74016982', token: '25442042d67a4e01b2b8fa36ec1964f1', devId: '64927edd3d271abc292a31f853e105b1' };
+    const qqPlaylist = require('./core/qqplaylist'); // v1.4.2：仅存 QQ 歌单匿名拉取，QQ 音源播放/搜索已移除
     // 凭据持久化（主进程私有：cookie/token 不出主进程，渲染层只拿登录态摘要；D 盘数据根）
     // v2 格式：safeStorage 加密（DPAPI，绑定当前 Windows 用户）；v1 明文自动迁移
     const ACC_FILE = () => accScopedPath('accounts.json');
@@ -2946,17 +2807,12 @@ function main() {
         if (acc && typeof acc === 'object') {
           neteaseAcc.setState(acc.netease || { cookie: '', csrf: '', account: null });
           kugouAcc.setState(acc.kugou || { token: '', userid: '', mid: '', dfid: '', vipType: '', vipToken: '', dev: '' });
-          qqAcc.setState({ cookie: (acc.qq && acc.qq.cookie) || '', uin: (acc.qq && acc.qq.uin) || qqAcc.parseUin(acc.qq && acc.qq.cookie) });
-          // 波点：无自配凭据时用内置账号（付费歌解锁尝试；过期自动回落 128k 兜底）
-          bodianAcc.setState((acc.bodian && acc.bodian.uid) ? acc.bodian : BUILTIN_BODIAN);
-        } else {
-          bodianAcc.setState(BUILTIN_BODIAN);
         }
       } catch { /* 损坏忽略，按匿名处理 */ }
     }
     function saveAccounts() {
       try {
-        const data = { netease: neteaseAcc.getState(), kugou: kugouAcc.getState(), qq: qqAcc.getState(), bodian: bodianAcc.getState() };
+        const data = { netease: neteaseAcc.getState(), kugou: kugouAcc.getState() };
         fs.mkdirSync(store.getDataDir(), { recursive: true });
         if (accEncryptAvailable()) {
           const enc = safeStorage.encryptString(JSON.stringify(data)).toString('base64');
@@ -2970,13 +2826,9 @@ function main() {
     function accStatus() {
       const n = neteaseAcc.getState();
       const k = kugouAcc.getState();
-      const q = qqAcc.getState();
-      const b = bodianAcc.getState();
       return {
         netease: { loggedIn: !!(n.cookie && /MUSIC_U=/.test(n.cookie)), nickname: n.account || '' },
-        kugou: { loggedIn: !!(k.token && k.userid), nickname: k.account || '' },
-        qq: { loggedIn: !!(q.cookie), uin: q.uin || qqAcc.parseUin(q.cookie), nickname: '' },
-        bodian: { loggedIn: !!(b.uid && b.token), nickname: b.uid ? 'QQ 内置' : '' }
+        kugou: { loggedIn: !!(k.token && k.userid), nickname: k.account || '' }
       };
     }
     // 网易云扫码：换取新二维码（返回 unikey + qrurl 供二维码渲染）

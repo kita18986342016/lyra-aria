@@ -128,8 +128,7 @@
             <div class="st-group">音源</div>
             <div class="st-row st-row-src"><span class="st-label">网易云</span><label class="st-switch"><input type="checkbox" id="stSrcNetease" checked><span class="st-slider"></span></label><input type="number" id="stSearchNetease" min="5" max="100" step="5" value="10" title="网易云搜索条数"></div>
             <div class="st-row st-row-src"><span class="st-label">酷狗</span><label class="st-switch"><input type="checkbox" id="stSrcKugou" checked><span class="st-slider"></span></label><input type="number" id="stSearchKugou" min="5" max="100" step="5" value="10" title="酷狗搜索条数"></div>
-            <div class="st-row st-row-src"><span class="st-label">QQ</span><label class="st-switch"><input type="checkbox" id="stSrcQQ" checked><span class="st-slider"></span></label><input type="number" id="stSearchQQ" min="5" max="100" step="5" value="10" title="QQ搜索条数（上限 100）"></div>
-            <div class="st-row st-sub"><span class="st-tip">勾选启用音源参与在线搜索；每源条数 5-100 首。</span></div>
+                        <div class="st-row st-sub"><span class="st-tip">勾选启用音源参与在线搜索；每源条数 5-100 首。</span></div>
             <div class="st-group">音质</div>
             <div class="st-row"><span class="st-label">在线播放音质</span><div class="dd" id="stOnlineQuality"></div></div>
             <div class="st-row st-sub"><span class="st-tip">在线试听与播放时请求的音质档位（视歌曲本身是否提供而定）</span></div>
@@ -348,7 +347,7 @@
       <div class="opl-body">
         <div class="opl-tip">支持 网易云 / 酷狗 / QQ / B站 歌单链接或 ID 导入：</div>
         <input id="oplImportInput" type="text" placeholder="粘贴歌单链接、分享短链或 ID…" spellcheck="false">
-        <div id="oplBodianList" class="hidden"></div>
+        <div id="oplImportHint" class="hidden"></div>
       </div>
       <div class="opl-foot">
         <button id="oplImportCancel" class="tag-btn">取消</button>
@@ -483,12 +482,12 @@
         </div>
         <div id="viewTools">
           <div id="plSearchWrap" class="hidden"><input id="plSearchInput" type="text" placeholder="歌单内搜索…" autocomplete="off"></div>
-          <div id="srcSplit" class="hidden"><button data-src="all" class="active">全部</button><button data-src="netease">网易云</button><button data-src="kugou">酷狗</button><button data-src="qq">QQ</button></div>
+          <div id="srcSplit" class="hidden"><button data-src="all" class="active">全部</button><button data-src="netease">网易云</button><button data-src="kugou">酷狗</button></div>
           <div id="filterWrap">
             <button id="filterBtn" class="filter-btn" title="筛选（下载状态 / 来源 / 音质）"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54z"/></svg></button>
             <div id="filterPopup">
               <div class="fp-group"><span class="fp-label">下载</span><div class="fp-row" id="fpDl"><button data-dl="all" class="active">全部</button><button data-dl="down">已下载</button><button data-dl="undown">未下载</button></div></div>
-              <div class="fp-group"><span class="fp-label">来源</span><div class="fp-row" id="fpSrc"><button data-src="all" class="active">全部</button><button data-src="netease">网易云</button><button data-src="kugou">酷狗</button><button data-src="qq">QQ</button><button data-src="local">曲库</button></div></div>
+              <div class="fp-group"><span class="fp-label">来源</span><div class="fp-row" id="fpSrc"><button data-src="all" class="active">全部</button><button data-src="netease">网易云</button><button data-src="kugou">酷狗</button><button data-src="local">曲库</button></div></div>
               <div class="fp-group" id="fpQGroup"><span class="fp-label">音质</span><div class="fp-row" id="fpQ"><button data-q="all" class="active">全部</button><button data-q="standard">标准</button><button data-q="high">高品</button><button data-q="lossless">无损</button></div></div>
               <div class="fp-foot"><button id="fpOk">确定</button></div>
             </div>
