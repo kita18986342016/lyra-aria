@@ -10,7 +10,11 @@
 // ---------- ① 环境补齐（在 MR 模块之前求值；原样照抄，勿改实现） ----------
 var SKULL_PRESET_INDEX = 7;            // MR 00-core-stores.js:104；保持 fx.preset!==7 使骷髅分支恒假
 var skullParticleGroup = null;         // MR 14:2087 守卫引用（骷髅不在移植范围）
-var shelfManager = null;               // MR 14:2100 守卫引用（3D 歌单架不移植）
+var shelfManager = null;               // bundle 顶层 `shelfManager = makeShelfManager()` 载入时接管（04-shelf/01）
+// 3D 歌单架全局契约：userPlaylists / playQueue / currentIdx / myPodcastCollections / playlistCoverCache
+// 均由 bundle 00-core-stores 顶层声明（var），适配层的 mrShelfSync* 只写这些全局，不再重复 var（避免二次赋值清空）。
+// 适配层为 shelf 补的"函数"全局（songCoverSrc / hasAnyPlatformLogin / loadPlaylistIntoQueueById 等，
+// 原属未 vendor 的 MR 播放/歌词模块）见文件末「④ 3D 歌单架数据桥」段。
 var skullBeatFlash = 0;                // MR 14:2064 骷髅预设专用，恒 0
 
 var shelfDetailOpen = false;           // MR 14:2089 守卫引用
@@ -319,6 +323,7 @@ function mrFrame(now) {
   mrAnalyzeFrame(now, dt);
   // MR 全局契约：playing 标志（00-core-stores 声明），tickLyricsParticles 依赖
   playing = !!(MrStage.audioEl && !MrStage.audioEl.paused && !MrStage.audioEl.ended);
+  mrShelfFrame(dt, now); // 3D 歌单架每帧驱动（update 内含节流 rebuild）+ 队列/歌单镜像刷新
   // 以下照搬 11-main-loop.js:575-600 的视觉每帧段
   updateParticlePointerFrame();
   uniforms.uVinylSpin.value = (uniforms.uVinylSpin.value + dt * (0.40 + smoothBass * 0.09) * (isFinite(fx.speed) ? Math.max(0.05, fx.speed) : 1)) % (Math.PI * 2);
@@ -486,6 +491,8 @@ async function mrMount(host) {
   }
   mrEnsureAudioGraph(); // 双分析器（fft2048, smoothing 0.58/0.10）→ bass/beat 驱动星河与溢光
   mrResize();
+  mrShelfActivate(); // 3D 歌单架：喂数据 + 激活（幂等；MR 里由 10-shell 启动链负责，此处适配层接管）
+  mrShelfBindPointer(); // 补 MR 未 vendor 的 hover 揭示接线（点击/滚轮/键盘由 vendored 05/06 自带）
   if (!MrStage.raf) { MrStage.prevTime = performance.now(); MrStage.raf = requestAnimationFrame(mrFrame); }
   MrStage.mounted = true;
 }
@@ -502,6 +509,215 @@ function mrUnmount() {
       if (stageLyrics.starRiver && typeof disposeLyricStarRiver === 'function') disposeLyricStarRiver();
     }
   } catch { /* 卸载幂等 */ }
+}
+
+// ---------- ④ 3D 歌单架数据桥（深空折韵：把 MR shelf 的消费契约接到本播放器 __mp/state） ----------
+// MR shelf（04-shelf）原样 vendor 进 bundle，但它消费的一批"数据/播放"全局函数属于未移植的
+// MR 播放/歌词模块（05-playback、06-lyrics、08-account 等）。这些函数在本 bundle 内只有调用、没有定义，
+// 点击卡片/打开歌单/播放会在 shelf 里 ReferenceError。此段按 MR 的函数签名与返回结构，把它们接到
+// 深空折韵的真实数据源（window.__mp.state：playlists 本地歌单 / onlinePlaylists 导入在线歌单 / songs 曲库）。
+// 条目内部 id 约定：'pl:'+本地歌单id / 'opl:'+在线歌单id；provider 统一 'mineradio'
+// （→ shelf 生成 playlistId='mineradio:pl:xxx'，open()/播放回流到 builtInPlaylistTracksPage / loadPlaylistIntoQueueById）。
+
+function mrShelfState() {
+  var mp = window.__mp;
+  return (mp && mp.state) || null;
+}
+// 按条目内部 id（'pl:'/'opl:'）取回 DSH 真实歌曲对象数组（顺序稳定，playList/startSong 依赖原始字段）
+function mrShelfSongs(entryId) {
+  var s = mrShelfState();
+  if (!s) return [];
+  entryId = String(entryId || '');
+  if (entryId.indexOf('opl:') === 0) {
+    var ref = entryId.slice(4);
+    var op = (s.onlinePlaylists || []).find(function (p) { return String(p.id) === ref; });
+    return op ? (op.songs || []).filter(Boolean) : [];
+  }
+  if (entryId.indexOf('pl:') === 0) {
+    var lid = entryId.slice(3);
+    var lp = (s.playlists || []).find(function (p) { return String(p.id) === lid; });
+    if (!lp) return [];
+    return (lp.songIds || []).map(function (e) {
+      return typeof e === 'string' ? (s.songs || []).find(function (x) { return x.id === e; }) : e;
+    }).filter(Boolean);
+  }
+  return [];
+}
+// 歌曲对象 → shelf 展示用最小字段（name/artist/cover/id；本地歌封面异步取、此处留空由占位兜底）
+function mrShelfTrackView(song) {
+  return {
+    id: song.id,
+    name: song.title || song.name || '',
+    artist: song.artist || (song.artists && String(song.artists)) || '',
+    cover: song.picUrl || song.cover || '',
+  };
+}
+
+// shelf 每帧/节流消费：刷新 userPlaylists（bundle 顶层已声明的 var，此处只填内容不重复声明）
+function mrShelfRefreshPlaylists() {
+  var s = mrShelfState();
+  if (!s) return;
+  var list = [];
+  (s.playlists || []).forEach(function (pl) {
+    if (!pl || !pl.id) return;
+    var cnt = (pl.songIds || []).length;
+    if (!cnt) return;
+    var cover = pl.cover || '';
+    list.push({ id: 'pl:' + pl.id, name: pl.name || '歌单', cover: cover, trackCount: cnt, provider: 'mineradio', subscribed: false, shelfPane: 'mine' });
+  });
+  (s.onlinePlaylists || []).forEach(function (pl) {
+    if (!pl || pl.id == null) return;
+    var songs = (pl.songs || []).filter(Boolean);
+    if (!songs.length) return;
+    var cover = pl.cover || '';
+    if (!cover) { var firstCov = songs.find(function (x) { return x && x.picUrl; }); if (firstCov) cover = firstCov.picUrl; }
+    list.push({ id: 'opl:' + pl.id, name: pl.name || '在线歌单', cover: cover, trackCount: songs.length, provider: 'mineradio', subscribed: false, shelfPane: pl.fav ? 'fav' : 'mine' });
+  });
+  userPlaylists = list;
+  if (typeof playlistCatalogRevision !== 'undefined') playlistCatalogRevision += 1; // 触发 shelf pane 缓存失效
+}
+
+// shelf 激活：进入 3D 舞台时喂数据 + 打开歌单架（off→stage 兜底），挂载后调一次、之后定时刷新
+var mrShelfActivated = false;
+function mrShelfActivate() {
+  try {
+    mrShelfRefreshPlaylists();
+    if (typeof fx !== 'undefined' && fx && fx.shelf === 'off') fx.shelf = 'stage'; // 舞台默认露出歌单架（MR 出厂 side 需右缘悬停，沉浸式里不直观）
+    if (typeof shelfManager !== 'undefined' && shelfManager && typeof setShelfMode === 'function') {
+      setShelfMode((fx && fx.shelf) || 'stage', { user: false });
+      if (shelfManager.rebuild) shelfManager.rebuild(true);
+    }
+    mrShelfActivated = true;
+  } catch (e) {
+    console.warn('[mr-adapter] shelf activate failed:', e && e.message || e);
+  }
+}
+
+// ---- 以下为 bundle 内 shelf 调用、但原属未 vendor 模块、由适配层补齐的全局函数 ----
+
+function hasAnyPlatformLogin() { return true; } // DSH 无 MR 平台登录态；true 使 sig()/currentItems() 统一走歌单分支（播客集合恒空无副作用）
+function builtInPlaylistApiAvailable() { return !!(window.__mp && window.__mp.state); }
+
+function isTypingTarget(target) {
+  try {
+    if (!target) return false;
+    var t = String(target.tagName || '').toUpperCase();
+    return t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || target.isContentEditable === true;
+  } catch (_) { return false; }
+}
+
+function playShelfSelectTick() {} // MR 选中卡片音效（依赖其 UI sfx 音频图，未移植）——无操作，不影响交互
+
+// 歌词无词回退文本（MR 06-lyrics/00:362 原文照抄；lyricFallbackTextForSong/currentLyricSong 已在 bundle 内定义）
+function currentLyricFallbackText() {
+  return lyricFallbackTextForSong(currentLyricSong() || {});
+}
+
+function queueItemKey(song) {
+  if (!song) return '';
+  if (song.id != null && song.id !== '') return 'song:' + song.id;
+  return String(song.name || song.title || '') + '|' + String(song.artist || '');
+}
+
+// shelf 内部读封面（原属 05-playback/01-cover-custom-map.js）：本地歌无即时 URL，返回在线直链或空
+function songCoverSrc(song, size) {
+  if (!song) return '';
+  return String(song.cover || song.picUrl || song.customCover || '');
+}
+function hydrateCustomCover(song) { return song; } // 无自定义封面映射体系，原样返回
+
+// contentList 打开某歌单时拉首批曲目（bundle: 03-content-list-manager open()/loadMore）。
+// DSH 歌单曲目全量已在内存，一次给完、hasMore=false。
+async function builtInPlaylistTracksPage(id, options) {
+  var songs = mrShelfSongs(id);
+  var tracks = songs.map(mrShelfTrackView);
+  return {
+    ok: true,
+    playlist: { trackCount: tracks.length },
+    tracks: tracks,
+    total: tracks.length,
+    nextOffset: tracks.length,
+    hasMore: false,
+  };
+}
+
+// 卡片/行点击 → 播放。id 形如 'mineradio:pl:xxx' / 'mineradio:opl:xxx'。
+// 用 DSH 真实歌曲对象调 playList（保留 online/source/ref/path 等字段，播放链路完整），
+// 忽略 shelf 传来的 seedTracks（那是展示字段快照，缺播放所需字段）。
+async function loadPlaylistIntoQueueById(id, autoplay, title, opts) {
+  opts = opts || {};
+  var entryId = String(id || '');
+  if (entryId.indexOf('mineradio:') === 0) entryId = entryId.slice(10);
+  var mp = window.__mp;
+  if (!mp || typeof mp.playList !== 'function') { if (typeof showToast === 'function') showToast('播放内核未就绪'); return false; }
+  var s = mrShelfState();
+  if (!s) return false;
+  // row 播放：startIndex 索引在"可播放曲目"序列里；DSH 歌单曲目均可播放，直接用同一顺序的真实列表
+  var realSongs = mrShelfSongs(entryId);
+  if (!realSongs.length) { if (typeof showToast === 'function') showToast('歌单为空'); return false; }
+  var start = Number(opts.startIndex);
+  if (!Number.isFinite(start) || start < 0) start = 0;
+  start = Math.min(realSongs.length - 1, Math.round(start));
+  try {
+    await mp.playList(realSongs.slice(), start, 0, autoplay !== false, true);
+    if (typeof showToast === 'function') showToast('已在 3D 舞台播放：' + (title || '歌单'));
+    return true;
+  } catch (e) {
+    console.warn('[mr-adapter] loadPlaylistIntoQueueById failed:', e && e.message || e);
+    if (typeof showToast === 'function') showToast('歌单播放失败');
+    return false;
+  }
+}
+
+// shelf queue 分支/卡片 playQueue 动作：跳到当前队列某曲播放
+async function playQueueAt(idx) {
+  var mp = window.__mp;
+  var s = mrShelfState();
+  if (!mp || !s || typeof mp.playList !== 'function') return false;
+  var q = (s.queue || []).slice();
+  if (!q.length) return false;
+  var i = Number(idx);
+  if (!Number.isFinite(i) || i < 0) i = 0;
+  i = Math.min(q.length - 1, Math.round(i));
+  try { await mp.playList(q, i, 0, true, true); return true; } catch (e) { return false; }
+}
+
+// shelf 悬停揭示 + hover 高亮驱动（原 MR 在 10-shell/02 用 window.mousemove 接线，未 vendor）。
+// 点击/wheel/键盘监听 05-card-interactions/06-keyboard 已自带；此处仅补 hover 视觉。
+var mrShelfPointerBound = false;
+function mrShelfBindPointer() {
+  if (mrShelfPointerBound) return;
+  mrShelfPointerBound = true;
+  window.addEventListener('mousemove', function (e) {
+    if (!MrStage.mounted) return;
+    try {
+      if (typeof updateShelfHoverCueFromPointer === 'function') updateShelfHoverCueFromPointer(e);
+      if (typeof updateShelfCardHoverSelection === 'function') updateShelfCardHoverSelection(e);
+    } catch (_) { /* hover 视觉失败不影响点击 */ }
+  }, { passive: true });
+}
+
+// 每帧驱动 shelf（bundle 的 shelfManager.update 内含 0.8s 节流 rebuild + 二级内容框 update），
+// 并镜像播放队列到 playQueue/currentIdx（未 vendor 的 05-playback 原本喂这两个全局）。
+// 歌单增删低频：每 3s 刷一次 userPlaylists（新增/删除歌单会改签名触发 rebuild）。
+var mrShelfLastPlRefresh = 0;
+function mrShelfFrame(dt, now) {
+  try {
+    if (typeof shelfManager === 'undefined' || !shelfManager || !shelfManager.update) return;
+    var s = mrShelfState();
+    if (s) {
+      currentIdx = Number(s.queueIndex);
+      if (!Number.isFinite(currentIdx)) currentIdx = -1;
+      if (now - mrShelfLastPlRefresh > 3000) { // 歌单/队列镜像低频刷新（避免每帧 map 分配）
+        mrShelfLastPlRefresh = now;
+        mrShelfRefreshPlaylists();
+        playQueue = (s.queue || []).map(mrShelfTrackView); // 覆盖 bundle 顶层 var playQueue
+      }
+    }
+    shelfManager.update(dt);
+  } catch (e) {
+    if (!MrStage._shelfWarned) { MrStage._shelfWarned = true; console.warn('[mr-adapter] shelf frame:', e && e.message || e); }
+  }
 }
 
 // 兼容一期接口名：app.js 的 syncStage3d 只用 mount/unmount/active/failed/resetFailed/markFailed/resize
