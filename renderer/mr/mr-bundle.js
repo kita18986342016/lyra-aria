@@ -865,7 +865,7 @@ var fxDefaults = {
   coverResolution: 1.55,
   point: 1.0, speed: 1.0, twist: 0.0, color: 1.10, scatter: 0.0, bgFade: 0.20,
   bloomStrength: 0.62,
-  lyricGlowStrength: 0.28,
+  lyricGlowStrength: 0.8,  // 2026-09-20 用户拍板：歌词溢光默认 0.28→0.8（MR 出厂值偏淡，用户偏好浓光晕；仅改默认值不动逻辑）
   lyricBackgroundAdapt: 0.72,
   lyricScale: 1.0,
   lyricOffsetX: 0,
@@ -21781,7 +21781,7 @@ function setRange(id, value) {
 function updateDevelopmentFxControls() {
   [
     ['desktopLyrics', 't-desktopLyrics', '全屏幕置顶歌词'],
-    ['desktopLyricsClickThrough', 't-desktopLyricsClickThrough', '锁定后防误触；鼠标移到桌面歌词上按中键可锁定/解锁'],
+    ['desktopLyricsClickThrough', 't-desktopLyricsClickThrough', '锁定后防误触；鼠标移到桌面歌词上，点击锁图标解锁（或 Ctrl+Alt+L）'],
     ['desktopLyricsCinema', 't-desktopLyricsCinema', '桌面歌词绑定鼓点电影震动，基础漂浮始终保留'],
     ['desktopLyricsHighlight', 't-desktopLyricsHighlight', '桌面歌词按播放进度高亮'],
     ['wallpaperMode', 't-wallpaperMode', '把完整 Mineradio 放到 Windows 桌面；右上控制器可显示、隐藏桌面图标；Esc 退出；重启默认关闭']

@@ -14,7 +14,7 @@ var fxDefaults = {
   coverResolution: 1.55,
   point: 1.0, speed: 1.0, twist: 0.0, color: 1.10, scatter: 0.0, bgFade: 0.20,
   bloomStrength: 0.62,
-  lyricGlowStrength: 0.28,
+  lyricGlowStrength: 0.8,  // 2026-09-20 用户拍板：歌词溢光默认 0.28→0.8（MR 出厂值偏淡，用户偏好浓光晕；仅改默认值不动逻辑）
   lyricBackgroundAdapt: 0.72,
   lyricScale: 1.0,
   lyricOffsetX: 0,

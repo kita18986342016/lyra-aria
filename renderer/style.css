@@ -4833,13 +4833,80 @@ html.control-glass-svg-ok .mini-queue-remove{
     outline-color: rgba(var(--fc-accent-rgb), .92)
   }}
 /* 覆盖层内定位适配：面板挂在 #stage3dOverlay 内，右侧滑出 */
-#btnStageFx { position: absolute; top: 18px; right: 68px; z-index: 3; border: 1px solid rgba(255,255,255,.18); background: rgba(10,16,28,.6); color: #dfe7f2; height: 34px; padding: 0 14px; border-radius: 17px; font-size: 12px; font-weight: 700; letter-spacing: .04em; cursor: pointer; backdrop-filter: blur(10px); }
-#btnStageFx:hover { background: rgba(255,255,255,.14); }
-#mrFxDrawer { position: absolute; top: 0; right: 0; bottom: 0; width: 360px; overflow-y: auto; z-index: 2; background: rgba(6,10,18,.82); backdrop-filter: blur(14px); border-left: 1px solid rgba(255,255,255,.08); }
-#mrFxDrawer.hidden { display: none; }
-#mrFxDrawer #fx-panel { position: static; width: 100%; max-height: none; opacity: 1; transform: none; pointer-events: auto; right: auto; transition: none; }
-/* 取色弹窗（ColorLab/Cover Picker）暂不开放：默认隐藏，其绑定仍工作 */
-#mrFxDrawer .cover-color-pop, #mrFxDrawer .color-lab-pop, #mrFxDrawer .cover-color-loupe { position: fixed; left: -9999px; top: -9999px; opacity: 0; pointer-events: none; }
+/* ===== 视觉控制台 1:1 复刻 MR（2026-09-20 用户拍板）：右下 54px fab 圆钮 + 悬停 peek 浮动圆角面板；
+   旧 #mrFxDrawer/#btnStageFx 抽屉方案废弃。fab/hide-btn 几何 = MR index.css:11536-11572/11573-11604 原样。===== */
+#fx-fab {
+  position: fixed;
+  z-index: 19;
+  right: 24px;
+  bottom: 24px;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 245, 212, .30);
+  background: linear-gradient(145deg, rgba(255, 255, 255, .16), rgba(255, 255, 255, .055) 48%, rgba(0, 245, 212, .055));
+  color: rgba(232, 236, 239, .88);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(26px) saturate(1.34);
+  -webkit-backdrop-filter: blur(26px) saturate(1.34);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .34), 0 0 24px rgba(0, 245, 212, .07), inset 0 1px 0 rgba(255, 255, 255, .18);
+  transition: bottom .38s cubic-bezier(.16, 1, .3, 1), transform .28s cubic-bezier(.16, 1, .3, 1), background .28s, border-color .28s, color .28s, box-shadow .28s
+}
+#fx-fab:hover,
+#fx-fab.active {
+  transform: translateY(-2px) scale(1.04);
+  background: rgba(0, 245, 212, .075);
+  border-color: rgba(0, 245, 212, .50);
+  color: #fff
+}
+#fx-fab svg { transition: transform .38s cubic-bezier(.16, 1, .3, 1) }
+#fx-fab.active svg { transform: rotate(90deg) }
+#fx-fab-hide-btn {
+  position: fixed;
+  z-index: 22;
+  right: 84px;
+  bottom: 37px;
+  width: 18px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  background: rgba(255, 255, 255, .035);
+  color: rgba(255, 255, 255, .34);
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0;
+  transform: translateX(6px) scale(.92);
+  transition: right .28s cubic-bezier(.16, 1, .3, 1), bottom .38s cubic-bezier(.16, 1, .3, 1), opacity .18s, transform .18s, background .18s, color .18s, border-color .18s;
+  cursor: pointer
+}
+#fx-fab:hover + #fx-fab-hide-btn,
+#fx-fab-hide-btn:hover,
+#fx-fab-hide-btn.on {
+  opacity: 1;
+  transform: translateX(0) scale(1)
+}
+#fx-fab-hide-btn:hover,
+#fx-fab-hide-btn.on {
+  border-color: rgba(var(--fc-accent-rgb), .34);
+  background: rgba(var(--fc-accent-rgb), .10);
+  color: #fff
+}
+/* fab/panel/hide-btn 的 z（19/18/20）保持 MR 原样；stage3dOverlay 是层叠上下文，内部相对 z 生效，
+   panel 18 > stage3dHost canvas（默认 0），3D 模式下控制台正常浮在画面上。 */
+/* ⑧ 修复：舞台内打开的模态（WE 识别导入/自定义歌词/音频路由）此前 z=50 被舞台 overlay z=220 整体压住
+   ——点了"识别/导入"模态其实开了但看不见。抬到 overlay 之上、设置面板(400)之下。 */
+#wallpaper-engine-modal, #custom-lyric-modal, #audio-output-workflow-modal { z-index: 260; }
+/* ① 修复：舞台首进行层分批构建需 1~2s，空态无提示被当成"没进去"（也是⑦二点才进的根因） */
+#stage3dLoading { position: absolute; inset: 0; z-index: 5; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 14px; pointer-events: none; }
+#stage3dLoading.show { display: flex; }
+#stage3dLoading .st3d-spinner { width: 34px; height: 34px; border-radius: 50%; border: 3px solid rgba(255,255,255,.14); border-top-color: rgba(0,245,212,.85); animation: st3d-spin .9s linear infinite; }
+#stage3dLoading .st3d-text { color: rgba(255,255,255,.66); font-size: 13px; letter-spacing: .04em; }
+@keyframes st3d-spin { to { transform: rotate(360deg); } }
+/* 取色弹窗（ColorLab/Cover Picker）暂不开放：默认隐藏，其绑定仍工作（1:1 复刻后挂在 #fx-panel 下） */
+#fx-panel .cover-color-pop, #fx-panel .color-lab-pop, #fx-panel .cover-color-loupe { position: fixed; left: -9999px; top: -9999px; opacity: 0; pointer-events: none; }
 
 /* ===== 3D 舞台悬浮迷你播放条 + 窗口控制（二期；只追加，不改既有行）===== */
 /* 右上角窗口三键：胶囊玻璃；z-index 高于播放条；随 #stage3dOverlay 显隐 */
@@ -4851,13 +4918,10 @@ html.control-glass-svg-ok .mini-queue-remove{
 #stWinCtrl.win-maxed #stWinMax .ic { display: none; }
 #stWinCtrl.win-maxed #stWinMax .ic-restore { display: block; }
 #stWinCtrl #stWinClose:hover { background: #e5484d; color: #fff; }
-/* 窗口三键落在最右，原有 ✕ / DIY 左移让位（覆盖层作用域内） */
+/* 窗口三键落在最右，原有 ✕ 左移让位（覆盖层作用域内） */
 #stage3dOverlay #btnCloseStage3D { right: 142px; }
-#stage3dOverlay #btnStageFx { right: 188px; }
 /* 悬浮迷你播放条：底部居中、离开底边 28px；仅条体接收指针事件，不新增全屏拦截层 */
 #stBar { position: absolute; left: 50%; bottom: 28px; z-index: 4; display: flex; align-items: center; gap: 14px; padding: 10px 18px; border-radius: 18px; background: rgba(8,12,22,.55); border: 1px solid rgba(255,255,255,.10); backdrop-filter: blur(18px) saturate(1.2); -webkit-backdrop-filter: blur(18px) saturate(1.2); box-shadow: 0 18px 48px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.07); transform: translateX(-50%); transition: transform .3s cubic-bezier(.16,1,.3,1); pointer-events: auto; max-width: min(760px, calc(100vw - 48px)); }
-/* DIY 抽屉（右侧 360px）打开时播放条左移半格，不与其重叠 */
-#mrFxDrawer:not(.hidden) ~ #stBar { transform: translateX(calc(-50% - 180px)); max-width: calc(100vw - 420px); }
 #stBar .st-bar-btns { display: flex; align-items: center; gap: 2px; flex: none; }
 #stBar button { border: none; background: transparent; color: #e6edf7; width: 38px; height: 38px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: background .15s, color .15s, transform .15s; padding: 0; }
 #stBar button:hover { background: rgba(255,255,255,.13); }
@@ -5817,8 +5881,6 @@ html:fullscreen body.desktop-shell #wallpaper-engine-freeze {
   .wallpaper-engine-card { transition-duration: .01ms !important }
   .wallpaper-engine-library-status.loading::before { animation-duration: 1.4s }
 }
-/* ===== 抓虫修复（P1-4）：抽屉打开时隐藏 DIY 按钮（对齐 MR fab 随面板隐藏语义）===== */
-#stage3dOverlay.fx-drawer-open #btnStageFx { display: none }
 
 /* ===== 音频路由/输出面板 CSS（Ported from Mineradio 2.2.0, GPL-3.0, index.css 相关规则整块照抄）===== */
 .audio-output-section {

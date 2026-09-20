@@ -75,6 +75,11 @@
   const coverCache = new Map();
   const audio = new Audio();
   audio.preload = 'metadata';
+  // 最后已知音频时间（timeupdate 更新；恢复播放瞬间 currentTime 读 0 时兜底）。
+  // 作用域修复（2026-09-20）：原 let 声明在 bindEvents 内层块，而 updateLyricHighlight(4672)/
+  // 详情页滚动(4842)/结尾淡出(4712) 等使用点在外层函数——正常播放靠隐式全局泄漏侥幸不炸，
+  // 绕过 playSong 的驱动路径（CDP 探针/直挂舞台）每帧 ReferenceError。提到 IIFE 顶层统一持有。
+  let lastAudioTime = 0;
 
   // ---------- SVG 图标（统一线性风格） ----------
   const I = (paths, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${paths}</svg>`;
@@ -6222,6 +6227,9 @@
     });
     // 详情页 3D 入口（MR 同款沉浸式触发点）：点击=进入/退出全屏舞台；Esc 退出
     $('#pdStage3D').addEventListener('click', () => {
+      // ⑦（2026-09-20 差异清单）：挂载进行中忽略切换——旧行为下首点进入但黑屏 1~2s，用户以为没进去
+      // 再点一次=退出，第三次才"进得去"；配合 loading 提示与重进秒回，这里再兜一层防误触
+      if (stage3dMounting) return;
       const next = !stage3dOn();
       try { localStorage.setItem('mp_stage3d', next ? '1' : '0'); } catch { /* 忽略 */ }
       $('#stStage3d').checked = next;
@@ -6233,12 +6241,8 @@
       $('#stStage3d').checked = false;
       syncStage3d();
     });
-    // DIY 视觉控制台抽屉（MR fx-panel 歌词舞台部分）；打开时隐藏 DIY 按钮避免压住面板标题（P1-4，对齐 MR fab-随面板隐藏语义）
-    $('#btnStageFx').addEventListener('click', () => {
-      const drawer = $('#mrFxDrawer');
-      drawer.classList.toggle('hidden');
-      $('#stage3dOverlay').classList.toggle('fx-drawer-open', !drawer.classList.contains('hidden'));
-    });
+    // 视觉控制台（2026-09-20 1:1 复刻 MR）：#fx-fab 右下圆钮 + 悬停 peek 浮动面板，无开关按钮——
+    // 显隐由适配层 mrBindFxPeek（MR 10-shell/02 peek 语义）驱动，app.js 不再管抽屉。
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && stage3dOn() && !$('#stage3dOverlay').classList.contains('hidden')) {
         // P2-3：WE 导入模态打开时 Esc 应只关模态（模态自身的关闭在适配层捕获阶段处理），不退出整个舞台
@@ -6365,7 +6369,7 @@
 
     // audio 事件
     let lastSmtcPos = -1;
-    let lastAudioTime = 0; // 最后已知音频时间（timeupdate 更新；恢复播放瞬间 currentTime 可能读 0 时兜底）
+    // lastAudioTime 已提升到 IIFE 顶层（作用域修复，见文件头 audio 声明处）
     // metadata 时长可能与实际解码时长不符（如 VBR/尾部数据）→ 播放后统一校正显示
     audio.addEventListener('loadedmetadata', () => {
       if (!audio.duration) return;

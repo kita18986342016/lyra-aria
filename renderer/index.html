@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' dsh-mediapipe:; connect-src 'self' http://127.0.0.1:* dsh-mediapipe:; style-src 'self'; img-src 'self' data: https: http:; media-src http://127.0.0.1:* 'self' file: https: http:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' dsh-mediapipe:; connect-src 'self' http://127.0.0.1:* dsh-mediapipe: mineradio-wallpaper:; style-src 'self'; img-src 'self' data: https: http: mineradio-wallpaper:; media-src http://127.0.0.1:* 'self' file: https: http: mineradio-wallpaper:">
 <title>深空折韵</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -707,9 +707,22 @@
 
     <button id="btnCloseStage3D" title="退出 3D 舞台 (Esc)">✕</button>
 
-<!-- ===== MR 视觉控制台（HTML 原样复制自 Mineradio index.html fx-panel 全量；GPL-3.0）===== -->
-<button id="btnStageFx" title="视觉控制台 (DIY)">DIY</button>
-<div id="mrFxDrawer" class="hidden">
+    <!-- ① 首进加载提示：行层分批构建需 1~2s，空态无提示会被当成"没进去"（适配层 mrMount/mrFrame 控制显隐） -->
+    <div id="stage3dLoading"><div class="st3d-spinner"></div><div class="st3d-text">正在点亮舞台…</div></div>
+
+<!-- ===== MR 视觉控制台（1:1 复刻 MR index.html:327-340 语义：右下 54px fab 圆钮 + 悬停 peek 浮动圆角面板；
+     MR 面板无关闭按钮——鼠标移开 170ms 自动收回，peek 驱动在适配层 mrBindFxPeek，DIY 门由适配层置 diyPlayerMode=true）===== -->
+<button id="fx-fab" title="视觉控制台">
+  <svg width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.9" viewBox="0 0 24 24">
+    <path d="M4 7h8" />
+    <path d="M16 7h4" />
+    <circle cx="14" cy="7" r="2" />
+    <path d="M4 17h4" />
+    <path d="M12 17h8" />
+    <circle cx="10" cy="17" r="2" />
+  </svg>
+</button>
+<button id="fx-fab-hide-btn" type="button" onclick="toggleFxFabAutoHide(event)" title="自动隐藏视觉控制台">‹</button>
 <div id="fx-panel">
       <div class="fx-head">
         <div>
@@ -1174,7 +1187,7 @@
             <div class="fx-toggle" id="t-desktopLyrics" onclick="toggleFx('desktopLyrics')" title="全屏幕置顶歌词">
               <span>桌面歌词</span><span class="dot"></span></div>
             <div class="fx-toggle" id="t-desktopLyricsClickThrough" onclick="toggleFx('desktopLyricsClickThrough')"
-              title="锁定后防误触；鼠标移到桌面歌词上按中键可锁定/解锁"><span>桌面歌词锁定</span><span class="dot"></span></div>
+              title="锁定后防误触；鼠标移到桌面歌词上，点击锁图标解锁（或 Ctrl+Alt+L）"><span>桌面歌词锁定</span><span class="dot"></span></div>
             <div class="fx-toggle" id="t-desktopLyricsCinema" onclick="toggleFx('desktopLyricsCinema')"
               title="桌面歌词绑定鼓点电影震动，基础漂浮始终保留"><span>桌面歌词电影震动</span><span class="dot"></span></div>
             <div class="fx-toggle" id="t-desktopLyricsHighlight" onclick="toggleFx('desktopLyricsHighlight')"
@@ -1484,7 +1497,6 @@
       <input type="file" id="background-image-input"
         accept=".jpg,.jpeg,.png,.webp,.mp4,.webm,.mov,image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
         style="display:none">
-</div>
 </div>
 
 <!-- ===== 自由镜头操作提示（MR index.html:1473-1474 原样；bundle updateFreeCameraHint 按 freeCamera.active 切 .show） ===== -->

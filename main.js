@@ -2315,7 +2315,7 @@ function main() {
   let lyricLine = null;
   let lyricLrc = null; // 最近一次全量歌词缓存（悬浮窗重载后重发，恢复两句显示）
   let lyricHover = false; // 锁定状态下鼠标是否悬停在歌词上（悬停则显示解锁工具条）
-  let lyricMmbPrev = false; // 中键上一轮按下状态（沿检测用）
+  let lyricStripInteractive = false; // 锁定态下光标进入顶部锁图标条 → 临时恢复窗口交互（左键可点解锁）
   let lyricAdaptiveH = 0; // 渲染层 syncWinHeight 最近申请的自适应高度（0=未知，兜底 160）；防拉伸兜底用它而非固定 160
 
   // 从任务栏/任务视图/Alt+Tab 彻底隐藏歌词窗：Electron 43 的 skipTaskbar 在此组合下
@@ -2488,10 +2488,11 @@ function main() {
     const cur = lyricWin.getSize();
     if (cur[0] !== 840 || cur[1] !== 160) lyricWin.setSize(840, 160);
     // v1.4.2 修复：锁定=真穿透（不再因悬停恢复交互——那会挡住下层窗口点击，用户实测抱怨点）。
-    // 解锁途径：①中键点击歌词区域（koffi GetAsyncKeyState 轮询，借鉴 Mineradio）②全局快捷键 Ctrl+Alt+L
-    // ③主窗口设置。forward:true 保证穿透时渲染层仍收得到 mousemove（悬停提示条用）。
+    // 解锁途径：①悬停顶部锁图标条（轮询临时恢复交互）→ 左键点击锁按钮（2026-09-20 用户拍板，替代中键）
+    // ②全局快捷键 Ctrl+Alt+L ③主窗口设置。forward:true 保证穿透时渲染层仍收得到 mousemove（悬停提示条用）。
     // 注意：不调用 setFocusable（实测会导致窗口出现 WS_EX_APPWINDOW → 任务栏出现歌词页）
     lyricWin.setIgnoreMouseEvents(!!lc.locked, { forward: true });
+    lyricStripInteractive = false; // 锁定态被外部切换 → 复位热区交互标志，轮询下一拍重估
     lyricWin.webContents.send('lyricwin:config', { ...lc, playMode: config.mode });
     hideLyricFromTaskbar(); // 每次配置应用后确保 TOOLWINDOW（防止穿透/显示切换覆盖）
   }
@@ -5158,28 +5159,26 @@ function main() {
       if (!config.lyricWin.enabled || !lyricWin || lyricWin.isDestroyed()) return;
       // 持续置顶：防止主窗口（大窗）盖住歌词窗导致无法点击/拖动
       try { lyricWin.moveTop(); } catch { /* 忽略 */ }
-      // 中键沿检测（借鉴 Mineradio GetAsyncKeyState 轮询）：锁定时中键点击歌词=解锁；解锁时=锁定
-      try {
-        if (taskbarHider && taskbarHider.getAsyncKey) {
-          const pressed = (taskbarHider.getAsyncKey(0x04) & 0x8000) !== 0; // VK_MBUTTON
-          if (pressed && !lyricMmbPrev) {
-            const pt = screen.getCursorScreenPoint();
-            const b = lyricWin.getBounds();
-            if (pt.x >= b.x && pt.x <= b.x + b.width && pt.y >= b.y && pt.y <= b.y + b.height) {
-              config.lyricWin.locked = !config.lyricWin.locked;
-              store.save('config.json', config);
-              applyLyricConfig();
-            }
-          }
-          lyricMmbPrev = pressed;
-        }
-      } catch { /* 忽略 */ }
-      if (!config.lyricWin.locked) return;
+      // 锁定态左键解锁（2026-09-20 用户拍板，替代中键）：光标进入顶部锁图标条区域 →
+      // 临时恢复窗口交互（点 unlockBtn 即解锁）；离开该区域 → 恢复穿透。中键轮询链已移除。
       try {
         const pt = screen.getCursorScreenPoint();
-        // 实测：本机 getCursorScreenPoint 与 getBounds 同坐标系（数值一致），无需缩放换算
         const b = lyricWin.getBounds();
         const inside = pt.x >= b.x && pt.x <= b.x + b.width && pt.y >= b.y && pt.y <= b.y + b.height;
+        if (config.lyricWin.locked) {
+          // 顶部 46px、水平居中 ±150px = 锁图标条热区（#lockbar top:8 + 按钮 26 + 富余）
+          const overStrip = pt.y >= b.y && pt.y <= b.y + 46 && Math.abs(pt.x - (b.x + b.width / 2)) <= 150;
+          if (overStrip !== lyricStripInteractive) {
+            lyricStripInteractive = overStrip;
+            try {
+              if (overStrip) lyricWin.setIgnoreMouseEvents(false);
+              else lyricWin.setIgnoreMouseEvents(true, { forward: true });
+            } catch { /* 忽略 */ }
+          }
+        } else if (lyricStripInteractive) {
+          lyricStripInteractive = false; // 解锁态窗口本就交互，复位标志防陈旧
+        }
+        if (!config.lyricWin.locked) return;
         if (inside !== lyricHover) {
           lyricHover = inside;
           if (inside) lyricWin.moveTop(); // 持续置顶：防主窗口盖住歌词窗
@@ -5216,12 +5215,12 @@ function main() {
       { label: '上一首', click: () => sendMedia('prev') },
       { label: '下一首', click: () => sendMedia('next') },
       { type: 'separator' },
-      { label: '显示主窗口', click: () => win.show() },
+      { label: '显示主窗口', click: () => showMainWindow() },
       { type: 'separator' },
       { label: '退出', click: () => { app.isQuitting = true; flushState(); app.quit(); } }
     ]);
     tray.setContextMenu(menu);
-    tray.on('click', () => win.show());
+    tray.on('click', () => showMainWindow());
   }
 
   // ---------- 快捷键系统（应用内 + 全局双层，可自定义；参考网易云/Spotify 公约） ----------
@@ -5310,12 +5309,20 @@ function main() {
     }
   }
 
+  // 唤回主窗（托盘/双击第二实例共用）：Windows 前台锁会让裸 focus() 静默失败——
+  // 表现为"应用其实在后台托盘运行，双击图标窗口却不出现"。alwaysOnTop 短切换是
+  // 通行绕法（把窗口钉到顶再放回，等效抢前台），moveTop 兜 z 序。
+  function showMainWindow() {
+    if (!win || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    try { win.setAlwaysOnTop(true); win.setAlwaysOnTop(false); } catch { /* 忽略 */ }
+    win.moveTop();
+    win.focus();
+  }
+
   app.on('second-instance', () => {
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.show();
-      win.focus();
-    }
+    showMainWindow();
   });
 
   // ---------- v1.4.2 本地流代理（Mineradio 同款架构：127.0.0.1 HTTP 服务器；直链只存在于主进程）----------

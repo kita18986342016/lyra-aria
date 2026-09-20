@@ -120,18 +120,27 @@ async function main() {
   })()`);
   check('P1-3 tab栏不溢出', !tabs.missing && tabs.scrollW <= tabs.clientW + 2 && tabs.count === 6, JSON.stringify(tabs));
 
-  // P1-4: 抽屉打开时 DIY 按钮隐藏
+  // P1-4（2026-09-20 更新）：控制台 1:1 复刻 MR——#fx-fab 右下圆钮在位、点击开面板（peek 同步加类）、
+  // 面板圆角浮动不占满侧栏；旧"抽屉+DIY 按钮显隐"形态已废弃
   const fab = await ev(`(function(){
-    var drawer = document.getElementById('mrFxDrawer');
-    drawer.classList.remove('hidden');
-    document.getElementById('stage3dOverlay').classList.add('fx-drawer-open');
-    var hidden = getComputedStyle(document.getElementById('btnStageFx')).display === 'none';
-    drawer.classList.add('hidden');
-    document.getElementById('stage3dOverlay').classList.remove('fx-drawer-open');
-    var restored = getComputedStyle(document.getElementById('btnStageFx')).display !== 'none';
-    return { hiddenWhenOpen: hidden, restoredWhenClosed: restored };
+    var f = document.getElementById('fx-fab');
+    if (!f) return { err: 'no fx-fab' };
+    var fr = f.getBoundingClientRect();
+    var round = getComputedStyle(f).borderRadius;
+    var p = document.getElementById('fx-panel');
+    var wasPeek = p.classList.contains('peek') || p.classList.contains('show');
+    if (typeof toggleFxPanel === 'function') toggleFxPanel(true);
+    var opened = p.classList.contains('peek') || p.classList.contains('show');
+    var panelRound = getComputedStyle(p).borderRadius;
+    var pr = p.getBoundingClientRect();
+    var panelNotFullHeight = pr.height < innerHeight * 0.95;
+    // 注意：right 有 .55s 过渡（peek 刚加类时 rect 在动画中间）→ 用不随动画变化的宽度断言"浮动卡不占满"
+    var panelFloatWidth = pr.width >= 400 && pr.width <= 460;
+    if (!wasPeek && typeof toggleFxPanel === 'function') toggleFxPanel(false);
+    return { fabVisible: fr.width > 40 && fr.height > 40, fabRound: round, opened: opened,
+      panelRound: panelRound, panelNotFullHeight: panelNotFullHeight, panelFloatWidth: panelFloatWidth };
   })()`);
-  check('P1-4 DIY按钮随抽屉显隐', fab.hiddenWhenOpen && fab.restoredWhenClosed, JSON.stringify(fab));
+  check('P1-4 控制台=MR 浮动圆角卡+右下圆钮', fab.fabVisible === true && parseFloat(fab.fabRound) >= 20 && fab.opened === true && parseFloat(fab.panelRound) >= 12 && fab.panelNotFullHeight === true && fab.panelFloatWidth === true, JSON.stringify(fab));
 
   // P1-5: stBar/stWinCtrl 不在抽屉内
   const loc = await ev(`({

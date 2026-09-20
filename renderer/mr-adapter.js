@@ -556,6 +556,17 @@ function mrTargetSkullParticleFps(now) {
   return (playing && window.audio && !window.audio.paused) ? mrCapMainLoopFpsForBudget(60, 45) : 24;
 }
 
+// ① 首进 loading 显隐：挂载后、当前行层 mesh 未就绪且本曲有歌词 → 显示"正在点亮舞台…"，
+// 行层分批构建完成（stageLyrics.current 非空）即自动隐藏。重进因 mesh 保留 current 常在 → 不闪。
+function mrStageLoadingTick() {
+  var el = document.getElementById('stage3dLoading');
+  if (!el) return;
+  var hasLyric = (typeof lyricsLines !== 'undefined' && lyricsLines && lyricsLines.length) ||
+                 (typeof window !== 'undefined' && window.lyricsLines && window.lyricsLines.length);
+  var ready = (typeof stageLyrics !== 'undefined' && stageLyrics && stageLyrics.current);
+  el.classList.toggle('show', !!(MrStage.mounted && hasLyric && !ready));
+}
+
 // 帧驱动：调用顺序照搬 MR 11-main-loop.js animate()（:617-620 相机、:676-677 舞台歌词、:692 渲染）
 function mrFrame(now) {
   MrStage.raf = requestAnimationFrame(mrFrame);
@@ -632,6 +643,7 @@ function mrFrame(now) {
   }
   var stepDt = MrStage.gates ? consumeFrameGate(MrStage.gates.stageLyrics, now, dt, playing ? 0 : 24 /* MR 播放时 vsync 全速（审计#5）；0=门控放行 */, false, 'stage-lyrics') : dt;
   if (stepDt > 0) updateStageLyrics3D(stepDt);
+  mrStageLoadingTick(); // ① 首进行层就绪前显示"正在点亮舞台…"
   if (MrStage.gates) {
     var lyrDt = consumeFrameGate(MrStage.gates.lyrics, now, dt, playing ? 0 : 24, false, 'lyrics-particles');
     if (lyrDt > 0 && typeof tickLyricsParticles === 'function') tickLyricsParticles(); // MR 11-main-loop.js:608 同款驱动
@@ -662,10 +674,29 @@ function lyricFallbackTextForSong(song) {      // MR 06-lyrics/00-lyrics-fetch-p
   if (!title || title === '未播放') return '';
   return artist ? title + ' - ' + artist : title;
 }
+function mrLrcPayloadKey(lrc, wordSegs, translated) {
+  // ①（2026-09-20 差异清单）同歌词短路键：行数+总字数+首尾行文本+逐字/翻译行数。
+  // 重进舞台时 app.js 会用同一份 state.lrc 再调 setLrc，键相同 → 保留已建好的行层 mesh，秒显不再重建。
+  var arr = Array.isArray(lrc) ? lrc : null;
+  if (!arr || !arr.length) return '';
+  var n = arr.length, chars = 0;
+  for (var i = 0; i < n; i++) chars += String((arr[i] || {}).text || '').length;
+  var f = String((arr[0] || {}).text || '').slice(0, 24);
+  var l = String((arr[n - 1] || {}).text || '').slice(0, 24);
+  return n + ':' + chars + ':' + f + ':' + l +
+    (Array.isArray(wordSegs) ? ':w' + wordSegs.length : '') +
+    (Array.isArray(translated) ? ':t' + translated.length : '');
+}
 function mrSetLrc(lrc, wordSegs, translated) {
   if (!MrStage.booted) { // 挂载前调用（歌词先于舞台就绪）→ 缓存，boot/mount 时回放
     MrStage.pendingLrc = [lrc, wordSegs, translated];
     return 0;
+  }
+  // ① 同歌词且已有行层 → 短路（重进舞台秒显；换歌 payload 必变，照常走失效重建链）
+  var payloadKey = mrLrcPayloadKey(lrc, wordSegs, translated);
+  if (payloadKey && payloadKey === MrStage.lastLrcKey &&
+      typeof stageLyrics !== 'undefined' && stageLyrics && stageLyrics.current) {
+    return (window.lyricsLines || []).length;
   }
   var lines = [];
   var arr = Array.isArray(lrc) ? lrc : [];
@@ -746,6 +777,7 @@ function mrSetLrc(lrc, wordSegs, translated) {
   if (typeof scheduleStageLyricPrewarm === 'function') scheduleStageLyricPrewarm('lyrics-ready', 32);
   if (typeof scheduleStageLyricSingleLineBootstrapPrewarm === 'function') scheduleStageLyricSingleLineBootstrapPrewarm('lyrics-ready', 44);
   if (typeof scheduleStageLyricFullTrackWarmup === 'function') scheduleStageLyricFullTrackWarmup('lyrics-ready-preload', 24);
+  MrStage.lastLrcKey = payloadKey;
   return lines.length;
 }
 
@@ -773,51 +805,125 @@ function mrRefreshPalette(coverSrc) {
 }
 function bootedGuard() { return MrStage.booted; }
 
-async function mrMount(host) {
-  MrStage.host = host;
-  // 容器必须在 00-renderer-quality 注入执行前就位（它在加载时 getElementById('canvas-container')）
+// ===== bundle 启动（2026-09-20 ①提速）：boot 与 mount 解耦。
+// 旧行为：点进 3D 才开始注入 2.4MB bundle + 求值（数百 ms）→ 首进慢的主段之一。
+// 新行为：mrPreboot 在页面空闲时于隐藏容器完成 boot（WebGL renderer/全局状态机就位），
+// 用户点进舞台只剩 mesh 搬移 + 行层构建。mrMount await mrBoot()，先到先复用。
+function mrBoot() {
+  if (MrStage.booted) return Promise.resolve();
+  if (MrStage.booting) return MrStage.booting;
+  // 溢光默认升级迁移（2026-09-20 用户拍板 0.28→0.8）：fx 自动存档会覆盖 fxDefaults，
+  // 老用户存档里存的就是旧默认 0.28 → 在 bundle 注入前把"恰好等于旧默认（=从未手动调过）"
+  // 的值升到新默认；用户手动调过的其它值原样保留。必须在 bundle 求值前执行（读档在加载时）。
+  // 两个存档键都要扫：autosave 缺失时 bundle 回退读 lyric-layout（bundle:7161）。
+  try {
+    ['mineradio-current-fx-autosave-v1', 'mineradio-lyric-layout-v1'].forEach(function (key) {
+      var raw = localStorage.getItem(key);
+      if (!raw) return;
+      var o = JSON.parse(raw);
+      if (o && Number(o.lyricGlowStrength) === 0.28) {
+        o.lyricGlowStrength = 0.8;
+        localStorage.setItem(key, JSON.stringify(o));
+      }
+    });
+  } catch (e) { /* 存档异常不拦启动 */ }
+  // 容器必须在 00-renderer-quality 注入执行前就位（它在加载时 getElementById('canvas-container')）；
+  // 预启动阶段先挂 body 外屏隐藏位，mount 时搬进 host。
   if (!MrStage.container) {
     MrStage.container = document.createElement('div');
     MrStage.container.id = 'canvas-container';
-    MrStage.container.style.cssText = 'position:absolute;inset:0;';
-    host.appendChild(MrStage.container);
+    MrStage.container.style.cssText = 'position:fixed;left:-32000px;top:0;width:4px;height:4px;overflow:hidden;pointer-events:none;';
+    document.body.appendChild(MrStage.container);
   }
-  if (!MrStage.booted) {
-    if (MrStage.booting) { await MrStage.booting; }
-    else {
-      MrStage.booting = new Promise(function (resolve, reject) {
-        // CSP 纪律：index.html 是 default-src 'self'，禁止内联 script（合并文本用 .text 注入会被
-        // 静默拦截——首测踩坑）。改为懒加载预拼接的真实 bundle 文件（机制与 MR 单合并脚本等价：
-        // 单文件内函数提升跨段可用），'self' 放行。
-        var s = document.createElement('script');
-        s.src = new URL('mr/mr-bundle.js', location.href).href;
-        MrStage.bootErrors.length = 0;
-        s.onload = function () {
-          if (MrStage.bootErrors.length) { reject(new Error('MR_BUNDLE_EXEC: ' + MrStage.bootErrors.slice(0, 3).join(' | '))); return; }
-          MrStage.booted = true;
-          // B-b：控制玻璃初始化（MR 原调用点在未 vendor 的 10-shell/05-startup-bindings.js:7；
-          // bundle 函数此刻已就位。内部对 DSH 缺失 DOM 全有 if(el) 守卫，安全）
-          try { initControlGlassSurface(); } catch (e) { console.warn('[MR 玻璃] initControlGlassSurface:', e && e.message); }
-          // DSH 适配覆盖（2026-09-20 D-1/B-4 批次）：10-shell/04 入 bundle 后，其顶层 MR 原版
-          // function getDesktopWindowApi（isDesktop 门控，见 10-shell/04:89 与 ref desktop/preload.js:4）
-          // 会覆盖本文件 :1204 的适配定义。原版门控面向 MR 桌面嵌入窗模式；DSH 主窗的 window.api =
-          // 预加载桥（WE 17 项 + dsh-cache-* + dialog），导入 JSON（P1-1 实测项）与 WE 抽屉 probe
-          // 都依赖它非空返回。10-shell/04 自身 WE 路径均有 typeof 方法守卫（缺 setWallpaperMode 时
-          // 安全返回错误对象、fx.wallpaperMode 归 false），不受此覆盖影响。
-          window.getDesktopWindowApi = function () { return window.api || null; };
-          // 工作台 + 全部 fx 控件绑定（二期 3d；此前 bindFxPanel 无人调用 → fx 滑杆全为死控件）。
-          // bundle 内函数此时已就位；个别控件缺失不应中断其余绑定，故 try/catch 兜底。
-          try { if (typeof bindFxPanel === 'function') bindFxPanel(); } catch (e) { console.warn('[MR 视觉] bindFxPanel 部分失败:', e && e.message); }
-          if (MrStage.pendingLrc) { var pl = MrStage.pendingLrc; MrStage.pendingLrc = null; mrSetLrc(pl[0], pl[1], pl[2]); }
-          resolve();
-        };
-        s.onerror = function () { reject(new Error('MR_BUNDLE_LOAD_FAILED')); };
-        document.head.appendChild(s);
-      }).catch(function (e) { MrStage.failed = true; MrStage.lastError = String(e && e.message || e); throw e; });
-      await MrStage.booting;
+  MrStage.booting = new Promise(function (resolve, reject) {
+    // CSP 纪律：index.html 是 default-src 'self'，禁止内联 script（合并文本用 .text 注入会被
+    // 静默拦截——首测踩坑）。改为懒加载预拼接的真实 bundle 文件（机制与 MR 单合并脚本等价：
+    // 单文件内函数提升跨段可用），'self' 放行。
+    var s = document.createElement('script');
+    s.src = new URL('mr/mr-bundle.js', location.href).href;
+    MrStage.bootErrors.length = 0;
+    s.onload = function () {
+      if (MrStage.bootErrors.length) { reject(new Error('MR_BUNDLE_EXEC: ' + MrStage.bootErrors.slice(0, 3).join(' | '))); return; }
+      MrStage.booted = true;
+      // B-b：控制玻璃初始化（MR 原调用点在未 vendor 的 10-shell/05-startup-bindings.js:7；
+      // bundle 函数此刻已就位。内部对 DSH 缺失 DOM 全有 if(el) 守卫，安全）
+      try { initControlGlassSurface(); } catch (e) { console.warn('[MR 玻璃] initControlGlassSurface:', e && e.message); }
+      // DSH 适配覆盖（2026-09-20 D-1/B-4 批次）：10-shell/04 入 bundle 后，其顶层 MR 原版
+      // function getDesktopWindowApi（isDesktop 门控，见 10-shell/04:89 与 ref desktop/preload.js:4）
+      // 会覆盖本文件的适配定义。原版门控面向 MR 桌面嵌入窗模式；DSH 主窗的 window.api =
+      // 预加载桥（WE 17 项 + dsh-cache-* + dialog），导入 JSON（P1-1 实测项）与 WE 抽屉 probe
+      // 都依赖它非空返回。10-shell/04 自身 WE 路径均有 typeof 方法守卫（缺 setWallpaperMode 时
+      // 安全返回错误对象、fx.wallpaperMode 归 false），不受此覆盖影响。
+      window.getDesktopWindowApi = function () { return window.api || null; };
+      // 工作台 + 全部 fx 控件绑定（二期 3d；此前 bindFxPanel 无人调用 → fx 滑杆全为死控件）。
+      // bundle 内函数此时已就位；个别控件缺失不应中断其余绑定，故 try/catch 兜底。
+      // 2026-09-20：boot/mount 解耦后绑定提前到此处；设 fxBound 防 mrMount 二次绑定。
+      try { if (typeof bindFxPanel === 'function') { bindFxPanel(); MrStage.fxBound = true; } } catch (e) { console.warn('[MR 视觉] bindFxPanel 部分失败:', e && e.message); }
+      // 控制台 1:1 复刻 MR（2026-09-20 用户拍板）：DSH 无"简约/DIY"双模式概念（3D 舞台本身就是 DIY），
+      // 置 diyPlayerMode=true 打开 toggleFxPanel 的 DIY 门；body.diy-mode 类在 DSH CSS 无副作用。
+      try { if (typeof applyDiyMode === 'function') applyDiyMode(true, { save: false }); } catch (e) { console.warn('[MR 控制台] applyDiyMode:', e && e.message); }
+      try { mrBindFxPeek(); } catch (e) { console.warn('[MR 控制台] peek 绑定失败:', e && e.message); }
+      if (MrStage.pendingLrc) { var pl = MrStage.pendingLrc; MrStage.pendingLrc = null; mrSetLrc(pl[0], pl[1], pl[2]); }
+      resolve();
+    };
+    s.onerror = function () { reject(new Error('MR_BUNDLE_LOAD_FAILED')); };
+    document.head.appendChild(s);
+  }).catch(function (e) {
+    // 脚本没加载成功（file:// 下罕见）→ 允许 mount 时重试一次；
+    // 脚本执行抛错（MR_BUNDLE_EXEC）→ 置 failed，不重跑 bundle（顶层监听器会重复绑定）
+    if (/MR_BUNDLE_LOAD_FAILED/.test(String(e && e.message || e))) { MrStage.booting = null; }
+    else { MrStage.failed = true; MrStage.lastError = String(e && e.message || e); }
+    throw e;
+  });
+  return MrStage.booting;
+}
+
+// ① 空闲预启动：页面加载后延迟起 bundle（避开首屏渲染/登录检查），失败静默——
+// 用户点进舞台时 mrMount→mrBoot 会再走一次真启动路径。
+function mrPreboot() {
+  if (MrStage.booted || MrStage.booting || MrStage.failed) return;
+  try {
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(function () { mrBoot().catch(function () { /* mount 时重试 */ }); }, { timeout: 8000 });
+    } else {
+      setTimeout(function () { mrBoot().catch(function () { }); }, 4000);
     }
-  }
+  } catch (e) { /* 预启动尽力而为 */ }
+}
+
+// 控制台悬停 peek（MR 10-shell/02-peek-panels-upload.js:421-433 语义 1:1：右下角 fab 触发，
+// 面板出现后按真实矩形+桥接区保留；移开 → setPeek(false) 170ms 自动收——这就是 MR 的"退出"方式，
+// MR 面板本无关闭按钮）。DSH 未 vendor 02 文件，此处在适配层按原文复刻 fx 段。
+function mrBindFxPeek() {
+  if (MrStage.fxPeekBound) return;
+  MrStage.fxPeekBound = true;
+  var fab = document.getElementById('fx-fab');
+  if (fab) fab.addEventListener('click', function () { if (typeof toggleFxPanel === 'function') toggleFxPanel(); });
+  document.addEventListener('mousemove', function (e) {
+    var fp = document.getElementById('fx-panel');
+    if (!fp || typeof setPeek !== 'function' || typeof diyPlayerMode === 'undefined' || !diyPlayerMode) return;
+    var ex = e.clientX, ey = e.clientY, W = innerWidth, H = innerHeight;
+    var fpOn = fp.classList.contains('peek') || fp.classList.contains('show');
+    var fpRect = fp.getBoundingClientRect();
+    var fabEl = document.getElementById('fx-fab');
+    var fabRect = fabEl ? fabEl.getBoundingClientRect() : { left: W, right: W, top: H, bottom: H };
+    var inFxPanel = fpOn && ex >= fpRect.left - 24 && ex <= fpRect.right + 24 && ey >= fpRect.top - 24 && ey <= fpRect.bottom + 24;
+    var inFxFab = ex >= fabRect.left - 18 && ex <= fabRect.right + 18 && ey >= fabRect.top - 18 && ey <= fabRect.bottom + 18;
+    var inFxBridge = fpOn && ex >= Math.min(fpRect.left, fabRect.left) - 18 && ex <= W && ey >= fpRect.bottom - 10 && ey <= fabRect.bottom + 18;
+    if (inFxFab || inFxPanel || inFxBridge) setPeek(fp, true, 'fx');
+    else if (fpOn) setPeek(fp, false, 'fx');
+  }, { passive: true });
+}
+
+async function mrMount(host) {
+  MrStage.host = host;
+  await mrBoot();
   if (MrStage.failed) throw new Error('MR_BOOT_FAILED');
+  // 容器从预启动隐藏位搬进舞台 host（幂等：已在 host 则跳过）
+  if (MrStage.container && MrStage.container.parentNode !== host) {
+    host.appendChild(MrStage.container);
+    MrStage.container.style.cssText = 'position:absolute;inset:0;';
+  }
   if (!MrStage.gates && typeof createFrameGate === 'function') {
     MrStage.gates = {
       audio: createFrameGate('main.audio', 60),
@@ -857,15 +963,12 @@ async function mrMount(host) {
 function mrUnmount() {
   MrStage.mounted = false;
   if (MrStage.raf) { cancelAnimationFrame(MrStage.raf); MrStage.raf = 0; }
-  // 卸载歌词 mesh 与星河（MR 自带的分批释放队列 disposeLyricMesh/disposeLyricStarRiver）
-  try {
-    if (typeof stageLyrics !== 'undefined') {
-      if (stageLyrics.current && typeof disposeLyricMesh === 'function') { disposeLyricMesh(stageLyrics.current); stageLyrics.current = null; }
-      for (var i = 0; i < stageLyrics.outgoing.length; i++) disposeLyricMesh && disposeLyricMesh(stageLyrics.outgoing[i]);
-      stageLyrics.outgoing.length = 0;
-      if (stageLyrics.starRiver && typeof disposeLyricStarRiver === 'function') disposeLyricStarRiver();
-    }
-  } catch { /* 卸载幂等 */ }
+  // ①（2026-09-20 差异清单）：退出舞台=暂停帧循环，**保留歌词行层 mesh 与 WebGL 上下文**。
+  // 旧实现每次 unmount 都 disposeLyricMesh/disposeLyricStarRiver → 重进行层从零分批重建
+  // （8 行实测 1.3s，整轨更多），正是用户"每次进 3D 都要卡好一会才有歌词"的根因；
+  // 配合 mrSetLrc 同歌词短路，重进秒回。换歌时 mrSetLrc 全路径自带旧 mesh dispose（T-KARAOKE Bug#2
+  // 语义在 setLrc 链里，不依赖 unmount 释放），无泄漏。
+  // 星河保留（dispose 成本高、重建同样分批慢）；内存换体验，关窗即全释放。
 }
 
 // ---------- ④ 3D 歌单架数据桥（深空折韵：把 MR shelf 的消费契约接到本播放器 __mp/state） ----------
@@ -1589,3 +1692,6 @@ function toggleLyricsPanel(force) { // MR 06-lyrics/00:662-677 原文照抄（�
   }
   if (typeof lyricsVisible !== 'undefined') lyricsVisible = fx.particleLyrics;
 }
+
+// ① 页面空闲时预启动 bundle（点进舞台只剩 mesh 搬移+行层构建；失败静默，mount 时重试）
+try { mrPreboot(); } catch (e) { console.warn('[MR 预启动] 失败:', e && e.message); }
