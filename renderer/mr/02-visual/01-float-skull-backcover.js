@@ -1,13 +1,12 @@
 // ============================================================
+// 2026-09-20 偏离说明：MR 2.2.0 原文在 createFloatLayer 顶部强关（fx.floatLayer=false…return，
+// 真实实现成死代码）——即 MR 原版此开关也是假的。按用户"不要假开关、原模原样搬功能"指令，
+// 删除强关 4 行，恢复 MR 自带的完整真实实现（本文件内后续代码，未改动）。
 var FLOAT_COUNT = 1300;
 var floatGroup = null;
 var floatPositionsArr = null, floatBaseArr = null, floatPhaseArr = null, floatColorArr = null;
 
 function createFloatLayer() {
-  fx.floatLayer = false;
-  uniforms.uFloatAlpha.value = 0;
-  if (floatGroup) destroyFloatLayer();
-  return;
   if (floatGroup) return;
   var fgeo = new THREE.BufferGeometry();
   floatPositionsArr = new Float32Array(FLOAT_COUNT * 3);
@@ -225,7 +224,7 @@ function loadSkullParticleAsset() {
     skullParticleAsset.failed = true;
     return Promise.resolve(null);
   }
-  skullParticleAsset.promise = fetch('assets/skull-decimation-points.bin?v=regular-surface-teeth-soften-20260621', { cache: 'reload' })
+  skullParticleAsset.promise = fetch((window.location.protocol === 'file:' ? 'dsh-mediapipe://assets/skull-decimation-points.bin' : 'assets/skull-decimation-points.bin') + '?v=regular-surface-teeth-soften-20260621', { cache: 'reload' })
     .then(function (res) {
       if (!res.ok) throw new Error('skull asset ' + res.status);
       return res.arrayBuffer();

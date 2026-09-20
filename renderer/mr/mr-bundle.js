@@ -4298,6 +4298,363 @@ function recenterCamera() {
 }
 ;
 
+// ==================== 01-scene/04-bottom-controls-cursor.js ====================
+function hasRestoredPlaybackCandidate() {
+  if (!restoredLastPlaybackSnapshot) return false;
+  if (currentLocalSong) return true;
+  if (Array.isArray(playQueue) && currentIdx >= 0 && playQueue[currentIdx]) return true;
+  return !!(restoredLastPlaybackSnapshot && pendingPlaybackResumeAt > 0 && restoredLastPlaybackSnapshot.current);
+}
+
+function hasPlaybackControlCandidate() {
+  if (currentLocalSong) return true;
+  if (Array.isArray(playQueue) && currentIdx >= 0 && playQueue[currentIdx]) return true;
+  return hasRestoredPlaybackCandidate();
+}
+
+function hasActivePlaybackControls() {
+  return !!(playing || (audio && !audio.paused) || hasPlaybackControlCandidate());
+}
+
+function desktopWallpaperKeepsPlayerConsoleVisible() {
+  var body = document.body;
+  if (!body
+    || !body.classList.contains('desktop-wallpaper-mode')
+    || !body.classList.contains('desktop-wallpaper-interactive')) return false;
+  // Home and the 3D shelf are complete Mineradio surfaces of their own. In the
+  // ordinary desktop stage, however, allowing the generic inactivity timer to
+  // hide the only player console makes the renderer look as if it fell behind
+  // the wallpaper/Explorer plane.
+  if (body.classList.contains('empty-home-active')
+    || body.classList.contains('home-controls-locked')) return false;
+  try {
+    return !isBottomControlsSuppressedForShelf();
+  } catch (_) {
+    return true;
+  }
+}
+
+function shouldShowHomeForPausedStartupRestore() {
+  return !!(startupRestoreHomePending
+    && restoredLastPlaybackSnapshot
+    && !playing
+    && !(audio && !audio.paused)
+    && !immersiveMode);
+}
+
+function setControlsHidden(hidden) {
+  var bar = document.getElementById('bottom-bar');
+  if (!bar) return;
+  if (hidden && desktopWallpaperKeepsPlayerConsoleVisible()) hidden = false;
+  if (hidden && controlsRevealHoldUntil > performance.now()) hidden = false;
+  if (hidden && (controlsHovering || miniQueueOpen)) hidden = false;
+  bar.classList.toggle('soft-hidden', !!hidden && controlsAutoHide && bar.classList.contains('visible'));
+  if (hidden && typeof closeLyricTimingPopover === 'function') closeLyricTimingPopover(true);
+  bar.style.pointerEvents = '';
+  updateControlsChromeState();
+}
+
+function isBottomControlsSuppressedForShelf() {
+  var shelfContentOpen = false;
+  try {
+    shelfContentOpen = !!(typeof shelfManager !== 'undefined' && shelfManager && shelfManager.hasOpenContent && shelfManager.hasOpenContent());
+  } catch (e) { }
+  return !!(shelfPinnedOpen || shelfContentOpen || (controlsShelfSuppressUntil && performance.now() < controlsShelfSuppressUntil));
+}
+
+function suppressBottomControlsForShelf(duration) {
+  controlsShelfSuppressUntil = performance.now() + (duration == null ? 900 : duration);
+  controlsHovering = false;
+  if (controlsHideTimer) {
+    clearTimeout(controlsHideTimer);
+    controlsHideTimer = null;
+  }
+  document.body.classList.remove('controls-handle-awake');
+  if (miniQueueOpen) closeMiniQueue();
+  var bar = document.getElementById('bottom-bar');
+  if (bar) {
+    bar.classList.remove('visible', 'soft-hidden');
+    bar.style.pointerEvents = '';
+  }
+  updateControlsChromeState();
+}
+
+function restoreBottomControlsAfterShelfExit(reason) {
+  controlsShelfSuppressUntil = 0;
+  if (controlsHideTimer) {
+    clearTimeout(controlsHideTimer);
+    controlsHideTimer = null;
+  }
+  if (isBottomControlsSuppressedForShelf()) return;
+  if (!hasActivePlaybackControls() && controlsAutoHide) return;
+  try {
+    setHomeControlsLocked(false);
+    var bar = document.getElementById('bottom-bar');
+    if (bar) {
+      bar.classList.add('visible');
+      bar.classList.remove('soft-hidden');
+      bar.style.pointerEvents = '';
+    }
+    wakeBottomHandle(controlsAutoHide ? 1400 : 2600);
+    setControlsHidden(false);
+    updateControlsChromeState();
+    if (controlsAutoHide) scheduleControlsHide(900);
+  } catch (e) {
+    console.warn('[ShelfControlsRestore]', reason || 'shelf-exit', e);
+  }
+}
+
+function scheduleControlsHide(delay) {
+  if (controlsHideTimer) clearTimeout(controlsHideTimer);
+  if (!controlsAutoHide) return;
+  if (desktopWallpaperKeepsPlayerConsoleVisible()) {
+    controlsHideTimer = null;
+    setControlsHidden(false);
+    return;
+  }
+  var requestedDelay = delay == null ? 480 : Math.max(0, Number(delay) || 0);
+  var revealHoldRemaining = controlsRevealHoldUntil - performance.now();
+  if (revealHoldRemaining > 0) requestedDelay = Math.max(requestedDelay, Math.ceil(revealHoldRemaining) + 32);
+  controlsHideTimer = setTimeout(function () {
+    controlsHideTimer = null;
+    var remaining = controlsRevealHoldUntil - performance.now();
+    if (remaining > 0) {
+      scheduleControlsHide(Math.ceil(remaining) + 32);
+      return;
+    }
+    if (!controlsHovering) setControlsHidden(true);
+  }, requestedDelay);
+}
+
+function revealBottomControls(delay) {
+  if (document.body.classList.contains('home-controls-locked')) return;
+  var bar = document.getElementById('bottom-bar');
+  if (isBottomControlsSuppressedForShelf()) return;
+  if (bar) bar.classList.add('visible');
+  wakeBottomHandle();
+  setControlsHidden(false);
+  if (controlsAutoHide) scheduleControlsHide(delay == null ? 520 : delay);
+}
+
+function holdBottomControlsVisible(duration) {
+  var holdDuration = Math.max(900, Number(duration) || 0);
+  controlsRevealHoldUntil = Math.max(controlsRevealHoldUntil, performance.now() + holdDuration);
+  revealBottomControls(holdDuration + 32);
+}
+
+function showRestoredPlaybackControls(reason) {
+  if (!hasActivePlaybackControls()) return;
+  try {
+    homeForcedOpen = false;
+    setHomeControlsLocked(false);
+    var bar = document.getElementById('bottom-bar');
+    if (bar) {
+      bar.classList.add('visible');
+      bar.classList.remove('soft-hidden');
+      bar.style.pointerEvents = '';
+    }
+    wakeBottomHandle(reason === 'startup-autoplay' ? 2600 : 3600);
+    setControlsHidden(false);
+    updateControlsChromeState();
+    if (controlsHideTimer) {
+      clearTimeout(controlsHideTimer);
+      controlsHideTimer = null;
+    }
+    if (controlsAutoHide) scheduleControlsHide(reason === 'startup-autoplay' ? 2200 : 3600);
+  } catch (e) {
+    console.warn('[RestoredPlaybackControls]', e);
+  }
+}
+
+function updateControlsChromeState() {
+  var bar = document.getElementById('bottom-bar');
+  var handle = document.getElementById('bottom-handle');
+  var active = !!(bar && bar.classList.contains('visible') && !bar.classList.contains('soft-hidden'));
+  document.body.classList.toggle('controls-visible', active);
+  if (handle) handle.classList.toggle('active', active);
+}
+
+function wakeBottomHandle(duration) {
+  document.body.classList.add('controls-handle-awake');
+  if (controlsHandleDimTimer) clearTimeout(controlsHandleDimTimer);
+  controlsHandleDimTimer = setTimeout(function () {
+    controlsHandleDimTimer = null;
+    document.body.classList.remove('controls-handle-awake');
+  }, duration == null ? 2000 : duration);
+}
+
+function forcePlaybackControlsInteractive() {
+  if (!hasActivePlaybackControls()) return;
+  try {
+    document.body.classList.remove('home-controls-locked');
+    var bar = document.getElementById('bottom-bar');
+    if (bar) {
+      bar.style.pointerEvents = '';
+      if (!controlsAutoHide) {
+        bar.classList.add('visible');
+        bar.classList.remove('soft-hidden');
+      }
+    }
+    ['play-btn', 'prev-btn', 'next-btn', 'mini-queue-btn', 'heart-btn', 'play-mode-btn', 'collect-btn'].forEach(function (id) {
+      var btn = document.getElementById(id);
+      if (!btn) return;
+      btn.disabled = false;
+      btn.classList.remove('busy');
+    });
+    updateControlsChromeState();
+    if (bar && bar.classList.contains('visible') && controlsAutoHide && !controlsHovering) scheduleControlsHide(220);
+  } catch (e) {
+    console.warn('[PlaybackControlsRestore]', e);
+  }
+}
+
+function toggleBottomControlsFromHandle() {
+  var bar = document.getElementById('bottom-bar');
+  if (!bar || document.body.classList.contains('home-controls-locked')) return;
+  if (isBottomControlsSuppressedForShelf()) return;
+  revealBottomControls(900);
+}
+
+function updateControlsAutoHideFromPointer(x, y) {
+  if (document.body.classList.contains('home-controls-locked')) return;
+  if (isBottomControlsSuppressedForShelf()) return;
+  var bar = document.getElementById('bottom-bar');
+  if (!bar || !bar.classList.contains('visible')) return;
+  if (!controlsAutoHide) { setControlsHidden(false); return; }
+  if (diyPlayerMode) {
+    var fxPanel = document.getElementById('fx-panel');
+    var fxFab = document.getElementById('fx-fab');
+    var fr = fxPanel ? fxPanel.getBoundingClientRect() : null;
+    var br = fxFab ? fxFab.getBoundingClientRect() : null;
+    var overFxPanel = fxPanel && (fxPanel.classList.contains('peek') || fxPanel.classList.contains('show')) && fr && x >= fr.left - 18 && x <= fr.right + 18 && y >= fr.top - 18 && y <= fr.bottom + 18;
+    var overFxFab = br && x >= br.left - 18 && x <= br.right + 18 && y >= br.top - 18 && y <= br.bottom + 18;
+    if (overFxPanel || overFxFab) {
+      scheduleControlsHide(80);
+      return;
+    }
+  }
+  controlsLastMoveAt = performance.now();
+  var rect = bar.getBoundingClientRect();
+  var handle = document.getElementById('bottom-handle');
+  var hr = handle ? handle.getBoundingClientRect() : null;
+  var overHandle = hr && x >= hr.left - 18 && x <= hr.right + 18 && y >= hr.top - 12 && y <= hr.bottom + 14;
+  var overBar = x >= rect.left - 18 && x <= rect.right + 18 && y >= rect.top - 18 && y <= rect.bottom + 14;
+  var mini = document.getElementById('mini-queue-popover');
+  var miniRect = mini ? mini.getBoundingClientRect() : null;
+  var overMini = miniQueueOpen && miniRect && x >= miniRect.left - 16 && x <= miniRect.right + 16 && y >= miniRect.top - 16 && y <= miniRect.bottom + 16;
+  if (overHandle) wakeBottomHandle();
+  if (overBar || overMini || overHandle) revealBottomControls(overHandle ? 900 : 520);
+  else scheduleControlsHide(70);
+}
+
+function toggleControlsAutoHide() {
+  controlsAutoHide = !controlsAutoHide;
+  saveBooleanPreference(CONTROLS_AUTO_HIDE_STORE_KEY, controlsAutoHide);
+  var btn = document.getElementById('controls-hide-btn');
+  if (btn) btn.classList.toggle('active', controlsAutoHide);
+  setControlsHidden(false);
+  if (controlsAutoHide) {
+    scheduleControlsHide(520);
+    showToast('控制条自动隐藏已开启');
+  } else {
+    if (controlsHideTimer) { clearTimeout(controlsHideTimer); controlsHideTimer = null; }
+    showToast('控制条保持显示');
+  }
+}
+
+function applyControlsAutoHidePreference() {
+  var btn = document.getElementById('controls-hide-btn');
+  if (btn) btn.classList.toggle('active', !!controlsAutoHide);
+  if (!controlsAutoHide && controlsHideTimer) {
+    clearTimeout(controlsHideTimer);
+    controlsHideTimer = null;
+  }
+  setControlsHidden(false);
+}
+
+(function initControlsAutoHide() {
+  var bar = document.getElementById('bottom-bar');
+  var handle = document.getElementById('bottom-handle');
+  if (!bar) return;
+  function enterControls() {
+    controlsHovering = true;
+    wakeBottomHandle();
+    setControlsHidden(false);
+    if (controlsHideTimer) { clearTimeout(controlsHideTimer); controlsHideTimer = null; }
+  }
+  function leaveControls() {
+    controlsHovering = false;
+    scheduleControlsHide(70);
+    wakeBottomHandle(900);
+  }
+  bar.addEventListener('mouseenter', enterControls);
+  bar.addEventListener('mouseleave', leaveControls);
+  if (handle) {
+    handle.addEventListener('mouseenter', function () {
+      controlsHovering = true;
+      revealBottomControls(900);
+    });
+    handle.addEventListener('mouseleave', leaveControls);
+    handle.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); toggleBottomControlsFromHandle(); });
+  }
+  updateControlsChromeState();
+})();
+
+function isCursorAutoHideMode() {
+  return !document.hidden;
+}
+
+function clearCursorAutoHideTimer() {
+  if (cursorHideTimer) {
+    clearTimeout(cursorHideTimer);
+    cursorHideTimer = null;
+  }
+}
+
+function setCursorHidden(hidden) {
+  document.body.classList.toggle('cursor-hidden', !!hidden && isCursorAutoHideMode());
+}
+
+function scheduleCursorHide(delay) {
+  clearCursorAutoHideTimer();
+  if (!isCursorAutoHideMode()) {
+    setCursorHidden(false);
+    return;
+  }
+  cursorHideTimer = setTimeout(function () {
+    cursorHideTimer = null;
+    setCursorHidden(true);
+  }, delay == null ? CURSOR_HIDE_DELAY : delay);
+}
+
+function revealCursorForActivity() {
+  if (!isCursorAutoHideMode()) {
+    clearCursorAutoHideTimer();
+    setCursorHidden(false);
+    return;
+  }
+  setCursorHidden(false);
+  scheduleCursorHide(CURSOR_HIDE_DELAY);
+}
+
+function syncCursorAutoHideMode() {
+  if (isCursorAutoHideMode()) revealCursorForActivity();
+  else {
+    clearCursorAutoHideTimer();
+    setCursorHidden(false);
+  }
+}
+
+['mousemove', 'pointermove', 'mousedown', 'wheel', 'touchstart'].forEach(function (type) {
+  window.addEventListener(type, revealCursorForActivity, { passive: true, capture: true });
+});
+syncCursorAutoHideMode();
+
+// ============================================================
+//  指针 / 拖拽控制
+//   v7.1: 用 userOrbit 替代 targetOrbit; 加 drag 距离判断
+;
+
 // ==================== 02-visual/00-pointer-cover-particles.js ====================
 // ============================================================
 var mouseWorld = new THREE.Vector3(-999, -999, 0);
@@ -5491,15 +5848,14 @@ console.log('v7 shell loaded, JS pending');
 
 // ==================== 02-visual/01-float-skull-backcover.js ====================
 // ============================================================
+// 2026-09-20 偏离说明：MR 2.2.0 原文在 createFloatLayer 顶部强关（fx.floatLayer=false…return，
+// 真实实现成死代码）——即 MR 原版此开关也是假的。按用户"不要假开关、原模原样搬功能"指令，
+// 删除强关 4 行，恢复 MR 自带的完整真实实现（本文件内后续代码，未改动）。
 var FLOAT_COUNT = 1300;
 var floatGroup = null;
 var floatPositionsArr = null, floatBaseArr = null, floatPhaseArr = null, floatColorArr = null;
 
 function createFloatLayer() {
-  fx.floatLayer = false;
-  uniforms.uFloatAlpha.value = 0;
-  if (floatGroup) destroyFloatLayer();
-  return;
   if (floatGroup) return;
   var fgeo = new THREE.BufferGeometry();
   floatPositionsArr = new Float32Array(FLOAT_COUNT * 3);
@@ -5717,7 +6073,7 @@ function loadSkullParticleAsset() {
     skullParticleAsset.failed = true;
     return Promise.resolve(null);
   }
-  skullParticleAsset.promise = fetch('assets/skull-decimation-points.bin?v=regular-surface-teeth-soften-20260621', { cache: 'reload' })
+  skullParticleAsset.promise = fetch((window.location.protocol === 'file:' ? 'dsh-mediapipe://assets/skull-decimation-points.bin' : 'assets/skull-decimation-points.bin') + '?v=regular-surface-teeth-soften-20260621', { cache: 'reload' })
     .then(function (res) {
       if (!res.ok) throw new Error('skull asset ' + res.status);
       return res.arrayBuffer();
@@ -16538,6 +16894,474 @@ function disposeLyricsParticles() {
 //  涟漪触发系统 — 3×3 九宫格 + bass 上升沿
 ;
 
+// ==================== 03-beat/00-tempo-worker-cache-prefetch.js ====================
+// Ported from Mineradio 2.2.0, GPL-3.0, js/modules/03-beat/00-tempo-worker-cache-prefetch.js 全文。
+// DSH 适配（2026-09-20 B-1 离线节拍链，共 2 处，均有 [DSH 适配] 行内标注）：
+//   ① ensureMusicTempo 的 fetch 路径改相对解析（file:// 下 '/vendor/...' 绝对路径指向盘根必死）；
+//      主路径是适配层 mount 时 <script> 预载 window.MusicTempo（本函数首行守卫天然短路），
+//      间接 eval 兜底保留——本项目 CSP 烟测实测 file:// 页内间接 eval 放行（2026-09-20 CDP 实锤）。
+//   ② getMusicTempoWorkerUrl 的 blob 内联 Worker → 真实文件 worker vendor/music-tempo-worker.js：
+//      CSP default-src 'self' 拦 blob: worker（"Creating a worker from 'blob:file://...'" 违规，
+//      CDP 烟测实锤），真实同源文件 worker + 同目录 importScripts 全链实测跑通（tempo=128.2）。
+function medianGap(times, minGap, maxGap) {
+  if (!times || times.length < 2) return 0;
+  var gaps = [];
+  for (var i = 1; i < times.length; i++) {
+    var gap = times[i] - times[i - 1];
+    if (gap >= minGap && gap <= maxGap) gaps.push(gap);
+  }
+  gaps.sort(function (a, b) { return a - b; });
+  return gaps.length ? gaps[Math.floor(gaps.length * 0.5)] : 0;
+}
+
+function normalizeMusicTempoBeats(times, duration) {
+  if (!times || !times.length) return [];
+  var sorted = times
+    .filter(function (t) { return isFinite(t) && t >= 0.05 && (!duration || t < duration - 0.05); })
+    .sort(function (a, b) { return a - b; });
+  if (sorted.length < 4) return sorted;
+  var gap = medianGap(sorted, 0.20, 1.20);
+  var minMainGap = gap && gap < 0.42 ? Math.min(0.44, gap * 1.65) : 0.36;
+  var out = [];
+  var last = -10;
+  for (var i = 0; i < sorted.length; i++) {
+    if (sorted[i] - last >= minMainGap) {
+      out.push(sorted[i]);
+      last = sorted[i];
+    }
+  }
+  return out;
+}
+
+function estimateTempoPhaseOffset(tempoBeats, beatCandidates, step, duration) {
+  if (!tempoBeats || tempoBeats.length < 8 || !beatCandidates || beatCandidates.length < 4 || !step) return 0;
+  var maxOffset = Math.min(0.26, Math.max(0.12, step * 0.58));
+  var binSize = 0.025;
+  var bins = {};
+  var samples = [];
+  var totalWeight = 0;
+  var ti = 0;
+  for (var i = 0; i < beatCandidates.length; i++) {
+    var b = beatCandidates[i];
+    if (!b || !isFinite(b.time)) continue;
+    if (duration && (b.time < 1.0 || b.time > duration - 0.5)) continue;
+    var strength = Math.max(0, Math.min(1, b.strength || 0));
+    if (!b.camera && strength < 0.54) continue;
+    if (b.low != null && b.low < 0.18 && strength < 0.66) continue;
+    while (ti < tempoBeats.length - 1 && Math.abs(tempoBeats[ti + 1] - b.time) <= Math.abs(tempoBeats[ti] - b.time)) ti++;
+    var base = tempoBeats[ti];
+    var offset = b.time - base;
+    if (!isFinite(offset) || Math.abs(offset) > maxOffset) continue;
+    var weight = 0.20 + strength * strength * 1.35;
+    if (b.primary) weight *= 1.35;
+    if (b.camera) weight *= 1.18;
+    if (b.mass != null) weight *= 0.82 + Math.max(0, Math.min(1, b.mass)) * 0.42;
+    if (Math.abs(offset) < 0.025) weight *= 0.72;
+    var key = Math.round(offset / binSize);
+    bins[key] = (bins[key] || 0) + weight;
+    samples.push({ offset: offset, weight: weight, key: key });
+    totalWeight += weight;
+  }
+  if (samples.length < 4 || totalWeight <= 0) return 0;
+  var bestKey = null;
+  var bestWeight = 0;
+  Object.keys(bins).forEach(function (k) {
+    var key = parseInt(k, 10);
+    var w = (bins[key] || 0) + (bins[key - 1] || 0) * 0.72 + (bins[key + 1] || 0) * 0.72;
+    if (w > bestWeight) {
+      bestWeight = w;
+      bestKey = key;
+    }
+  });
+  if (bestKey == null || bestWeight < totalWeight * 0.26) return 0;
+  var sum = 0;
+  var wsum = 0;
+  for (var si = 0; si < samples.length; si++) {
+    var s = samples[si];
+    if (Math.abs(s.key - bestKey) <= 1) {
+      sum += s.offset * s.weight;
+      wsum += s.weight;
+    }
+  }
+  if (wsum <= 0) return 0;
+  var offsetOut = sum / wsum;
+  return Math.abs(offsetOut) >= 0.045 ? Math.max(-maxOffset, Math.min(maxOffset, offsetOut)) : 0;
+}
+
+var musicTempoLoadPromise = null;
+var QUEUE_BEAT_AUDIO_PREFETCH_ENABLED = false;
+function ensureMusicTempo() {
+  if (window.MusicTempo) return Promise.resolve(window.MusicTempo);
+  if (musicTempoLoadPromise) return musicTempoLoadPromise;
+  // [DSH 适配] 绝对路径 '/vendor/...' 在 file:// 下解析到盘根，改相对当前页面解析
+  musicTempoLoadPromise = fetch(new URL('mr/vendor/music-tempo.min.js', location.href).href)
+    .then(function (resp) {
+      if (!resp.ok) throw new Error('music-tempo load failed: ' + resp.status);
+      return resp.text();
+    })
+    .then(function (code) {
+      (0, eval)(code);
+      return window.MusicTempo || null;
+    })
+    .catch(function (err) {
+      console.warn('music-tempo dynamic load failed:', err);
+      return null;
+    });
+  return musicTempoLoadPromise;
+}
+
+var musicTempoWorkerUrl = null;
+function getMusicTempoWorkerUrl() {
+  if (musicTempoWorkerUrl) return musicTempoWorkerUrl;
+  // [DSH 适配] MR 原版在此用 Blob 内联 worker 源码 + URL.createObjectURL；本项目 CSP
+  // default-src 'self' 拦 blob: worker（CDP 烟测实锤）。改为真实同源文件 worker（消息协议一致），
+  // 其内部 importScripts('music-tempo.min.js') 相对自身目录解析，'self' 放行。
+  musicTempoWorkerUrl = new URL('mr/vendor/music-tempo-worker.js', location.href).href;
+  return musicTempoWorkerUrl;
+}
+
+async function analyzeMusicTempoInWorker(buffer, token) {
+  if (typeof Worker === 'undefined' || typeof Blob === 'undefined' || typeof URL === 'undefined') return null;
+  try {
+    showBeatChip('后台锁定电影主拍…');
+    await yieldToIdle(isHiddenForBackgroundOptimization() ? 20 : 180);
+    if (token !== beatMapToken) return null;
+    var channels = buffer.numberOfChannels;
+    var len = buffer.length;
+    var mono = new Float32Array(len);
+    var chDataList = [];
+    for (var ch = 0; ch < channels; ch++) chDataList.push(buffer.getChannelData(ch));
+    var chScale = 1 / Math.max(1, channels);
+    var monoChunk = Math.max(4096, Math.floor(buffer.sampleRate * 0.70));
+    for (var monoStart = 0; monoStart < len; monoStart += monoChunk) {
+      var monoEnd = Math.min(len, monoStart + monoChunk);
+      for (var mi = monoStart; mi < monoEnd; mi++) {
+        var sum = 0;
+        for (var ci = 0; ci < channels; ci++) sum += chDataList[ci][mi] * chScale;
+        mono[mi] = sum;
+      }
+      if ((monoStart / monoChunk) % 2 === 1) {
+        await yieldToIdle(isHiddenForBackgroundOptimization() ? 10 : 60);
+        if (token !== beatMapToken) return null;
+      }
+    }
+    var worker = new Worker(getMusicTempoWorkerUrl());
+    return await new Promise(function (resolve) {
+      var done = false;
+      var timer = setTimeout(function () {
+        if (done) return;
+        done = true;
+        worker.terminate();
+        resolve(null);
+      }, 16000);
+      worker.onmessage = function (ev) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        worker.terminate();
+        var data = ev.data || {};
+        if (!data.ok) {
+          console.warn('music-tempo worker failed:', data.error);
+          resolve(null);
+          return;
+        }
+        resolve(data);
+      };
+      worker.onerror = function (err) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        worker.terminate();
+        console.warn('music-tempo worker error:', err && err.message ? err.message : err);
+        resolve(null);
+      };
+      worker.postMessage({
+        mono: mono.buffer,
+        sampleRate: buffer.sampleRate,
+        scriptUrl: location.origin + '/vendor/music-tempo.min.js'
+      }, [mono.buffer]);
+    });
+  } catch (err) {
+    console.warn('music-tempo worker setup failed:', err);
+    return null;
+  }
+}
+
+function scheduleBeatAnalysis(songId, audioUrl, token, song) {
+  if (!songId || !audioUrl) return;
+  if (djMode.active) {
+    cancelBeatAnalysisTimer();
+    beatAnalysisStartedAt = 0;
+    hideBeatChip();
+    return;
+  }
+  cancelBeatAnalysisTimer();
+  beatAnalysisStartedAt = 0;
+  hideBeatChip();
+  var analysisAttempts = 0;
+  function queueCurrentTrackAnalysis(delay) {
+    if (token !== beatMapToken || beatMapCache[songId]) return;
+    if (beatAnalysisTimer) clearTimeout(beatAnalysisTimer);
+    beatAnalysisTimer = setTimeout(waitForQuietStart, Math.max(120, Number(delay) || 0));
+  }
+  function waitForQuietStart() {
+    beatAnalysisTimer = null;
+    if (token !== beatMapToken || beatMapCache[songId]) return;
+    if (!audio || audio.paused) {
+      queueCurrentTrackAnalysis(620);
+      return;
+    }
+    var current = audio.currentTime || 0;
+    if (current < beatAnalysisConfig.minPlaybackSec) {
+      queueCurrentTrackAnalysis(Math.max(500, (beatAnalysisConfig.minPlaybackSec - current) * 1000));
+      return;
+    }
+    var startAnalysis = async function () {
+      if (token !== beatMapToken || beatMapCache[songId]) return;
+      if (!audio || audio.paused) {
+        queueCurrentTrackAnalysis(620);
+        return;
+      }
+      var diskMap = await readBeatDiskCache(songId);
+      if (diskMap) {
+        applyBeatMapCacheForCurrent(songId, diskMap, token, 'D盘节拍缓存命中:');
+        return;
+      }
+      if (token !== beatMapToken || !audio || audio.paused || beatMapCache[songId]) return;
+      if (beatMapBusy) {
+        queueCurrentTrackAnalysis(420);
+        return;
+      }
+      analysisAttempts++;
+      beatAnalysisStartedAt = performance.now();
+      analyzeAudioBeats(audioUrl, null, token, {
+        skipMusicTempo: beatAnalysisConfig.skipMusicTempoWhilePlaying && !audio.paused,
+        background: true,
+        song: song || null
+      }).then(function (map) {
+        if (token !== beatMapToken) return;
+        if (!map) {
+          if (analysisAttempts < 3) queueCurrentTrackAnalysis(1200 + analysisAttempts * 600);
+          return;
+        }
+        smoothBeatMapHandoff(songId, map, token, song || null);
+      }).catch(function (err) {
+        console.warn('scheduled beat analysis failed:', err);
+        hideBeatChip();
+        if (token === beatMapToken && analysisAttempts < 3) queueCurrentTrackAnalysis(1200 + analysisAttempts * 600);
+      });
+    };
+    scheduleAnalysisTask(startAnalysis, beatAnalysisConfig.idleTimeout);
+  }
+  queueCurrentTrackAnalysis(beatAnalysisConfig.delayMs);
+}
+
+function beatMapSongKey(song) {
+  if (!song) return '';
+  if (song.type === 'local' && song.localKey) return 'local:' + song.localKey;
+  var provider = songProviderKey(song) || 'netease';
+  if (provider === 'qq') return 'qq:' + (song.mid || song.songmid || song.id || (song.name + '|' + song.artist));
+  var id = song.hash || song.fileHash || song.spotifyId || song.providerSongId || song.id;
+  if (id != null && id !== '') {
+    if (provider === 'netease') return 'song:' + id;
+    var duration = Math.max(0, Number(song.duration || song.dt) || 0);
+    if (duration > 10000) duration /= 1000;
+    return provider + ':' + id + ':' + Math.round(duration);
+  }
+  return '';
+}
+
+function localBeatDiskKey(localKey, mode) {
+  if (!localKey) return '';
+  return 'local:' + localKey + ':' + (mode === 'dj' ? 'dj' : 'mr');
+}
+
+function updateBeatDiskCacheStatus(data) {
+  if (!data) return;
+  beatDiskCacheStatus.checked = true;
+  beatDiskCacheStatus.enabled = !!data.enabled || data.mode === 'disk';
+  beatDiskCacheStatus.mode = data.mode || (beatDiskCacheStatus.enabled ? 'disk' : 'memory-only');
+  beatDiskCacheStatus.reason = data.reason || '';
+  if (!beatDiskCacheStatus.enabled && !beatDiskCacheNoticeLogged) {
+    beatDiskCacheNoticeLogged = true;
+    console.log('节拍磁盘缓存不可用，已降级为本次运行内存缓存:', beatDiskCacheStatus.reason || 'unknown');
+  }
+}
+
+async function ensureBeatDiskCacheStatus() {
+  if (beatDiskCacheStatus.checked) return beatDiskCacheStatus;
+  try {
+    updateBeatDiskCacheStatus(await apiJson('/api/beatmap/cache/status?t=' + Date.now()));
+  } catch (e) {
+    updateBeatDiskCacheStatus({ enabled: false, mode: 'memory-only', reason: 'STATUS_FAILED' });
+  }
+  return beatDiskCacheStatus;
+}
+
+async function readBeatDiskCache(key) {
+  if (!key || beatMapCache[key]) return beatMapCache[key] || null;
+  var st = await ensureBeatDiskCacheStatus();
+  if (!st.enabled) return null;
+  try {
+    var r = await apiJson('/api/beatmap/cache?key=' + encodeURIComponent(key) + '&t=' + Date.now());
+    if (r && r.enabled === false) updateBeatDiskCacheStatus(r);
+    if (!r || !r.hit || !r.map) return null;
+    var map = unpackLocalBeatMap(r.map);
+    if (!map) return null;
+    beatMapCache[key] = map;
+    return map;
+  } catch (e) {
+    console.warn('beat disk cache read failed:', e);
+    return null;
+  }
+}
+
+async function writeBeatDiskCache(key, map, song, mode) {
+  if (!key || !map) return false;
+  var st = await ensureBeatDiskCacheStatus();
+  if (!st.enabled) return false;
+  try {
+    var packed = packLocalBeatMap(map);
+    if (!packed) return false;
+    var r = await apiJson('/api/beatmap/cache', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        key: key,
+        mode: mode || 'mr',
+        provider: songProviderKey(song),
+        title: song && song.name,
+        artist: song && song.artist,
+        map: packed
+      })
+    });
+    if (r && r.enabled === false) updateBeatDiskCacheStatus(r);
+    return !!(r && r.ok);
+  } catch (e) {
+    console.warn('beat disk cache write failed:', e);
+    return false;
+  }
+}
+
+function isBeatPrefetchCandidate(song) {
+  if (!song || isPodcastSong(song) || song.type === 'local' || song.localUrl) return false;
+  return !!beatMapSongKey(song);
+}
+
+function findNextBeatPrefetchIndex(fromIdx, seen) {
+  if (!playQueue.length) return -1;
+  seen = seen || {};
+  var total = playQueue.length;
+  for (var step = 1; step < total; step++) {
+    var idx = (fromIdx + step + total) % total;
+    if (idx === currentIdx) continue;
+    var song = playQueue[idx];
+    if (!isBeatPrefetchCandidate(song)) continue;
+    var key = beatMapSongKey(song);
+    if (!key || beatMapCache[key] || seen[key]) continue;
+    return idx;
+  }
+  return -1;
+}
+
+function normalizeBeatPrefetchState(state) {
+  state = state || {};
+  return {
+    keys: Object.assign({}, state.keys || state),
+    count: Math.max(0, Number(state.count) || 0)
+  };
+}
+
+async function fetchBeatPrefetchAudioUrl(song) {
+  if (!song) return null;
+  if (typeof resolveAlbumGaplessPlaybackData === 'function') {
+    var resolved = await resolveAlbumGaplessPlaybackData(song);
+    if (!resolved || !resolved.url || resolved.trial) return null;
+    return '/api/audio?url=' + encodeURIComponent(resolved.url);
+  }
+  var isQQ = songProviderKey(song) === 'qq';
+  var requestedQuality = normalizePlaybackQualityForProvider(getPlaybackQualityForSong(song), isQQ ? 'qq' : 'netease');
+  if (!isQQ && requestedQuality === 'jymaster' && !hasProviderSvip('netease', loginStatus)) requestedQuality = 'hires';
+  var runtimeQualityCap = playbackQualityCapValue(song, isQQ ? 'qq' : 'netease');
+  if (playbackQualityAboveCap(requestedQuality, isQQ ? 'qq' : 'netease', runtimeQualityCap)) requestedQuality = runtimeQualityCap;
+  var qualityParam = '&quality=' + encodeURIComponent(requestedQuality);
+  var neteaseMatchQuery = typeof neteasePlaybackMatchQuery === 'function' ? neteasePlaybackMatchQuery(song) : '';
+  var data = isQQ
+    ? await apiJson('/api/qq/song/url?mid=' + encodeURIComponent(song.mid || song.songmid || song.id || '') + '&mediaMid=' + encodeURIComponent(song.mediaMid || song.media_mid || '') + qualityParam, { timeoutMs: 15000 })
+    : await apiJson('/api/song/url?id=' + encodeURIComponent(song.id) + neteaseMatchQuery + qualityParam, { timeoutMs: 14000 });
+  if (!data || !data.url || data.trial) return null;
+  return '/api/audio?url=' + encodeURIComponent(data.url);
+}
+
+function scheduleQueueBeatPrefetch(fromIdx, delayMs, state) {
+  cancelBeatPrefetchTimer();
+  if (!QUEUE_BEAT_AUDIO_PREFETCH_ENABLED) return;
+  if (!playQueue.length || beatPrefetchBusy || localBeatAnalysis.active) return;
+  var prefetchState = normalizeBeatPrefetchState(state);
+  if (prefetchState.count >= BEAT_PREFETCH_LIMIT) return;
+  var token = beatMapToken;
+  var seq = ++beatPrefetchToken;
+  var startIdx = isFinite(fromIdx) ? fromIdx : currentIdx;
+  var waitMs = delayMs == null ? 1800 : delayMs;
+  if (typeof isRenderInteractionActive === 'function' && isRenderInteractionActive()) waitMs = Math.max(waitMs, 2200);
+  beatPrefetchTimer = setTimeout(function () {
+    beatPrefetchTimer = null;
+    runQueueBeatPrefetch(startIdx, token, seq, prefetchState);
+  }, waitMs);
+}
+
+async function runQueueBeatPrefetch(fromIdx, token, seq, state) {
+  if (!QUEUE_BEAT_AUDIO_PREFETCH_ENABLED) return;
+  if (token !== beatMapToken || seq !== beatPrefetchToken || beatPrefetchBusy || !playQueue.length) return;
+  if (audio && audio.paused) return;
+  state = normalizeBeatPrefetchState(state);
+  if (state.count >= BEAT_PREFETCH_LIMIT) return;
+  var idx = findNextBeatPrefetchIndex(fromIdx, state.keys);
+  if (idx < 0) return;
+  var song = hydrateCustomCover(playQueue[idx]);
+  var key = beatMapSongKey(song);
+  if (!key) return;
+  state.keys[key] = true;
+  state.count++;
+  beatPrefetchBusy = true;
+  beatPrefetchLastKey = key;
+  try {
+    if (token !== beatMapToken || seq !== beatPrefetchToken) return;
+    var diskMap = await readBeatDiskCache(key);
+    if (diskMap) {
+      console.log('队列节奏D盘缓存命中:', song.name || key, diskMap.visualBeatCount || 0);
+      return;
+    }
+    var audioUrl = await fetchBeatPrefetchAudioUrl(song);
+    if (token !== beatMapToken || seq !== beatPrefetchToken || !audioUrl || beatMapCache[key]) return;
+    while (typeof isRenderInteractionActive === 'function' && isRenderInteractionActive() && token === beatMapToken && seq === beatPrefetchToken) {
+      await yieldToIdle(isHiddenForBackgroundOptimization() ? 30 : 320);
+    }
+    if (token !== beatMapToken || seq !== beatPrefetchToken || beatMapCache[key]) return;
+    while (beatMapBusy && token === beatMapToken && seq === beatPrefetchToken) {
+      await yieldToIdle(isHiddenForBackgroundOptimization() ? 30 : 240);
+    }
+    if (token !== beatMapToken || seq !== beatPrefetchToken || beatMapCache[key]) return;
+    var map = await analyzeAudioBeats(audioUrl, null, token, {
+      background: true,
+      prefetch: true,
+      song: song
+    });
+    if (token !== beatMapToken || seq !== beatPrefetchToken || !map) return;
+    beatMapCache[key] = map;
+    writeBeatDiskCache(key, map, song, 'mr');
+    console.log('队列节奏预热完成:', song.name || key, map.visualBeatCount || 0);
+  } catch (err) {
+    console.warn('queue beat prefetch failed:', err && err.message ? err.message : err);
+  } finally {
+    beatPrefetchBusy = false;
+    if (state.count < BEAT_PREFETCH_LIMIT && token === beatMapToken && seq === beatPrefetchToken && playQueue.length && !(audio && audio.paused)) {
+      scheduleQueueBeatPrefetch(idx, 1600, state);
+    }
+  }
+}
+;
+
 // ==================== 03-beat/01-audio-beat-analysis.js ====================
 async function analyzeAudioBeats(audioUrl, durationSec, token, options) {
   options = options || {};
@@ -17785,1393 +18609,6 @@ function commitCoverCrop() {
 //   - side:   现版本精修, 右侧 5 张卡微角度堆叠
 //   - stage:  弧形排列, 居中, 有倒影, 当前卡片"呼吸+光环"
 //             卡片间粒子穿梭, 切歌时飞出动画
-;
-
-// ==================== 07-fx/00-preset-archive-data.js ====================
-// ============================================================
-var presetMeta = [
-  { name: 'emily专辑封面', desc: '封面粒子 · 快速入场' },
-  { name: '滚筒', desc: '隧道 · 沉浸感' },
-  { name: '星球', desc: '星球 · 雕塑感' },
-  { name: '虚空', desc: '无粒子 · 自定义背景' },
-  { name: '唱片', desc: '唱片 · 圆形封面' },
-  { name: '星河', desc: '壁纸粒子 · 音乐律动' },
-  { name: '安魂', desc: '骷髅·YUI7W', descHtml: '骷髅·<span class="pc-yui7w">YUI7W</span>' },
-  { name: '音域回响', nameHtml: '音域回响 <span class="pc-name-en">Sonic-Topography</span>', desc: '作者 Ajin', descHtml: '作者 <span class="pc-author-ajin">Ajin</span>' },
-  { name: '音域回响', nameHtml: '音域回响 <span class="pc-name-en">Wallpaper Engine</span>', desc: '作者 CmzYa' },
-  { name: '月蚀圣环', nameHtml: '月蚀圣环 <span class="pc-name-en">ECLIPSE HALO</span>', desc: '黑曜轨道 · 冷金日冕', premiumVisual: true, accent: '#e8c98d', accent2: '#8fd8ff' },
-  { name: '雨幕霓虹', nameHtml: '雨幕霓虹 <span class="pc-name-en">NEON DRIZZLE</span>', desc: '城市雨丝 · 色谱残光', premiumVisual: true, accent: '#67efff', accent2: '#ff6bb5' },
-  { name: '折光蝶群', nameHtml: '折光蝶群 <span class="pc-name-en">PRISM FLOCK</span>', desc: '折纸翼阵 · 光谱迁徙', premiumVisual: true, accent: '#f0d7ff', accent2: '#75e6d1' },
-  { name: '深海绽放', nameHtml: '深海绽放 <span class="pc-name-en">ABYSSAL BLOOM</span>', desc: '生物荧光 · 潮汐花冠', premiumVisual: true, accent: '#75f0d0', accent2: '#8178ff' },
-];
-var presetIcons = [
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 14c3-2 5-2 8 0s5 2 8 0M3 10c3-2 5-2 8 0s5 2 8 0M3 18c3-2 5-2 8 0s5 2 8 0"/></svg>',
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>',
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/><path d="M5 12a7 7 0 0 0 14 0"/></svg>',
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7"/><path d="M8.8 8.8l6.4 6.4"/></svg>',
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.4"/><path d="M16.5 5.2c2.1.9 3.4 2.4 4 4.5"/><path d="M18.8 3.2l1.5 4.8"/></svg>',
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 15c2.2-4.4 4.4-4.4 6.6 0s4.4 4.4 6.6 0S20.6 10.6 23 15"/><path d="M3 9c2.2 2.2 4.4 2.2 6.6 0s4.4-2.2 6.6 0S20.6 11.2 23 9"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/></svg>',
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.2h4v6.2h4.2v3.8H14v7.6h-4v-7.6H5.8V9.4H10z"/></svg>',
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18c2-3 4-3 6 0s4 3 6 0 4-3 6 0"/><path d="M3 12c2-2.5 4-2.5 6 0s4 2.5 6 0 4-2.5 6 0"/><path d="M3 6c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/><circle cx="18" cy="5" r="1.2" fill="currentColor"/></svg>',
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18h18"/><path d="M5 15c1.4-4 2.8-4 4.2 0s2.8 4 4.2 0 2.8-4 4.6 0"/><path d="M4 10c2-2 4-2 6 0s4 2 6 0 3-2 4 0"/><path d="M7 6h10"/><circle cx="18.2" cy="5.8" r="1.35" fill="currentColor"/></svg>',
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.45"><ellipse cx="12" cy="12" rx="9" ry="3.8" transform="rotate(-18 12 12)"/><ellipse cx="12" cy="12" rx="6.3" ry="2.2" transform="rotate(24 12 12)"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/></svg>',
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"><path d="M5 3v8M9 2v15M13 5v8M17 2v18M21 6v9"/><path d="M4 19c4-3 8 3 16-1" opacity=".7"/></svg>',
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"><path d="M12 12 3 6l3 9 6-3 6 3 3-9-9 6Z"/><path d="M12 12V4M6 15l3 4 3-7 3 7 3-4"/></svg>',
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"><path d="M12 20c-1-5-7-5-7-10 4 0 6 2 7 5 1-3 3-5 7-5 0 5-6 5-7 10Z"/><path d="M12 15c-3-3-2-7 0-11 2 4 3 8 0 11Z"/><circle cx="12" cy="15" r="1.2" fill="currentColor" stroke="none"/></svg>',
-];
-var presetDisplayOrder = [0, 9, 10, 11, 12, 6, 7, 8, 5, 4, 2, 1, 3];
-var lyricColorPresets = [
-  { name: '雾蓝', color: '#a9b8c8' },
-  { name: '银蓝', color: '#9db8cf' },
-  { name: '冰川', color: '#7ec8d8' },
-  { name: '青绿', color: '#66d2b5' },
-  { name: '松针', color: '#7fa894' },
-  { name: '月白', color: '#d7d2c4' },
-  { name: '岩金', color: '#c3ae7c' },
-  { name: '琥珀', color: '#d9a45f' },
-  { name: '暮粉', color: '#c78aa4' },
-  { name: '玫红', color: '#d76a8d' },
-  { name: '烟紫', color: '#9b83d3' },
-  { name: '电紫', color: '#8d70ff' },
-  { name: '靛蓝', color: '#5e78d8' },
-  { name: '海蓝', color: '#3c9fe0' },
-  { name: '霓青', color: '#28c5c3' },
-  { name: '夜绿', color: '#245c49' },
-  { name: '酒红', color: '#6d1f35' },
-  { name: '墨黑', color: '#111318' },
-];
-var USER_FX_ARCHIVE_STORE_KEY = 'mineradio-user-fx-archives-v1';
-var USER_FX_ARCHIVE_EXPORT_TYPE = 'mineradio-user-fx-archive';
-var USER_FX_ARCHIVE_SCHEMA = 1;
-var USER_FX_SHARE_PREFIX = 'MR2';
-var USER_FX_SHARE_VERSION = 1;
-var USER_FX_SHARE_PAYLOAD_TYPE = 'ufa';
-var USER_FX_SHARE_CODEC_GZIP = 'G';
-var USER_FX_SHARE_CODEC_JSON = 'J';
-var USER_FX_SHARE_COMPACT_DELTA = 'd';
-var USER_FX_SHARE_COMPACT_FULL = 'f';
-var USER_FX_SHARE_KEYS = [
-  'visualPresetSchema',
-  'preset',
-  'intensity',
-  'cinemaShake',
-  'depth',
-  'coverResolution',
-  'point',
-  'speed',
-  'twist',
-  'color',
-  'scatter',
-  'bgFade',
-  'bloomStrength',
-  'lyricGlowStrength',
-  'lyricBackgroundAdapt',
-  'lyricScale',
-  'lyricOffsetX',
-  'lyricOffsetY',
-  'lyricOffsetZ',
-  'lyricTiltX',
-  'lyricTiltY',
-  'lyricCameraLock',
-  'lyricColorMode',
-  'lyricColor',
-  'lyricHighlightMode',
-  'lyricHighlightColor',
-  'lyricGlowLinked',
-  'lyricGlowColor',
-  'lyricDisplayMode',
-  'lyricTranslationMode',
-  'lyricMotionStyle',
-  'lyricCustomLineCount',
-  'lyricGlitchCameraBind',
-  'lyricGlitchIntensity',
-  'lyricGlitchSlice',
-  'lyricGlitchChroma',
-  'lyricGlitchRate',
-  'lyricGlitchJitter',
-  'lyricContextOpacity',
-  'lyricContextSpread',
-  'lyricTranslationGap',
-  'lyricTranslationScale',
-  'lyricTranslationOpacity',
-  'lyricEdgeFade',
-  'lyricMotionSoftness',
-  'lyricFont',
-  'lyricLetterSpacing',
-  'lyricLineHeight',
-  'lyricWeight',
-  'visualTintMode',
-  'visualTintColor',
-  'uiAccentColor',
-  'homeAccentColor',
-  'homeIconColor',
-  'visualIconColor',
-  'backgroundColorMode',
-  'backgroundColor',
-  'backgroundOpacity',
-  'backgroundAlbumCover',
-  'backgroundMediaCropX',
-  'backgroundMediaCropY',
-  'backgroundMediaZoom',
-  'controlGlassChromaticOffset',
-  'playlistPanelGlassBlur',
-  'playlistPanelGlassDensity',
-  'playlistPanelOpenDuration',
-  'playlistPanelCloseDuration',
-  'backgroundColorCustom',
-  'floatLayer',
-  'cinema',
-  'edge',
-  'aiDepth',
-  'bloom',
-  'lyricGlow',
-  'lyricGlowBeat',
-  'lyricGlowParticles',
-  'lyricVerticalFloat',
-  'lyricPauseHold',
-  'desktopLyrics',
-  'desktopLyricsSize',
-  'desktopLyricsOpacity',
-  'desktopLyricsY',
-  'desktopLyricsClickThrough',
-  'desktopLyricsCinema',
-  'desktopLyricsHighlight',
-  'desktopLyricsFps',
-  'performanceBackground',
-  'performanceQuality',
-  'foregroundFpsMode',
-  'memoryAutoTrimApp',
-  'memoryAutoTrimOnBackground',
-  'memoryAutoSystemTrim',
-  'memorySystemAutoElevate',
-  'memorySystemIntervalMin',
-  'memorySystemThresholdPercent',
-  'memorySystemMask',
-  'memorySafetyRevision',
-  'liveBackgroundKeep',
-  'sonicGroundAmplitude',
-  'sonicGroundMotionSpeed',
-  'sonicGroundDensity',
-  'sonicGroundRange',
-  'sonicGroundLower',
-  'sonicGroundDepth',
-  'sonicGroundAutoRotate',
-  'sonicGroundColorMode',
-  'sonicGroundBaseColor',
-  'sonicGroundCoolColor',
-  'sonicGroundWarmColor',
-  'sonicGroundAccentColor',
-  'sonicGroundGlow',
-  'sonicGroundSubBass',
-  'sonicGroundBass',
-  'sonicGroundLowMid',
-  'sonicGroundMid',
-  'sonicGroundHighMid',
-  'sonicGroundPresence',
-  'sonicGroundBrilliance',
-  'sonicGroundAir',
-  'sonicGroundFloatingEnabled',
-  'sonicGroundFloatingIntensity',
-  'sonicGroundFloatingMinSize',
-  'sonicGroundFloatingMaxSize',
-  'sonicGroundFloatingSpeed',
-  'sonicGroundFloatingCount',
-  'sonicAudioMonitorEnabled',
-  'sonicAudioAutoTrack',
-  'sonicAudioSensitivity',
-  'sonicAudioBandStart',
-  'sonicAudioBandEnd',
-  'sonicAudioThreshold',
-  'sonicAudioPulseStrength',
-  'sonicWorkshopInputGain',
-  'sonicWorkshopAudioIntensity',
-  'sonicWorkshopResponseRange',
-  'sonicWorkshopPeakIntensity',
-  'sonicWorkshopColorMode',
-  'sonicWorkshopTheme',
-  'sonicWorkshopCustomColor',
-  'sonicWorkshopBaseColorMode',
-  'sonicWorkshopBaseColor',
-  'sonicWorkshopWarmColorMode',
-  'sonicWorkshopWarmColor',
-  'sonicWorkshopCoolColorMode',
-  'sonicWorkshopCoolColor',
-  'sonicWorkshopRippleColorMode',
-  'sonicWorkshopRippleColor',
-  'sonicWorkshopPeakColorMode',
-  'sonicWorkshopPeakColor',
-  'particleLyrics',
-  'backCover',
-  'shelf',
-  'shelfPinnedOpen',
-  'shelfCameraMode',
-  'shelfPresence',
-  'shelfShowPodcasts',
-  'shelfMergeCollections',
-  'shelfSize',
-  'shelfOffsetX',
-  'shelfOffsetY',
-  'shelfOffsetZ',
-  'shelfAngleY',
-  'shelfAngleYManual',
-  'shelfOpacity',
-  'shelfBgOpacity',
-  'shelfAccentColor',
-  'shelfDetailOffsetX',
-  'shelfDetailOffsetY',
-  'shelfDetailOffsetZ',
-  'shelfDetailScale',
-  'shelfDetailAngleX',
-  'shelfDetailAngleY',
-  'shelfDetailRowGap',
-  'shelfDetailOpenDuration',
-  'shelfDetailCloseDuration',
-  'shelfDetailRowDuration',
-  'shelfDetailIntroStrength',
-  'shelfDetailParallax',
-  'shelfSummonOpenDuration',
-  'shelfSummonCloseDuration',
-  'shelfSummonSlide',
-  'shelfSummonStagger',
-  'shelfSummonScale',
-  'shelfSummonParallax',
-  'shelfCameraEnterSpeed',
-  'shelfCameraExitSpeed',
-  'cam',
-  'cameraViewSaved',
-  'cameraViewMode',
-  'cameraOrbitTheta',
-  'cameraOrbitPhi',
-  'cameraOrbitRadius',
-  'cameraFreePositionX',
-  'cameraFreePositionY',
-  'cameraFreePositionZ',
-  'cameraFreeYaw',
-  'cameraFreePitch',
-  'cameraFreeRoll',
-  'cameraFreeFov',
-  'visualRotationSaved',
-  'visualRotationX',
-  'visualRotationY',
-  'windowBackgroundOpacity',
-  'backgroundGlassOpacity',
-  'backgroundStarRiver',
-  'lyricTextureClarity',
-  // Append-only: preserve every existing MR2 field index.
-  'lyricLiveViewportFit',
-  'lyricContextHighQuality',
-  'lyricBackdropAdapt',
-  'coverBackdropAdapt',
-  'gesturePlayerActions',
-  'gestureHandOverlay',
-  'gestureSensitivity'
-];
-function defaultUserFxArchiveName(index) {
-  return '存档 ' + (index + 1);
-}
-function normalizeUserFxArchiveName(name, index) {
-  name = String(name || '').replace(/\s+/g, ' ').trim();
-  if (!name) name = defaultUserFxArchiveName(index);
-  return name.slice(0, 18);
-}
-function archiveNumber(raw, key, fallback, min, max) {
-  var value = raw && raw[key] != null ? Number(raw[key]) : fallback;
-  if (!isFinite(value)) value = fallback;
-  return clampRange(value, min, max);
-}
-function archiveMode(raw, key, pattern, fallback) {
-  var value = String(raw && raw[key] != null ? raw[key] : fallback);
-  return pattern.test(value) ? value : fallback;
-}
-function archiveHasCameraState(raw) {
-  if (!raw || typeof raw !== 'object') return false;
-  if (raw.cameraViewSaved === true) return true;
-  var keys = [
-    'cameraViewMode',
-    'cameraOrbitTheta',
-    'cameraOrbitPhi',
-    'cameraOrbitRadius',
-    'cameraFreePositionX',
-    'cameraFreePositionY',
-    'cameraFreePositionZ',
-    'cameraFreeYaw',
-    'cameraFreePitch',
-    'cameraFreeRoll',
-    'cameraFreeFov'
-  ];
-  return keys.some(function (key) { return raw[key] != null; });
-}
-function archiveHasVisualRotationState(raw) {
-  if (!raw || typeof raw !== 'object') return false;
-  return raw.visualRotationSaved === true || raw.visualRotationX != null || raw.visualRotationY != null;
-}
-function isCameraArchiveKey(key) {
-  return /^camera(View|Orbit|Free)/.test(String(key || '')) || /^visualRotation/.test(String(key || ''));
-}
-function normalizeFxArchiveSnapshot(raw) {
-  if (!raw || typeof raw !== 'object') return null;
-  var savedPreset = clampRange(Number(raw.preset) || 0, 0, presetMeta.length - 1);
-  if (savedPreset === 3 && raw.visualPresetSchema !== VISUAL_PRESET_SCHEMA) savedPreset = 5;
-  var archiveShelfMode = archiveMode(raw, 'shelf', /^(off|side|stage)$/, fxDefaults.shelf);
-  var archiveShelfPresence = archiveShelfMode === 'off' ? 'auto' : archiveMode(raw, 'shelfPresence', /^(auto|always)$/, fxDefaults.shelfPresence);
-  var archiveShelfPinnedOpen = archiveShelfMode === 'side' && archiveShelfPresence === 'always' && raw.shelfPinnedOpen === true;
-  var archiveCameraSaved = archiveHasCameraState(raw);
-  var archiveVisualRotationSaved = archiveHasVisualRotationState(raw);
-  return {
-    visualPresetSchema: VISUAL_PRESET_SCHEMA,
-    preset: savedPreset,
-    intensity: archiveNumber(raw, 'intensity', fxDefaults.intensity, 0.2, 1.6),
-    cinemaShake: archiveNumber(raw, 'cinemaShake', fxDefaults.cinemaShake, 0, 1.8),
-    depth: archiveNumber(raw, 'depth', fxDefaults.depth, 0.2, 1.8),
-    coverResolution: normalizeCoverResolution(raw.coverResolution),
-    point: archiveNumber(raw, 'point', fxDefaults.point, 0.5, 2.2),
-    speed: archiveNumber(raw, 'speed', fxDefaults.speed, 0.2, 2.5),
-    twist: archiveNumber(raw, 'twist', fxDefaults.twist, 0, 0.6),
-    color: archiveNumber(raw, 'color', fxDefaults.color, 0.5, 2.0),
-    scatter: archiveNumber(raw, 'scatter', fxDefaults.scatter, 0, 0.5),
-    bgFade: archiveNumber(raw, 'bgFade', fxDefaults.bgFade, 0, 1.2),
-    bloomStrength: archiveNumber(raw, 'bloomStrength', fxDefaults.bloomStrength, 0, 1.6),
-    lyricGlowStrength: archiveNumber(raw, 'lyricGlowStrength', fxDefaults.lyricGlowStrength, 0, 0.85),
-    lyricBackgroundAdapt: archiveNumber(raw, 'lyricBackgroundAdapt', fxDefaults.lyricBackgroundAdapt, 0, 1),
-    lyricScale: archiveNumber(raw, 'lyricScale', fxDefaults.lyricScale, 0.35, 1.65),
-    lyricOffsetX: archiveNumber(raw, 'lyricOffsetX', fxDefaults.lyricOffsetX, -4.0, 4.0),
-    lyricOffsetY: archiveNumber(raw, 'lyricOffsetY', fxDefaults.lyricOffsetY, -2.4, 2.7),
-    lyricOffsetZ: archiveNumber(raw, 'lyricOffsetZ', fxDefaults.lyricOffsetZ, -3.2, 3.2),
-    lyricTiltX: archiveNumber(raw, 'lyricTiltX', fxDefaults.lyricTiltX, -84, 84),
-    lyricTiltY: archiveNumber(raw, 'lyricTiltY', fxDefaults.lyricTiltY, -84, 84),
-    lyricCameraLock: !!raw.lyricCameraLock,
-    lyricColorMode: raw.lyricColorMode === 'custom' ? 'custom' : 'auto',
-    lyricColor: normalizeHexColor(raw.lyricColor || fxDefaults.lyricColor),
-    lyricHighlightMode: raw.lyricHighlightMode === 'custom' ? 'custom' : 'auto',
-    lyricHighlightColor: normalizeHexColor(raw.lyricHighlightColor || fxDefaults.lyricHighlightColor),
-    lyricGlowLinked: raw.lyricGlowLinked !== false,
-    lyricGlowColor: normalizeHexColor(raw.lyricGlowColor || fxDefaults.lyricGlowColor),
-    lyricDisplayMode: normalizeLyricDisplayMode(raw.lyricDisplayMode || fxDefaults.lyricDisplayMode),
-    lyricTranslationMode: normalizeLyricTranslationMode(raw.lyricTranslationMode || fxDefaults.lyricTranslationMode),
-    lyricMotionStyle: normalizeLyricMotionStyle(raw.lyricMotionStyle || fxDefaults.lyricMotionStyle),
-    lyricCustomLineCount: archiveNumber(raw, 'lyricCustomLineCount', fxDefaults.lyricCustomLineCount, 1, 10),
-    lyricGlitchCameraBind: !!raw.lyricGlitchCameraBind,
-    lyricGlitchIntensity: archiveNumber(raw, 'lyricGlitchIntensity', fxDefaults.lyricGlitchIntensity, 0, 1.5),
-    lyricGlitchSlice: archiveNumber(raw, 'lyricGlitchSlice', fxDefaults.lyricGlitchSlice, 0, 1.4),
-    lyricGlitchChroma: archiveNumber(raw, 'lyricGlitchChroma', fxDefaults.lyricGlitchChroma, 0, 1.6),
-    lyricGlitchRate: archiveNumber(raw, 'lyricGlitchRate', fxDefaults.lyricGlitchRate, 0.45, 2.2),
-    lyricGlitchJitter: archiveNumber(raw, 'lyricGlitchJitter', fxDefaults.lyricGlitchJitter, 0, 1.8),
-    lyricContextOpacity: archiveNumber(raw, 'lyricContextOpacity', fxDefaults.lyricContextOpacity, 0.25, 1),
-    lyricContextSpread: archiveNumber(raw, 'lyricContextSpread', fxDefaults.lyricContextSpread, 0.60, 2.40),
-    lyricTranslationGap: archiveNumber(raw, 'lyricTranslationGap', fxDefaults.lyricTranslationGap, 0.28, 2.20),
-    lyricTranslationScale: archiveNumber(raw, 'lyricTranslationScale', fxDefaults.lyricTranslationScale, 0.46, 1.12),
-    lyricTranslationOpacity: archiveNumber(raw, 'lyricTranslationOpacity', fxDefaults.lyricTranslationOpacity, 0.20, 1),
-    lyricEdgeFade: archiveNumber(raw, 'lyricEdgeFade', fxDefaults.lyricEdgeFade, 0, 1),
-    lyricMotionSoftness: archiveNumber(raw, 'lyricMotionSoftness', fxDefaults.lyricMotionSoftness, 0.15, 1.2),
-    lyricFont: normalizeLyricFontKey(raw.lyricFont),
-    lyricLetterSpacing: archiveNumber(raw, 'lyricLetterSpacing', fxDefaults.lyricLetterSpacing, -0.04, 0.18),
-    lyricLineHeight: archiveNumber(raw, 'lyricLineHeight', fxDefaults.lyricLineHeight, 0.72, 1.80),
-    lyricWeight: archiveNumber(raw, 'lyricWeight', fxDefaults.lyricWeight, 500, 900),
-    lyricTextureClarity: normalizeLyricTextureClarity(raw.lyricTextureClarity),
-    lyricLiveViewportFit: raw.lyricLiveViewportFit !== false,
-    lyricContextHighQuality: raw.lyricContextHighQuality !== false,
-    lyricBackdropAdapt: raw.lyricBackdropAdapt !== false,
-    coverBackdropAdapt: raw.coverBackdropAdapt !== false,
-    visualTintMode: raw.visualTintMode === 'custom' ? 'custom' : 'auto',
-    visualTintColor: normalizeHexColor(raw.visualTintColor || fxDefaults.visualTintColor),
-    uiAccentColor: normalizeHexColor(raw.uiAccentColor || fxDefaults.uiAccentColor, fxDefaults.uiAccentColor),
-    homeAccentColor: normalizeHexColor(raw.homeAccentColor || fxDefaults.homeAccentColor, fxDefaults.homeAccentColor),
-    homeIconColor: normalizeHexColor(raw.homeIconColor || fxDefaults.homeIconColor, fxDefaults.homeIconColor),
-    visualIconColor: normalizeHexColor(raw.visualIconColor || fxDefaults.visualIconColor, fxDefaults.visualIconColor),
-    backgroundColorMode: raw.backgroundColorMode === 'custom' || raw.backgroundColorCustom ? 'custom' : 'cover',
-    backgroundColor: normalizeHexColor(raw.backgroundColor || fxDefaults.backgroundColor, fxDefaults.backgroundColor),
-    backgroundOpacity: archiveNumber(raw, 'backgroundOpacity', fxDefaults.backgroundOpacity, 0, 1),
-    backgroundAlbumCover: raw.backgroundAlbumCover === true,
-    backgroundMediaCropX: archiveNumber(raw, 'backgroundMediaCropX', fxDefaults.backgroundMediaCropX, 0, 100),
-    backgroundMediaCropY: archiveNumber(raw, 'backgroundMediaCropY', fxDefaults.backgroundMediaCropY, 0, 100),
-    backgroundMediaZoom: archiveNumber(raw, 'backgroundMediaZoom', fxDefaults.backgroundMediaZoom, 1, 2.8),
-    windowBackgroundOpacity: archiveNumber(raw, 'windowBackgroundOpacity', fxDefaults.windowBackgroundOpacity, 0, 1),
-    backgroundGlassOpacity: archiveNumber(raw, 'backgroundGlassOpacity', fxDefaults.backgroundGlassOpacity, 0, 1),
-    controlGlassChromaticOffset: archiveNumber(raw, 'controlGlassChromaticOffset', fxDefaults.controlGlassChromaticOffset, 30, 140),
-    playlistPanelGlassBlur: archiveNumber(raw, 'playlistPanelGlassBlur', fxDefaults.playlistPanelGlassBlur, 14, 60),
-    playlistPanelGlassDensity: archiveNumber(raw, 'playlistPanelGlassDensity', fxDefaults.playlistPanelGlassDensity, 0.55, 1),
-    playlistPanelOpenDuration: archiveNumber(raw, 'playlistPanelOpenDuration', fxDefaults.playlistPanelOpenDuration, 0.08, 0.72),
-    playlistPanelCloseDuration: archiveNumber(raw, 'playlistPanelCloseDuration', fxDefaults.playlistPanelCloseDuration, 0.06, 0.48),
-    backgroundColorCustom: raw.backgroundColorMode === 'custom' || !!raw.backgroundColorCustom,
-    floatLayer: !!raw.floatLayer,
-    cinema: raw.cinema !== false,
-    edge: !!raw.edge,
-    aiDepth: !!raw.aiDepth,
-    bloom: !!raw.bloom,
-    lyricGlow: raw.lyricGlow !== false,
-    lyricGlowBeat: raw.lyricGlowBeat !== false,
-    lyricGlowParticles: !!raw.lyricGlowParticles,
-    lyricVerticalFloat: raw.lyricVerticalFloat !== false,
-    backgroundStarRiver: raw.backgroundStarRiver !== false,
-    lyricPauseHold: raw.lyricPauseHold !== false,
-    desktopLyrics: !!raw.desktopLyrics,
-    desktopLyricsSize: archiveNumber(raw, 'desktopLyricsSize', fxDefaults.desktopLyricsSize, 0.72, 1.55),
-    desktopLyricsOpacity: archiveNumber(raw, 'desktopLyricsOpacity', fxDefaults.desktopLyricsOpacity, 0.28, 1),
-    desktopLyricsY: archiveNumber(raw, 'desktopLyricsY', fxDefaults.desktopLyricsY, 0.08, 0.92),
-    desktopLyricsClickThrough: raw.desktopLyricsClickThrough === true,
-    desktopLyricsCinema: raw.desktopLyricsCinema !== false,
-    desktopLyricsHighlight: raw.desktopLyricsHighlight === true,
-    desktopLyricsFps: normalizeDesktopLyricsFps(Object.prototype.hasOwnProperty.call(raw, 'desktopLyricsFps') ? raw.desktopLyricsFps : fxDefaults.desktopLyricsFps),
-    performanceBackground: normalizePerformanceBackgroundMode(raw.performanceBackground, raw.liveBackgroundKeep === true),
-    performanceQuality: normalizePerformanceQuality(raw.performanceQuality),
-    foregroundFpsMode: normalizeForegroundFpsMode(raw.foregroundFpsMode === 'adaptive' ? 'vsync' : raw.foregroundFpsMode),
-    memoryAutoTrimApp: raw.memoryAutoTrimApp !== false,
-    memoryAutoTrimOnBackground: raw.memoryAutoTrimOnBackground !== false,
-    memoryAutoSystemTrim: raw.memoryAutoSystemTrim === true,
-    memorySystemAutoElevate: raw.memorySystemAutoElevate === true,
-    memorySystemIntervalMin: archiveNumber(raw, 'memorySystemIntervalMin', fxDefaults.memorySystemIntervalMin, 5, 180),
-    memorySystemThresholdPercent: archiveNumber(raw, 'memorySystemThresholdPercent', fxDefaults.memorySystemThresholdPercent, 50, 98),
-    memorySystemMask: archiveNumber(raw, 'memorySystemMask', fxDefaults.memorySystemMask, 1, 29),
-    memorySafetyRevision: fxDefaults.memorySafetyRevision,
-    liveBackgroundKeep: normalizePerformanceBackgroundMode(raw.performanceBackground, raw.liveBackgroundKeep === true) === 'keep',
-    sonicGroundAmplitude: archiveNumber(raw, 'sonicGroundAmplitude', fxDefaults.sonicGroundAmplitude, 0, 100),
-    sonicGroundMotionSpeed: archiveNumber(raw, 'sonicGroundMotionSpeed', fxDefaults.sonicGroundMotionSpeed, 0, 100),
-    sonicGroundDensity: archiveNumber(raw, 'sonicGroundDensity', fxDefaults.sonicGroundDensity, 0, 100),
-    sonicGroundRange: archiveNumber(raw, 'sonicGroundRange', fxDefaults.sonicGroundRange, 0, 100),
-    sonicGroundLower: archiveNumber(raw, 'sonicGroundLower', fxDefaults.sonicGroundLower, 0, 100),
-    sonicGroundDepth: archiveNumber(raw, 'sonicGroundDepth', fxDefaults.sonicGroundDepth, 0, 100),
-    sonicGroundAutoRotate: archiveNumber(raw, 'sonicGroundAutoRotate', fxDefaults.sonicGroundAutoRotate, 0, 100),
-    sonicGroundColorMode: raw.sonicGroundColorMode === 'custom' ? 'custom' : 'cover',
-    sonicGroundBaseColor: normalizeHexColor(raw.sonicGroundBaseColor || fxDefaults.sonicGroundBaseColor, fxDefaults.sonicGroundBaseColor),
-    sonicGroundCoolColor: normalizeHexColor(raw.sonicGroundCoolColor || fxDefaults.sonicGroundCoolColor, fxDefaults.sonicGroundCoolColor),
-    sonicGroundWarmColor: normalizeHexColor(raw.sonicGroundWarmColor || fxDefaults.sonicGroundWarmColor, fxDefaults.sonicGroundWarmColor),
-    sonicGroundAccentColor: normalizeHexColor(raw.sonicGroundAccentColor || fxDefaults.sonicGroundAccentColor, fxDefaults.sonicGroundAccentColor),
-    sonicGroundGlow: archiveNumber(raw, 'sonicGroundGlow', fxDefaults.sonicGroundGlow, 0, 100),
-    sonicGroundSubBass: archiveNumber(raw, 'sonicGroundSubBass', fxDefaults.sonicGroundSubBass, 0, 100),
-    sonicGroundBass: archiveNumber(raw, 'sonicGroundBass', fxDefaults.sonicGroundBass, 0, 100),
-    sonicGroundLowMid: archiveNumber(raw, 'sonicGroundLowMid', fxDefaults.sonicGroundLowMid, 0, 100),
-    sonicGroundMid: archiveNumber(raw, 'sonicGroundMid', fxDefaults.sonicGroundMid, 0, 100),
-    sonicGroundHighMid: archiveNumber(raw, 'sonicGroundHighMid', fxDefaults.sonicGroundHighMid, 0, 100),
-    sonicGroundPresence: archiveNumber(raw, 'sonicGroundPresence', fxDefaults.sonicGroundPresence, 0, 100),
-    sonicGroundBrilliance: archiveNumber(raw, 'sonicGroundBrilliance', fxDefaults.sonicGroundBrilliance, 0, 100),
-    sonicGroundAir: archiveNumber(raw, 'sonicGroundAir', fxDefaults.sonicGroundAir, 0, 100),
-    sonicGroundFloatingEnabled: raw.sonicGroundFloatingEnabled !== false,
-    sonicGroundFloatingIntensity: archiveNumber(raw, 'sonicGroundFloatingIntensity', fxDefaults.sonicGroundFloatingIntensity, 0, 100),
-    sonicGroundFloatingMinSize: archiveNumber(raw, 'sonicGroundFloatingMinSize', fxDefaults.sonicGroundFloatingMinSize, 0, 100),
-    sonicGroundFloatingMaxSize: archiveNumber(raw, 'sonicGroundFloatingMaxSize', fxDefaults.sonicGroundFloatingMaxSize, 0, 100),
-    sonicGroundFloatingSpeed: archiveNumber(raw, 'sonicGroundFloatingSpeed', fxDefaults.sonicGroundFloatingSpeed, 0, 100),
-    sonicGroundFloatingCount: archiveNumber(raw, 'sonicGroundFloatingCount', fxDefaults.sonicGroundFloatingCount, 0, 100),
-    sonicAudioMonitorEnabled: raw.sonicAudioMonitorEnabled !== false,
-    sonicAudioAutoTrack: raw.sonicAudioAutoTrack !== false,
-    sonicAudioSensitivity: archiveNumber(raw, 'sonicAudioSensitivity', fxDefaults.sonicAudioSensitivity, 0, 100),
-    sonicAudioBandStart: archiveNumber(raw, 'sonicAudioBandStart', fxDefaults.sonicAudioBandStart, 0, 510),
-    sonicAudioBandEnd: archiveNumber(raw, 'sonicAudioBandEnd', fxDefaults.sonicAudioBandEnd, 2, 512),
-    sonicAudioThreshold: archiveNumber(raw, 'sonicAudioThreshold', fxDefaults.sonicAudioThreshold, 0, 100),
-    sonicAudioPulseStrength: archiveNumber(raw, 'sonicAudioPulseStrength', fxDefaults.sonicAudioPulseStrength, 0, 100),
-    sonicWorkshopInputGain: archiveNumber(raw, 'sonicWorkshopInputGain', fxDefaults.sonicWorkshopInputGain, 40, 100),
-    sonicWorkshopAudioIntensity: archiveNumber(raw, 'sonicWorkshopAudioIntensity', fxDefaults.sonicWorkshopAudioIntensity, 0.3, 2.5),
-    sonicWorkshopResponseRange: archiveNumber(raw, 'sonicWorkshopResponseRange', fxDefaults.sonicWorkshopResponseRange, 0.3, 2),
-    sonicWorkshopPeakIntensity: archiveNumber(raw, 'sonicWorkshopPeakIntensity', fxDefaults.sonicWorkshopPeakIntensity, 0, 1.4),
-    sonicWorkshopColorMode: raw.sonicWorkshopColorMode === 'custom' ? 'custom' : 'cover',
-    sonicWorkshopTheme: archiveMode(raw, 'sonicWorkshopTheme', /^(coral-mirage|ocean-deep|arctic-blue|arctic-aurora|emerald-forest|cyber-forest|minimal-mono|minimal-monochrome|neon-tokyo|golden-hour|ember-fire|crimson|crimson-sunset|aurora|violet-dream)$/, fxDefaults.sonicWorkshopTheme),
-    sonicWorkshopCustomColor: normalizeHexColor(raw.sonicWorkshopCustomColor || fxDefaults.sonicWorkshopCustomColor || '#cb6c89', fxDefaults.sonicWorkshopCustomColor || '#cb6c89'),
-    sonicWorkshopBaseColorMode: raw.sonicWorkshopBaseColorMode === 'custom' ? 'custom' : 'cover',
-    sonicWorkshopBaseColor: normalizeHexColor(raw.sonicWorkshopBaseColor || fxDefaults.sonicWorkshopBaseColor || '#16060f', fxDefaults.sonicWorkshopBaseColor || '#16060f'),
-    sonicWorkshopWarmColorMode: raw.sonicWorkshopWarmColorMode === 'custom' ? 'custom' : 'cover',
-    sonicWorkshopWarmColor: normalizeHexColor(raw.sonicWorkshopWarmColor || fxDefaults.sonicWorkshopWarmColor || '#cb6c89', fxDefaults.sonicWorkshopWarmColor || '#cb6c89'),
-    sonicWorkshopCoolColorMode: raw.sonicWorkshopCoolColorMode === 'custom' ? 'custom' : 'cover',
-    sonicWorkshopCoolColor: normalizeHexColor(raw.sonicWorkshopCoolColor || fxDefaults.sonicWorkshopCoolColor || '#99c4ff', fxDefaults.sonicWorkshopCoolColor || '#99c4ff'),
-    sonicWorkshopRippleColorMode: raw.sonicWorkshopRippleColorMode === 'custom' ? 'custom' : 'cover',
-    sonicWorkshopRippleColor: normalizeHexColor(raw.sonicWorkshopRippleColor || fxDefaults.sonicWorkshopRippleColor || '#f8d8ff', fxDefaults.sonicWorkshopRippleColor || '#f8d8ff'),
-    sonicWorkshopPeakColorMode: raw.sonicWorkshopPeakColorMode === 'custom' ? 'custom' : 'cover',
-    sonicWorkshopPeakColor: normalizeHexColor(raw.sonicWorkshopPeakColor || fxDefaults.sonicWorkshopPeakColor || '#99c4ff', fxDefaults.sonicWorkshopPeakColor || '#99c4ff'),
-    particleLyrics: raw.particleLyrics !== false,
-    backCover: !!raw.backCover,
-    shelf: archiveShelfMode,
-    shelfPinnedOpen: archiveShelfPinnedOpen,
-    shelfCameraMode: archiveMode(raw, 'shelfCameraMode', /^(dynamic|static)$/, fxDefaults.shelfCameraMode),
-    shelfPresence: archiveShelfPresence,
-    shelfShowPodcasts: raw.shelfShowPodcasts !== false,
-    shelfMergeCollections: raw.shelfMergeCollections === true,
-    shelfSize: archiveNumber(raw, 'shelfSize', fxDefaults.shelfSize, 0.65, 1.45),
-    shelfOffsetX: archiveNumber(raw, 'shelfOffsetX', fxDefaults.shelfOffsetX, -1.2, 1.2),
-    shelfOffsetY: archiveNumber(raw, 'shelfOffsetY', fxDefaults.shelfOffsetY, -0.9, 0.9),
-    shelfOffsetZ: archiveNumber(raw, 'shelfOffsetZ', fxDefaults.shelfOffsetZ, -0.9, 0.9),
-    shelfAngleY: archiveNumber(raw, 'shelfAngleY', fxDefaults.shelfAngleY, -30, 30),
-    shelfAngleYManual: raw.shelfAngleYManual === true,
-    shelfOpacity: archiveNumber(raw, 'shelfOpacity', fxDefaults.shelfOpacity, 0.25, 1),
-    shelfBgOpacity: archiveNumber(raw, 'shelfBgOpacity', fxDefaults.shelfBgOpacity, 0.25, 0.98),
-    shelfAccentColor: normalizeHexColor(raw.shelfAccentColor || fxDefaults.shelfAccentColor, fxDefaults.shelfAccentColor),
-    shelfDetailOffsetX: archiveNumber(raw, 'shelfDetailOffsetX', fxDefaults.shelfDetailOffsetX, -4.8, 4.8),
-    shelfDetailOffsetY: archiveNumber(raw, 'shelfDetailOffsetY', fxDefaults.shelfDetailOffsetY, -3.6, 3.6),
-    shelfDetailOffsetZ: archiveNumber(raw, 'shelfDetailOffsetZ', fxDefaults.shelfDetailOffsetZ, -3.6, 3.6),
-    shelfDetailScale: archiveNumber(raw, 'shelfDetailScale', fxDefaults.shelfDetailScale, 0.72, 1.35),
-    shelfDetailAngleX: archiveNumber(raw, 'shelfDetailAngleX', fxDefaults.shelfDetailAngleX, -24, 24),
-    shelfDetailAngleY: archiveNumber(raw, 'shelfDetailAngleY', fxDefaults.shelfDetailAngleY, -28, 28),
-    shelfDetailRowGap: archiveNumber(raw, 'shelfDetailRowGap', fxDefaults.shelfDetailRowGap, 0.72, 1.32),
-    shelfDetailOpenDuration: archiveNumber(raw, 'shelfDetailOpenDuration', fxDefaults.shelfDetailOpenDuration, 0.12, 1.2),
-    shelfDetailCloseDuration: archiveNumber(raw, 'shelfDetailCloseDuration', fxDefaults.shelfDetailCloseDuration, 0.08, 0.8),
-    shelfDetailRowDuration: archiveNumber(raw, 'shelfDetailRowDuration', fxDefaults.shelfDetailRowDuration, 0.16, 1.6),
-    shelfDetailIntroStrength: archiveNumber(raw, 'shelfDetailIntroStrength', fxDefaults.shelfDetailIntroStrength, 0, 1.8),
-    shelfDetailParallax: archiveNumber(raw, 'shelfDetailParallax', fxDefaults.shelfDetailParallax, 0, 1.8),
-    shelfSummonOpenDuration: archiveNumber(raw, 'shelfSummonOpenDuration', fxDefaults.shelfSummonOpenDuration, 0.08, 2),
-    shelfSummonCloseDuration: archiveNumber(raw, 'shelfSummonCloseDuration', fxDefaults.shelfSummonCloseDuration, 0.08, 1.6),
-    shelfSummonSlide: archiveNumber(raw, 'shelfSummonSlide', fxDefaults.shelfSummonSlide, 0, 4),
-    shelfSummonStagger: archiveNumber(raw, 'shelfSummonStagger', fxDefaults.shelfSummonStagger, 0, 3),
-    shelfSummonScale: archiveNumber(raw, 'shelfSummonScale', fxDefaults.shelfSummonScale, 0, 3),
-    shelfSummonParallax: archiveNumber(raw, 'shelfSummonParallax', fxDefaults.shelfSummonParallax, 0, 2.5),
-    shelfCameraEnterSpeed: archiveNumber(raw, 'shelfCameraEnterSpeed', fxDefaults.shelfCameraEnterSpeed, 0.2, 1.5),
-    shelfCameraExitSpeed: archiveNumber(raw, 'shelfCameraExitSpeed', fxDefaults.shelfCameraExitSpeed, 0.2, 1.5),
-    cam: archiveMode(raw, 'cam', /^(off|gesture)$/, fxDefaults.cam),
-    gesturePlayerActions: raw.gesturePlayerActions !== false,
-    gestureHandOverlay: raw.gestureHandOverlay !== false,
-    gestureSensitivity: archiveMode(raw, 'gestureSensitivity', /^(steady|balanced|quick)$/, fxDefaults.gestureSensitivity),
-    cameraViewSaved: archiveCameraSaved,
-    cameraViewMode: archiveMode(raw, 'cameraViewMode', /^(orbit|free)$/, 'orbit'),
-    cameraOrbitTheta: archiveNumber(raw, 'cameraOrbitTheta', 0, -Math.PI * 8, Math.PI * 8),
-    cameraOrbitPhi: archiveNumber(raw, 'cameraOrbitPhi', 0.08, -Math.PI * 0.45, Math.PI * 0.45),
-    cameraOrbitRadius: archiveNumber(raw, 'cameraOrbitRadius', 6.6, 2.4, 14.0),
-    cameraFreePositionX: archiveNumber(raw, 'cameraFreePositionX', 0, -80, 80),
-    cameraFreePositionY: archiveNumber(raw, 'cameraFreePositionY', 0, -80, 80),
-    cameraFreePositionZ: archiveNumber(raw, 'cameraFreePositionZ', 6.6, -80, 80),
-    cameraFreeYaw: archiveNumber(raw, 'cameraFreeYaw', 0, -Math.PI * 8, Math.PI * 8),
-    cameraFreePitch: archiveNumber(raw, 'cameraFreePitch', 0, -Math.PI * 0.49, Math.PI * 0.49),
-    cameraFreeRoll: archiveNumber(raw, 'cameraFreeRoll', 0, -Math.PI, Math.PI),
-    cameraFreeFov: archiveNumber(raw, 'cameraFreeFov', BASE_FOV, 26, 72),
-    visualRotationSaved: archiveVisualRotationSaved,
-    visualRotationX: archiveNumber(raw, 'visualRotationX', 0, -Math.PI * 8, Math.PI * 8),
-    visualRotationY: archiveNumber(raw, 'visualRotationY', 0, -Math.PI * 8, Math.PI * 8)
-  };
-}
-function readUserFxArchives() {
-  var raw = [];
-  try {
-    raw = JSON.parse(localStorage.getItem(USER_FX_ARCHIVE_STORE_KEY) || '[]') || [];
-  } catch (e) {
-    raw = [];
-  }
-  if (!Array.isArray(raw)) raw = [];
-  return raw.map(function (slot, index) {
-    slot = slot && typeof slot === 'object' ? slot : {};
-    var snapshot = normalizeFxArchiveSnapshot(slot.snapshot);
-    return {
-      name: normalizeUserFxArchiveName(slot.name, index),
-      createdAt: Number(slot.createdAt) || (snapshot ? (Number(slot.savedAt) || Date.now()) : 0),
-      savedAt: snapshot ? (Number(slot.savedAt) || Date.now()) : 0,
-      snapshot: snapshot
-    };
-  }).filter(function (slot) {
-    return !!(slot.snapshot || slot.savedAt || slot.createdAt);
-  });
-}
-function saveUserFxArchives() {
-  try {
-    localStorage.setItem(USER_FX_ARCHIVE_STORE_KEY, JSON.stringify(userFxArchives));
-  } catch (e) {
-    showToast('用户存档保存失败，本地存储空间可能不足');
-  }
-}
-function hasStoredUserFxArchives() {
-  try {
-    return localStorage.getItem(USER_FX_ARCHIVE_STORE_KEY) != null;
-  } catch (e) {
-    return true;
-  }
-}
-function createPackagedDefaultUserFxArchiveSlot() {
-  return {
-    name: normalizeUserFxArchiveName(PACKAGED_DEFAULT_USER_FX_ARCHIVE_NAME, 0),
-    createdAt: PACKAGED_DEFAULT_USER_FX_ARCHIVE_EXPORTED_AT,
-    savedAt: PACKAGED_DEFAULT_USER_FX_ARCHIVE_SAVED_AT,
-    snapshot: normalizeFxArchiveSnapshot(clonePackagedDefaultFxSnapshot())
-  };
-}
-function formatUserArchiveTime(ts) {
-  ts = Number(ts) || 0;
-  if (!ts) return '空槽位';
-  var diff = Date.now() - ts;
-  if (diff < 60000) return '刚刚保存';
-  if (diff < 3600000) return Math.max(1, Math.round(diff / 60000)) + ' 分钟前';
-  var d = new Date(ts);
-  function pad(v) { return String(v).padStart(2, '0'); }
-  return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
-}
-function captureCameraArchiveState() {
-  var useFree = !!(typeof freeCamera !== 'undefined' && freeCamera && (freeCamera.active || freeCamera.locked));
-  var visualRotX = typeof particles !== 'undefined' && particles && particles.rotation ? Number(particles.rotation.x) || 0 : (typeof gestureRotation !== 'undefined' && gestureRotation ? Number(gestureRotation.x) || 0 : 0);
-  var visualRotY = typeof particles !== 'undefined' && particles && particles.rotation ? Number(particles.rotation.y) || 0 : (typeof gestureRotation !== 'undefined' && gestureRotation ? Number(gestureRotation.y) || 0 : 0);
-  var out = {
-    cameraViewSaved: true,
-    cameraViewMode: useFree ? 'free' : 'orbit',
-    cameraOrbitTheta: orbit && isFinite(orbit.userTheta) ? orbit.userTheta : 0,
-    cameraOrbitPhi: orbit && isFinite(orbit.userPhi) ? orbit.userPhi : 0.08,
-    cameraOrbitRadius: orbit && isFinite(orbit.userRadius) ? orbit.userRadius : 6.6,
-    cameraFreePositionX: 0,
-    cameraFreePositionY: 0,
-    cameraFreePositionZ: 6.6,
-    cameraFreeYaw: 0,
-    cameraFreePitch: 0,
-    cameraFreeRoll: 0,
-    cameraFreeFov: typeof BASE_FOV === 'number' ? BASE_FOV : 45,
-    visualRotationSaved: true,
-    visualRotationX: visualRotX,
-    visualRotationY: visualRotY
-  };
-  if (typeof freeCamera !== 'undefined' && freeCamera) {
-    if (freeCamera.position) {
-      out.cameraFreePositionX = Number(freeCamera.position.x) || 0;
-      out.cameraFreePositionY = Number(freeCamera.position.y) || 0;
-      out.cameraFreePositionZ = Number(freeCamera.position.z) || 6.6;
-    }
-    out.cameraFreeYaw = Number(freeCamera.yaw) || 0;
-    out.cameraFreePitch = Number(freeCamera.pitch) || 0;
-    out.cameraFreeRoll = Number(freeCamera.roll) || 0;
-    out.cameraFreeFov = Number(freeCamera.fov) || out.cameraFreeFov;
-  }
-  return out;
-}
-function applyVisualRotationArchiveState(data) {
-  if (!data || data.visualRotationSaved !== true) return false;
-  var rx = Number(data.visualRotationX) || 0;
-  var ry = Number(data.visualRotationY) || 0;
-  if (typeof gestureRotation !== 'undefined' && gestureRotation) {
-    gestureRotation.x = rx;
-    gestureRotation.y = ry;
-  }
-  if (typeof particleSpin !== 'undefined' && particleSpin) {
-    particleSpin.vx = 0;
-    particleSpin.vy = 0;
-  }
-  if (typeof particles !== 'undefined' && particles && particles.rotation) particles.rotation.set(rx, ry, 0);
-  if (typeof bloomParticles !== 'undefined' && bloomParticles && bloomParticles.rotation) bloomParticles.rotation.set(rx, ry, 0);
-  if (typeof floatGroup !== 'undefined' && floatGroup && floatGroup.rotation) floatGroup.rotation.set(rx, ry, 0);
-  if (typeof backCoverGroup !== 'undefined' && backCoverGroup && backCoverGroup.rotation) backCoverGroup.rotation.set(rx, ry, 0);
-  if (typeof orbit !== 'undefined' && orbit && (Math.abs(rx) > 0.0001 || Math.abs(ry) > 0.0001)) {
-    orbit.centerLocked = false;
-    orbit.recentering = false;
-  }
-  return true;
-}
-function applyCameraArchiveState(data) {
-  if (!data || data.cameraViewSaved !== true) return false;
-  if (typeof freeCamera !== 'undefined' && freeCamera) {
-    freeCamera.active = false;
-    freeCamera.resetTween = null;
-    freeCamera.keys = {};
-    if (freeCamera.velocity) freeCamera.velocity.set(0, 0, 0);
-    if (typeof releaseFreeCameraPointerLock === 'function') releaseFreeCameraPointerLock();
-  }
-  if (data.cameraViewMode === 'free' && typeof freeCamera !== 'undefined' && freeCamera) {
-    if (!freeCamera.position) freeCamera.position = new THREE.Vector3();
-    freeCamera.position.set(data.cameraFreePositionX, data.cameraFreePositionY, data.cameraFreePositionZ);
-    freeCamera.yaw = data.cameraFreeYaw;
-    freeCamera.pitch = data.cameraFreePitch;
-    freeCamera.roll = data.cameraFreeRoll;
-    freeCamera.fov = data.cameraFreeFov;
-    freeCamera.locked = true;
-    if (typeof saveFreeCameraState === 'function') saveFreeCameraState();
-    if (typeof updateFreeCameraHint === 'function') updateFreeCameraHint();
-    return true;
-  }
-  if (typeof freeCamera !== 'undefined' && freeCamera) {
-    freeCamera.locked = false;
-    if (typeof saveFreeCameraState === 'function') saveFreeCameraState();
-    if (typeof updateFreeCameraHint === 'function') updateFreeCameraHint();
-  }
-  if (typeof orbit !== 'undefined' && orbit) {
-    orbit.userTheta = data.cameraOrbitTheta;
-    orbit.userPhi = clampRange(data.cameraOrbitPhi, orbit.minPhi, orbit.maxPhi);
-    orbit.userRadius = clampRange(data.cameraOrbitRadius, orbit.minRadius, orbit.maxRadius);
-    orbit.baselineTheta = orbit.userTheta;
-    orbit.baselinePhi = orbit.userPhi;
-    orbit.baselineRadius = orbit.userRadius;
-    orbit.theta = orbit.userTheta;
-    orbit.phi = orbit.userPhi;
-    orbit.radius = orbit.userRadius;
-    orbit.centerLocked = true;
-    orbit.recentering = false;
-    if (orbit.lookAt) orbit.lookAt.set(0, 0, 0);
-    if (orbit.focus) {
-      orbit.focus.active = false;
-      orbit.focus.type = null;
-    }
-    if (typeof clearCenteredViewOffsets === 'function') clearCenteredViewOffsets();
-    if (typeof requestStageLyricCameraSnap === 'function') requestStageLyricCameraSnap(12);
-    return true;
-  }
-  return false;
-}
-function captureFxArchiveSnapshot() {
-  return normalizeFxArchiveSnapshot(Object.assign({ visualPresetSchema: VISUAL_PRESET_SCHEMA }, fx, captureCameraArchiveState()));
-}
-function applySavedLyricPaletteState() {
-  if (!stageLyrics) return;
-  setStageLyricPalette(fx.lyricColorMode === 'custom'
-    ? lyricPaletteFromHex(fx.lyricColor)
-    : (stageLyrics.coverPalette || stageLyrics.palette));
-  updateLyricColorControls();
-  updateLyricHighlightControls();
-  updateLyricGlowControls();
-}
-function applyFxArchiveSnapshot(snapshot) {
-  var data = normalizeFxArchiveSnapshot(snapshot);
-  if (!data) return false;
-  var targetPreset = data.preset;
-  Object.keys(data).forEach(function (key) {
-    if (key === 'visualPresetSchema' || key === 'preset') return;
-    if (isCameraArchiveKey(key)) return;
-    fx[key] = data[key];
-  });
-  if (fx.backgroundAlbumCover === true) {
-    fx.backgroundMedia = null;
-    fx.backgroundImage = '';
-  }
-  normalizeDevelopmentLockedFxState();
-  setPreset(targetPreset, { silent: true, preserveCamera: false, skipTransition: false, noSave: true, commitPlaybackPreset: true });
-  applyCameraArchiveState(data);
-  applyVisualRotationArchiveState(data);
-  applyCoverParticleResolution(fx.coverResolution, { reload: true });
-  if (fx.floatLayer) createFloatLayer(); else destroyFloatLayer();
-  setParticleLyricsSilently(fx.particleLyrics);
-  if (fx.backCover) createBackCoverLayer(); else destroyBackCoverLayer();
-  if (fx.aiDepth) {
-    aiDepthFailUntil = 0;
-    queueAIDepthForCurrentCover(true);
-  }
-  setShelfMode(fx.shelf);
-  if (fx.shelf === 'side') setShelfPinnedOpen(!!fx.shelfPinnedOpen, true, false);
-  if (shelfManager && shelfManager.rebuild) shelfManager.rebuild(true);
-  if (shelfManager && shelfManager.refreshTheme) shelfManager.refreshTheme();
-  setCamMode(fx.cam);
-  updateFxInputs();
-  applySavedLyricPaletteState();
-  refreshCurrentLyricStyle();
-  applyDesktopLyricsState(true);
-  applyWallpaperModeState(true);
-  updateRenderPowerClasses();
-  applyRendererPowerMode();
-  saveLyricLayout({ user: true, reason: 'archiveApply' });
-  return true;
-}
-var hadStoredUserFxArchives = hasStoredUserFxArchives();
-var userFxArchives = readUserFxArchives();
-if (!hadStoredUserFxArchives) {
-  userFxArchives = [createPackagedDefaultUserFxArchiveSlot()];
-  saveUserFxArchives();
-}
-var userFxArchiveEditing = -1;
-var userFxArchiveShareDraft = '';
-function renderUserFxArchives() {
-  var grid = document.getElementById('user-archive-grid');
-  if (!grid) return;
-  grid.innerHTML = userFxArchives.map(function (slot, index) {
-    var hasSave = !!slot.snapshot;
-    var editing = userFxArchiveEditing === index;
-    var nameHtml = editing
-      ? '<input class="user-archive-input" id="user-archive-input-' + index + '" type="text" maxlength="18" value="' + escHtml(slot.name) + '" onkeydown="handleUserFxArchiveRenameKey(event,' + index + ')">'
-      : '<div class="user-archive-name" title="' + escHtml(slot.name) + '">' + escHtml(slot.name) + '</div>';
-    var actionsHtml = editing
-      ? '<button type="button" onclick="commitUserFxArchiveRename(' + index + ')">确定</button>' +
-      '<button type="button" onclick="cancelUserFxArchiveRename()">取消</button>'
-      : '<button type="button" onclick="applyUserFxArchive(' + index + ')"' + (hasSave ? '' : ' disabled') + '>应用</button>' +
-      '<button type="button" onclick="saveUserFxArchive(' + index + ')">保存</button>' +
-      '<button type="button" onclick="renameUserFxArchive(' + index + ')">命名</button>';
-    return '<div class="user-archive-slot' + (hasSave ? ' has-save' : '') + '" data-slot="' + index + '">' +
-      nameHtml +
-      '<div class="user-archive-meta">' + formatUserArchiveTime(slot.savedAt) + '</div>' +
-      '<div class="user-archive-actions">' +
-      actionsHtml +
-      '</div>' +
-      '</div>';
-  }).join('');
-  if (userFxArchiveEditing >= 0) {
-    setTimeout(function () {
-      var input = document.getElementById('user-archive-input-' + userFxArchiveEditing);
-      if (input) {
-        input.focus();
-        input.select();
-      }
-    }, 0);
-  }
-}
-function saveUserFxArchive(index) {
-  index = clampRange(Number(index) || 0, 0, Math.max(0, userFxArchives.length - 1));
-  userFxArchives[index].snapshot = captureFxArchiveSnapshot();
-  userFxArchives[index].savedAt = Date.now();
-  userFxArchives[index].name = normalizeUserFxArchiveName(userFxArchives[index].name, index);
-  saveUserFxArchives();
-  renderUserFxArchives();
-  showToast('已保存到 ' + userFxArchives[index].name);
-}
-function applyUserFxArchive(index) {
-  index = clampRange(Number(index) || 0, 0, Math.max(0, userFxArchives.length - 1));
-  var slot = userFxArchives[index];
-  if (!slot || !slot.snapshot) {
-    showToast('这个用户存档还是空的');
-    return;
-  }
-  if (applyFxArchiveSnapshot(slot.snapshot)) {
-    showToast('已应用 ' + slot.name);
-  }
-}
-function renameUserFxArchive(index) {
-  index = clampRange(Number(index) || 0, 0, Math.max(0, userFxArchives.length - 1));
-  userFxArchiveEditing = index;
-  renderUserFxArchives();
-}
-function commitUserFxArchiveRename(index) {
-  index = clampRange(Number(index) || 0, 0, Math.max(0, userFxArchives.length - 1));
-  var input = document.getElementById('user-archive-input-' + index);
-  userFxArchives[index].name = normalizeUserFxArchiveName(input && input.value, index);
-  userFxArchiveEditing = -1;
-  saveUserFxArchives();
-  renderUserFxArchives();
-  showToast('已命名为 ' + userFxArchives[index].name);
-}
-function cancelUserFxArchiveRename() {
-  userFxArchiveEditing = -1;
-  renderUserFxArchives();
-}
-function handleUserFxArchiveRenameKey(e, index) {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    commitUserFxArchiveRename(index);
-  } else if (e.key === 'Escape') {
-    e.preventDefault();
-    cancelUserFxArchiveRename();
-  }
-}
-
-function defaultUserFxArchiveName(index) {
-  return '用户存档 ' + (Number(index) + 1);
-}
-function normalizeUserFxArchiveName(name, index) {
-  name = String(name || '').replace(/\s+/g, ' ').trim();
-  if (!name) name = defaultUserFxArchiveName(index);
-  return name.slice(0, 28);
-}
-function userFxArchiveAt(index) {
-  index = Number(index);
-  if (!isFinite(index)) return null;
-  index = Math.floor(index);
-  return index >= 0 && index < userFxArchives.length ? userFxArchives[index] : null;
-}
-function userFxShareChecksum(text) {
-  text = String(text || '');
-  var hash = 2166136261;
-  for (var i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 16777619) >>> 0;
-  }
-  return (hash >>> 0).toString(36).toUpperCase().padStart(7, '0');
-}
-function bytesToBase64Url(bytes) {
-  var binary = '';
-  for (var i = 0; i < bytes.length; i += 0x8000) {
-    var chunk = bytes.subarray(i, Math.min(i + 0x8000, bytes.length));
-    for (var j = 0; j < chunk.length; j++) binary += String.fromCharCode(chunk[j]);
-  }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-function base64UrlToBytes(text) {
-  text = String(text || '').replace(/-/g, '+').replace(/_/g, '/');
-  while (text.length % 4) text += '=';
-  var binary = atob(text);
-  var bytes = new Uint8Array(binary.length);
-  for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-async function gzipUserFxShareText(text) {
-  if (typeof CompressionStream !== 'function') return null;
-  var stream = new Blob([String(text || '')]).stream().pipeThrough(new CompressionStream('gzip'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-async function gunzipUserFxShareText(bytes) {
-  if (typeof DecompressionStream !== 'function') throw new Error('NO_DECOMPRESSION_STREAM');
-  var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-  return await new Response(stream).text();
-}
-function userFxShareBaselineSnapshot() {
-  var raw = null;
-  try {
-    raw = typeof clonePackagedDefaultFxSnapshot === 'function'
-      ? clonePackagedDefaultFxSnapshot()
-      : Object.assign({ visualPresetSchema: VISUAL_PRESET_SCHEMA }, fxDefaults || {});
-  } catch (e) {
-    raw = Object.assign({ visualPresetSchema: VISUAL_PRESET_SCHEMA }, fxDefaults || {});
-  }
-  return normalizeFxArchiveSnapshot(raw) || {};
-}
-function userFxShareValueEqual(a, b) {
-  if (typeof a === 'number' || typeof b === 'number') {
-    var na = Number(a);
-    var nb = Number(b);
-    return isFinite(na) && isFinite(nb) && Math.abs(na - nb) < 0.000001;
-  }
-  return a === b;
-}
-function compactUserFxArchiveSnapshot(snapshot) {
-  var data = normalizeFxArchiveSnapshot(snapshot);
-  if (!data) return null;
-  var full = USER_FX_SHARE_KEYS.map(function (key) { return data[key]; });
-  var base = userFxShareBaselineSnapshot();
-  var delta = [];
-  USER_FX_SHARE_KEYS.forEach(function (key, index) {
-    if (!userFxShareValueEqual(data[key], base[key])) delta.push(index, data[key]);
-  });
-  var compactDelta = [USER_FX_SHARE_COMPACT_DELTA, delta];
-  var compactFull = [USER_FX_SHARE_COMPACT_FULL, full];
-  return JSON.stringify(compactDelta).length <= JSON.stringify(compactFull).length ? compactDelta : compactFull;
-}
-function expandUserFxArchiveSnapshot(compact) {
-  if (!Array.isArray(compact)) return null;
-  var mode = typeof compact[0] === 'string' ? compact[0] : USER_FX_SHARE_COMPACT_FULL;
-  var values = typeof compact[0] === 'string' ? compact[1] : compact;
-  if (!Array.isArray(values)) return null;
-  var raw = mode === USER_FX_SHARE_COMPACT_DELTA ? userFxShareBaselineSnapshot() : {};
-  if (mode === USER_FX_SHARE_COMPACT_DELTA) {
-    for (var i = 0; i < values.length - 1; i += 2) {
-      var deltaIndex = Math.floor(Number(values[i]));
-      if (deltaIndex >= 0 && deltaIndex < USER_FX_SHARE_KEYS.length) raw[USER_FX_SHARE_KEYS[deltaIndex]] = values[i + 1];
-    }
-  } else {
-    USER_FX_SHARE_KEYS.forEach(function (key, index) {
-      if (index < values.length) raw[key] = values[index];
-    });
-  }
-  return normalizeFxArchiveSnapshot(raw);
-}
-async function encodeUserFxArchiveShareCode(slot) {
-  if (!slot || !slot.snapshot) throw new Error('EMPTY_ARCHIVE');
-  var compact = compactUserFxArchiveSnapshot(slot.snapshot);
-  if (!compact) throw new Error('INVALID_ARCHIVE');
-  var payload = [USER_FX_ARCHIVE_SCHEMA, compact];
-  var json = JSON.stringify(payload);
-  var rawBytes = new TextEncoder().encode(json);
-  var body = USER_FX_SHARE_CODEC_JSON + bytesToBase64Url(rawBytes);
-  try {
-    var zipped = await gzipUserFxShareText(json);
-    if (zipped) {
-      var zippedBody = USER_FX_SHARE_CODEC_GZIP + bytesToBase64Url(zipped);
-      if (zippedBody.length < body.length) body = zippedBody;
-    }
-  } catch (e) {
-  }
-  var version = String(USER_FX_SHARE_VERSION);
-  return USER_FX_SHARE_PREFIX + ':' + version + '.' + body + '.' + userFxShareChecksum(version + '.' + body);
-}
-function extractUserFxShareCode(text) {
-  text = String(text || '').trim();
-  var direct = text.replace(/\s+/g, '');
-  if (/^MR2:[0-9]+\.[A-Za-z][A-Za-z0-9_-]+\.[A-Za-z0-9]+$/.test(direct)) return direct;
-  var match = text.match(/MR2:[0-9]+\.[A-Za-z][A-Za-z0-9_-]+\.[A-Za-z0-9]+/);
-  return match ? match[0] : '';
-}
-function looksLikeUserFxShareCode(text) {
-  return !!extractUserFxShareCode(text);
-}
-async function decodeUserFxArchiveShareCode(text) {
-  var code = extractUserFxShareCode(text);
-  if (!code) throw new Error('INVALID_SHARE_CODE');
-  var parts = code.slice((USER_FX_SHARE_PREFIX + ':').length).split('.');
-  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) throw new Error('INVALID_SHARE_CODE');
-  var version = parts[0];
-  var body = parts[1];
-  var checksum = parts[2].toUpperCase();
-  if (version !== String(USER_FX_SHARE_VERSION)) throw new Error('UNSUPPORTED_SHARE_VERSION');
-  if (userFxShareChecksum(version + '.' + body) !== checksum) throw new Error('BAD_SHARE_CHECKSUM');
-  var codec = body.charAt(0);
-  var bytes = base64UrlToBytes(body.slice(1));
-  var json = '';
-  if (codec === USER_FX_SHARE_CODEC_GZIP) {
-    json = await gunzipUserFxShareText(bytes);
-  } else if (codec === USER_FX_SHARE_CODEC_JSON) {
-    json = new TextDecoder().decode(bytes);
-  } else {
-    throw new Error('UNSUPPORTED_SHARE_CODEC');
-  }
-  var payload = JSON.parse(json);
-  var archiveSchema = 0;
-  var archiveName = '';
-  var archiveSavedAt = Date.now();
-  var compactSnapshot = null;
-  if (Array.isArray(payload)) {
-    archiveSchema = Number(payload[0]);
-    if (Array.isArray(payload[1])) {
-      compactSnapshot = payload[1];
-    } else {
-      archiveName = payload[1];
-      compactSnapshot = payload[2];
-    }
-  } else if (payload && typeof payload === 'object') {
-    archiveSchema = Number(payload.s);
-    archiveName = payload.n;
-    archiveSavedAt = Number(payload.a) || Date.now();
-    compactSnapshot = payload.v;
-  }
-  if (!payload || archiveSchema !== USER_FX_ARCHIVE_SCHEMA) {
-    throw new Error('INVALID_SHARE_PAYLOAD');
-  }
-  var snapshot = expandUserFxArchiveSnapshot(compactSnapshot);
-  if (!snapshot) throw new Error('INVALID_SHARE_SNAPSHOT');
-  return {
-    name: normalizeUserFxArchiveName(archiveName || '短代码存档', userFxArchives.length),
-    createdAt: Date.now(),
-    savedAt: archiveSavedAt,
-    snapshot: snapshot
-  };
-}
-function addImportedUserFxArchiveSlot(slot, toastLabel) {
-  if (!slot || !slot.snapshot) return false;
-  userFxArchives.push(slot);
-  saveUserFxArchives();
-  renderUserFxArchives();
-  showToast((toastLabel || '已导入 ') + slot.name);
-  return true;
-}
-function getArchiveClipboardApi() {
-  return typeof getDesktopWindowApi === 'function' ? getDesktopWindowApi() : null;
-}
-async function writeUserFxArchiveClipboard(text) {
-  var api = getArchiveClipboardApi();
-  if (api && typeof api.copyText === 'function') {
-    var res = await Promise.resolve(api.copyText(text));
-    if (!res || res.ok !== false) return true;
-  }
-  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-    await navigator.clipboard.writeText(text);
-    return true;
-  }
-  var area = document.createElement('textarea');
-  area.value = text;
-  area.setAttribute('readonly', 'readonly');
-  area.style.position = 'fixed';
-  area.style.left = '-9999px';
-  document.body.appendChild(area);
-  area.select();
-  var ok = false;
-  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
-  document.body.removeChild(area);
-  return ok;
-}
-async function readUserFxArchiveClipboard() {
-  var api = getArchiveClipboardApi();
-  if (api && typeof api.readText === 'function') {
-    var res = await Promise.resolve(api.readText());
-    if (res && res.ok !== false) return String(res.text || '');
-  }
-  if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
-    return await navigator.clipboard.readText();
-  }
-  return '';
-}
-async function copyUserFxArchiveShareCode(index) {
-  var slot = userFxArchiveAt(index);
-  if (!slot || !slot.snapshot) {
-    showToast('空白存档不能复制短码');
-    return;
-  }
-  try {
-    var code = await encodeUserFxArchiveShareCode(slot);
-    var copied = await writeUserFxArchiveClipboard(code);
-    if (copied) {
-      showToast(code.length > 12000 ? '完整短码已复制，配置较长' : '用户存档短码已复制');
-    } else {
-      window.prompt('复制这段 MR2 短代码', code);
-      showToast('已打开完整短码');
-    }
-  } catch (e) {
-    showToast('短码生成失败');
-  }
-}
-async function importUserFxArchiveShareCodeText(text) {
-  try {
-    var slot = await decodeUserFxArchiveShareCode(text);
-    return addImportedUserFxArchiveSlot(slot, '已导入短码 ');
-  } catch (e) {
-    showToast(e && e.message === 'BAD_SHARE_CHECKSUM' ? '短码校验失败，未导入' : '短码无效，未导入');
-    return false;
-  }
-}
-function userFxArchiveShareInput() {
-  return document.getElementById('user-archive-share-input');
-}
-function updateUserFxArchiveShareDraft(value) {
-  userFxArchiveShareDraft = String(value || '');
-}
-function focusUserFxArchiveShareInput(selectAll) {
-  var input = userFxArchiveShareInput();
-  if (!input) return;
-  input.focus();
-  if (selectAll) input.select();
-}
-async function pasteUserFxArchiveShareCodeToBox() {
-  var text = '';
-  try {
-    text = await readUserFxArchiveClipboard();
-  } catch (e) {
-    text = '';
-  }
-  text = String(text || '').trim();
-  if (!text) {
-    showToast('剪贴板里没有可粘贴的存档码');
-    focusUserFxArchiveShareInput(false);
-    return false;
-  }
-  userFxArchiveShareDraft = text;
-  var input = userFxArchiveShareInput();
-  if (input) {
-    input.value = userFxArchiveShareDraft;
-    input.focus();
-  }
-  showToast(looksLikeUserFxShareCode(text) ? '短码已粘到输入框' : '已粘到输入框，可尝试作为旧 JSON 导入');
-  return true;
-}
-async function importUserFxArchiveShareCodeFromBox() {
-  var input = userFxArchiveShareInput();
-  var text = input ? input.value : userFxArchiveShareDraft;
-  userFxArchiveShareDraft = String(text || '');
-  if (!userFxArchiveShareDraft.trim()) {
-    showToast('先把 MR2 短码粘到输入框');
-    focusUserFxArchiveShareInput(false);
-    return false;
-  }
-  var ok = await importUserFxArchiveText(userFxArchiveShareDraft, '短代码');
-  if (ok) {
-    userFxArchiveShareDraft = '';
-    renderUserFxArchives();
-  }
-  return ok;
-}
-function clearUserFxArchiveShareCodeBox() {
-  userFxArchiveShareDraft = '';
-  var input = userFxArchiveShareInput();
-  if (input) {
-    input.value = '';
-    input.focus();
-  }
-}
-function handleUserFxArchiveShareInputKey(e) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-    e.preventDefault();
-    importUserFxArchiveShareCodeFromBox();
-  }
-}
-async function importUserFxArchiveFromShareCodePrompt() {
-  return pasteUserFxArchiveShareCodeToBox();
-}
-function renderUserFxArchives() {
-  var grid = document.getElementById('user-archive-grid');
-  if (!grid) return;
-  var toolbar =
-    '<div class="user-archive-toolbar">' +
-    '<div class="user-archive-note">主入口使用 MR2 短代码复制/粘贴；旧 JSON 仍可拖拽或作为兼容备份导入。</div>' +
-    '<div class="user-archive-tools">' +
-    '<button class="fx-mini-btn ghost" type="button" onclick="createUserFxArchive()">新建</button>' +
-    '<button class="fx-mini-btn ghost" type="button" onclick="importUserFxArchiveFromShareCodePrompt()">粘贴码</button>' +
-    '<button class="fx-mini-btn ghost" type="button" onclick="importUserFxArchiveFromDialog()">导入 JSON</button>' +
-    '</div>' +
-    '</div>';
-  var shareBox =
-    '<div class="user-archive-share-panel">' +
-    '<textarea id="user-archive-share-input" class="user-archive-share-input" spellcheck="false" placeholder="把 MR2 短代码粘到这里，也兼容旧 JSON 存档" oninput="updateUserFxArchiveShareDraft(this.value)" onkeydown="handleUserFxArchiveShareInputKey(event)">' + escHtml(userFxArchiveShareDraft) + '</textarea>' +
-    '<div class="user-archive-share-actions">' +
-    '<button type="button" onclick="pasteUserFxArchiveShareCodeToBox()">从剪贴板粘贴</button>' +
-    '<button type="button" onclick="importUserFxArchiveShareCodeFromBox()">导入短码</button>' +
-    '<button type="button" onclick="clearUserFxArchiveShareCodeBox()">清空</button>' +
-    '</div>' +
-    '</div>';
-  var cards = userFxArchives.map(function (slot, index) {
-    var hasSave = !!slot.snapshot;
-    var editing = userFxArchiveEditing === index;
-    var nameHtml = editing
-      ? '<input class="user-archive-input" id="user-archive-input-' + index + '" type="text" maxlength="28" value="' + escHtml(slot.name) + '" onkeydown="handleUserFxArchiveRenameKey(event,' + index + ')">'
-      : '<div class="user-archive-name" title="' + escHtml(slot.name) + '">' + escHtml(slot.name) + '</div>';
-    var actionsHtml = editing
-      ? '<button type="button" onclick="commitUserFxArchiveRename(' + index + ')">确定</button>' +
-      '<button type="button" onclick="cancelUserFxArchiveRename()">取消</button>'
-      : '<button type="button" onclick="applyUserFxArchive(' + index + ')"' + (hasSave ? '' : ' disabled') + '>应用</button>' +
-      '<button type="button" onclick="saveUserFxArchive(' + index + ')">保存</button>' +
-      '<button type="button" onclick="copyUserFxArchiveShareCode(' + index + ')"' + (hasSave ? '' : ' disabled') + '>复制码</button>' +
-      '<button type="button" onclick="renameUserFxArchive(' + index + ')">命名</button>' +
-      '<button type="button" onclick="exportUserFxArchive(' + index + ')"' + (hasSave ? '' : ' disabled') + '>文件</button>' +
-      '<button type="button" onclick="removeUserFxArchive(' + index + ')">删除</button>';
-    return '<div class="user-archive-slot' + (hasSave ? ' has-save' : '') + '" data-slot="' + index + '">' +
-      nameHtml +
-      '<div class="user-archive-meta">' + (hasSave ? formatUserArchiveTime(slot.savedAt) : '空白存档，点击保存写入当前视觉') + '</div>' +
-      '<div class="user-archive-actions">' + actionsHtml + '</div>' +
-      '</div>';
-  }).join('');
-  var addCard = '<button class="user-archive-slot is-new" type="button" onclick="createUserFxArchive()"><strong>＋ 新建空白存档</strong><span class="user-archive-meta">可继续创建，不限制 4 个</span></button>';
-  grid.innerHTML = toolbar + shareBox + cards + addCard;
-  bindUserFxArchiveDrop();
-  if (userFxArchiveEditing >= 0) {
-    setTimeout(function () {
-      var input = document.getElementById('user-archive-input-' + userFxArchiveEditing);
-      if (input) {
-        input.focus();
-        input.select();
-      }
-    }, 0);
-  }
-}
-function createUserFxArchive() {
-  var index = userFxArchives.length;
-  userFxArchives.push({
-    name: normalizeUserFxArchiveName('', index),
-    createdAt: Date.now(),
-    savedAt: 0,
-    snapshot: null
-  });
-  userFxArchiveEditing = index;
-  saveUserFxArchives();
-  renderUserFxArchives();
-  showToast('已新建空白用户存档');
-}
-function saveUserFxArchive(index) {
-  var slot = userFxArchiveAt(index);
-  if (!slot) return;
-  slot.snapshot = captureFxArchiveSnapshot();
-  slot.savedAt = Date.now();
-  slot.createdAt = slot.createdAt || slot.savedAt;
-  slot.name = normalizeUserFxArchiveName(slot.name, index);
-  saveUserFxArchives();
-  renderUserFxArchives();
-  showToast('已保存到 ' + slot.name);
-}
-function applyUserFxArchive(index) {
-  var slot = userFxArchiveAt(index);
-  if (!slot || !slot.snapshot) {
-    showToast('这个用户存档还是空白');
-    return;
-  }
-  if (applyFxArchiveSnapshot(slot.snapshot)) showToast('已应用 ' + slot.name);
-}
-function renameUserFxArchive(index) {
-  if (!userFxArchiveAt(index)) return;
-  userFxArchiveEditing = Math.floor(Number(index) || 0);
-  renderUserFxArchives();
-}
-function commitUserFxArchiveRename(index) {
-  var slot = userFxArchiveAt(index);
-  if (!slot) return;
-  var input = document.getElementById('user-archive-input-' + index);
-  slot.name = normalizeUserFxArchiveName(input && input.value, index);
-  slot.createdAt = slot.createdAt || Date.now();
-  userFxArchiveEditing = -1;
-  saveUserFxArchives();
-  renderUserFxArchives();
-  showToast('已命名为 ' + slot.name);
-}
-function cancelUserFxArchiveRename() {
-  userFxArchiveEditing = -1;
-  renderUserFxArchives();
-}
-function removeUserFxArchive(index) {
-  if (!userFxArchiveAt(index)) return;
-  userFxArchives.splice(index, 1);
-  userFxArchiveEditing = -1;
-  saveUserFxArchives();
-  renderUserFxArchives();
-  showToast('已删除用户存档');
-}
-function userFxArchiveExportPayload(slot) {
-  return {
-    type: USER_FX_ARCHIVE_EXPORT_TYPE,
-    schema: USER_FX_ARCHIVE_SCHEMA,
-    exportedAt: Date.now(),
-    name: slot.name,
-    savedAt: slot.savedAt,
-    snapshot: slot.snapshot
-  };
-}
-function safeArchiveFileName(name) {
-  return String(name || 'Mineradio 用户存档').replace(/[\\/:*?"<>|]+/g, '-').slice(0, 48) + '.json';
-}
-function exportUserFxArchive(index) {
-  var slot = userFxArchiveAt(index);
-  if (!slot || !slot.snapshot) {
-    showToast('空白存档不能导出');
-    return;
-  }
-  var payload = userFxArchiveExportPayload(slot);
-  var text = JSON.stringify(payload, null, 2);
-  var api = getDesktopWindowApi && getDesktopWindowApi();
-  if (api && typeof api.exportJsonFile === 'function') {
-    api.exportJsonFile({ defaultName: safeArchiveFileName(slot.name), text: text }).then(function (res) {
-      if (res && res.ok) showToast('用户存档已导出');
-      else if (!res || !res.canceled) showToast('用户存档导出失败');
-    }).catch(function () { showToast('用户存档导出失败'); });
-    return;
-  }
-  var blob = new Blob([text], { type: 'application/json;charset=utf-8' });
-  var url = URL.createObjectURL(blob);
-  var a = document.createElement('a');
-  a.href = url;
-  a.download = safeArchiveFileName(slot.name);
-  a.click();
-  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-}
-function normalizeImportedFxArchivePayload(payload, fileName) {
-  if (!payload || typeof payload !== 'object') return null;
-  var snapshot = payload.snapshot ? normalizeFxArchiveSnapshot(payload.snapshot) : normalizeFxArchiveSnapshot(payload);
-  if (!snapshot) return null;
-  var baseName = String(fileName || '').split(/[\\/]/).pop().replace(/\.json$/i, '');
-  return {
-    name: normalizeUserFxArchiveName(payload.name || baseName, userFxArchives.length),
-    createdAt: Date.now(),
-    savedAt: Number(payload.savedAt) || Date.now(),
-    snapshot: snapshot
-  };
-}
-async function importUserFxArchiveText(text, fileName) {
-  if (looksLikeUserFxShareCode(text)) return importUserFxArchiveShareCodeText(text);
-  var payload = null;
-  try { payload = JSON.parse(String(text || '')); } catch (e) { }
-  var slot = normalizeImportedFxArchivePayload(payload, fileName);
-  if (!slot) {
-    showToast('导入失败，文件不是有效的用户存档');
-    return false;
-  }
-  return addImportedUserFxArchiveSlot(slot, '已导入 ');
-}
-function importUserFxArchiveFromDialog() {
-  var api = getDesktopWindowApi && getDesktopWindowApi();
-  if (api && typeof api.importJsonFile === 'function') {
-    api.importJsonFile().then(function (res) {
-      if (res && res.ok) importUserFxArchiveText(res.text, res.filePath || '用户存档.json');
-      else if (!res || !res.canceled) showToast('导入失败');
-    }).catch(function () { showToast('导入失败'); });
-    return;
-  }
-  var input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.json,application/json';
-  input.onchange = function () {
-    var file = input.files && input.files[0];
-    if (file) readUserFxArchiveImportFile(file);
-  };
-  input.click();
-}
-function readUserFxArchiveImportFile(file) {
-  if (!file || !/\.json$/i.test(file.name || '')) {
-    showToast('请导入 JSON 用户存档');
-    return;
-  }
-  var reader = new FileReader();
-  reader.onload = function (e) { importUserFxArchiveText(e.target && e.target.result, file.name); };
-  reader.onerror = function () { showToast('导入失败'); };
-  reader.readAsText(file, 'utf-8');
-}
-function bindUserFxArchiveDrop() {
-  var grid = document.getElementById('user-archive-grid');
-  if (!grid || grid._archiveDropBound) return;
-  grid._archiveDropBound = true;
-  grid.addEventListener('dragover', function (e) {
-    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
-    e.preventDefault();
-    grid.classList.add('dragover');
-  });
-  grid.addEventListener('dragleave', function (e) {
-    if (!grid.contains(e.relatedTarget)) grid.classList.remove('dragover');
-  });
-  grid.addEventListener('drop', function (e) {
-    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
-    e.preventDefault();
-    grid.classList.remove('dragover');
-    Array.prototype.forEach.call(e.dataTransfer.files, readUserFxArchiveImportFile);
-  });
-}
 ;
 
 // ==================== 07-fx/00-preset-archive-data.js ====================
@@ -23150,6 +22587,2526 @@ function relabelFxPanelControls() {
 }
 ;
 
+// ==================== 07-fx/08-cache-storage-settings.js ====================
+// Ported from Mineradio 2.2.0, GPL-3.0, 07-fx/08-cache-storage-settings.js（全文照抄，
+// 仅下方两处 note 文案按本项目实际缓存子系统改写——深空折韵暂无歌词磁盘缓存/节拍缓存，
+// 且缓存行不做重启重定向，原 MR 文案的"重启后改用/已使用此目录"表述在本项目不成立）
+function mineradioCacheStorageNode(id) {
+  return document.getElementById(id);
+}
+
+function formatMineradioCacheBytes(value) {
+  var bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return bytes + ' B';
+  var units = ['KB', 'MB', 'GB', 'TB'];
+  var index = -1;
+  do {
+    bytes /= 1024;
+    index += 1;
+  } while (bytes >= 1024 && index < units.length - 1);
+  return (bytes >= 100 || index === 0 ? bytes.toFixed(0) : bytes.toFixed(1)) + ' ' + units[index];
+}
+
+function setMineradioCacheStorageText(id, value) {
+  var node = mineradioCacheStorageNode(id);
+  if (node) node.textContent = value == null || value === '' ? '—' : String(value);
+}
+
+function applyMineradioCacheSettings(snapshot) {
+  if (!snapshot || !snapshot.ok) {
+    setMineradioCacheStorageText('cache-storage-total', '读取失败');
+    setMineradioCacheStorageText('cache-storage-note', snapshot && snapshot.error ? ('缓存设置不可用：' + snapshot.error) : '缓存设置不可用');
+    return;
+  }
+  var settings = snapshot.settings || {};
+  var usage = snapshot.usage || {};
+  setMineradioCacheStorageText('cache-storage-root', settings.rootPath);
+  setMineradioCacheStorageText('cache-storage-total', '已占用 ' + formatMineradioCacheBytes(usage.totalManagedBytes));
+  setMineradioCacheStorageText('cache-storage-lyrics-path', settings.lyricsPath);
+  setMineradioCacheStorageText('cache-storage-lyrics-size', formatMineradioCacheBytes(usage.lyricsBytes));
+  setMineradioCacheStorageText('cache-storage-chromium-path', settings.activeChromiumPath || settings.chromiumPath);
+  setMineradioCacheStorageText('cache-storage-chromium-size', formatMineradioCacheBytes(usage.chromiumBytes));
+  setMineradioCacheStorageText('cache-storage-beatmaps-path', settings.activeBeatmapsPath || settings.beatmapsPath);
+  setMineradioCacheStorageText('cache-storage-beatmaps-size', formatMineradioCacheBytes(usage.beatmapsBytes));
+  setMineradioCacheStorageText('cache-storage-wallpaper-path', settings.activeWallpaperEnginePath || settings.wallpaperEnginePath);
+  setMineradioCacheStorageText('cache-storage-wallpaper-size', formatMineradioCacheBytes(usage.wallpaperEngineBytes));
+  setMineradioCacheStorageText('cache-storage-userdata-path', settings.userDataPath || '系统安全数据目录');
+  setMineradioCacheStorageText('cache-storage-userdata-size', formatMineradioCacheBytes(usage.userDataBytes));
+  var restartButton = mineradioCacheStorageNode('cache-storage-restart');
+  if (restartButton) restartButton.hidden = !settings.restartRequired;
+  setMineradioCacheStorageText(
+    'cache-storage-note',
+    settings.restartRequired
+      ? '缓存目录已保存；重启应用后完全切换到新目录。'
+      : '缓存目录已生效；各行占用为对应缓存目录的实时统计。'
+  );
+}
+
+function refreshMineradioCacheSettings() {
+  if (!window.desktopWindow || typeof window.desktopWindow.getCacheSettings !== 'function') {
+    applyMineradioCacheSettings({ ok: false, error: '仅桌面版支持本地缓存路径设置' });
+    return Promise.resolve();
+  }
+  setMineradioCacheStorageText('cache-storage-total', '正在统计...');
+  return window.desktopWindow.getCacheSettings().then(applyMineradioCacheSettings).catch(function (error) {
+    applyMineradioCacheSettings({ ok: false, error: error && error.message || '读取失败' });
+  });
+}
+
+function chooseMineradioCacheRoot() {
+  if (!window.desktopWindow || typeof window.desktopWindow.chooseCacheDirectory !== 'function') return;
+  window.desktopWindow.chooseCacheDirectory().then(function (choice) {
+    if (!choice || !choice.ok || choice.canceled || !choice.rootPath) return;
+    return window.desktopWindow.setCacheSettings({ rootPath: choice.rootPath });
+  }).then(function (snapshot) {
+    if (snapshot) applyMineradioCacheSettings(snapshot);
+  }).catch(function (error) {
+    applyMineradioCacheSettings({ ok: false, error: error && error.message || '保存失败' });
+  });
+}
+
+function restartMineradioForCachePath() {
+  if (!window.desktopWindow || typeof window.desktopWindow.restartApp !== 'function') return;
+  window.desktopWindow.restartApp();
+}
+
+setTimeout(refreshMineradioCacheSettings, 450);
+;
+
+// ==================== 07-fx/03-wallpaper-engine-library.js ====================
+// Ported from Mineradio 2.2.0, GPL-3.0, 07-fx/03-wallpaper-engine-library.js（2425 行全文照抄，未改逻辑）。
+// 差异说明一：该模块引用的 #wallpaper-engine-layer/#wallpaper-engine-modal 等 DOM 在 MR 里由 index.html 静态提供，
+// 深空折韵 index.html 未复制——由 renderer/mr-adapter.js 末尾「WE 抽屉环境补齐（三期 3e）」追加块在 bundle 加载前注入等价节点。
+// 差异说明二（仅 4 处用户可见文案，沿 07-fx/08 vendor 先例）：1411/1414/1419 行提示语中「Mineradio」
+// 按本项目改写为「深空折韵」；1413 行「运行时签名无效」按本项目用户可见文案禁词清单改写
+// （DSH 主进程不产生 WALLPAPER_ENGINE_SIGNATURE_INVALID，该分支在深空折韵内不可达，仅防文案外泄）。
+var WALLPAPER_ENGINE_SELECTION_STORE_KEY = 'mineradio-wallpaper-engine-selection-v1';
+var WALLPAPER_ENGINE_HIDDEN_STORE_KEY = 'mineradio-wallpaper-engine-hidden-v1';
+var WALLPAPER_ENGINE_FAVORITE_STORE_KEY = 'mineradio-wallpaper-engine-favorites-v1';
+var wallpaperEngineProjects = [];
+var wallpaperEngineLibrarySnapshot = null;
+var wallpaperEngineMediaToken = '';
+var wallpaperEngineLibraryBusy = false;
+var wallpaperEngineLayerToken = 0;
+var wallpaperEnginePreviewObserver = null;
+var wallpaperEngineSearchRenderTimer = 0;
+var wallpaperEnginePreviewScrollTimer = 0;
+var wallpaperEngineSwitchTimer = 0;
+var wallpaperEngineVideoRetryTimer = 0;
+var wallpaperEngineFirstFrameWait = null;
+var wallpaperEngineCaptureStream = null;
+var wallpaperEnginePreparedCaptureStreams = new Map();
+var wallpaperEngineGlassCaptureStream = null;
+var wallpaperEnginePreparedGlassCaptureStreams = new Map();
+var wallpaperEngineGlassCaptureToken = 0;
+var wallpaperEngineGlassCaptureRetryTimer = 0;
+var wallpaperEngineGlassCaptureRetryAttempt = 0;
+var wallpaperEngineCaptureMode = '';
+var wallpaperEngineNativeSessionId = '';
+var wallpaperEngineHostBoundsRestartTimer = 0;
+var wallpaperEngineHostBoundsUnsubscribe = null;
+var wallpaperEngineHostBoundsPreparing = false;
+var wallpaperEngineDesktopPreviewActive = false;
+var wallpaperEngineDesktopPreviewUsesAsset = false;
+var wallpaperEngineHostRecoveryInFlight = false;
+var wallpaperEngineHostRecoveryAttempt = 0;
+var wallpaperEngineHostRecoveryRetryTimer = 0;
+var wallpaperEngineFreezeReleaseTimer = 0;
+var wallpaperEngineFreezeGeneration = 0;
+var wallpaperEngineFreezeVisible = false;
+var wallpaperEngineCaptureViewportScaleX = 1;
+var wallpaperEngineCaptureViewportScaleY = 1;
+var wallpaperEnginePointerActivityTimer = 0;
+var wallpaperEnginePointerActivityLastSentAt = 0;
+var wallpaperEnginePointerActivityLatestX = 32768;
+var wallpaperEnginePointerActivityLatestY = 32768;
+var wallpaperEnginePointerActivityHasPoint = false;
+var wallpaperEngineRenderLimit = 240;
+var wallpaperEngineRuntimeError = '';
+var wallpaperEngineProjectDetailsId = '';
+var wallpaperEngineVisualSettingsTimer = 0;
+var WALLPAPER_ENGINE_SWITCH_FADE_MS = 440;
+var WALLPAPER_ENGINE_RENDER_BATCH = 240;
+var WALLPAPER_ENGINE_PREPARED_STREAM_TTL_MS = 12000;
+var WALLPAPER_ENGINE_FIRST_FRAME_TIMEOUT_MS = 8000;
+var WALLPAPER_ENGINE_FREEZE_FADE_MS = 180;
+var WALLPAPER_ENGINE_HOST_RECOVERY_MAX_ATTEMPTS = 3;
+var WALLPAPER_ENGINE_POINTER_ACTIVITY_INTERVAL_MS = 8;
+
+function cancelWallpaperEnginePointerActivity() {
+  if (wallpaperEnginePointerActivityTimer) clearTimeout(wallpaperEnginePointerActivityTimer);
+  wallpaperEnginePointerActivityTimer = 0;
+  wallpaperEnginePointerActivityLastSentAt = 0;
+}
+
+function wallpaperEnginePointerActivityReady() {
+  // A native WE source is briefly aligned over the Electron host while the
+  // capture stream is prepared. Chromium can keep Page Visibility hidden
+  // after that source is parked even though the real Mineradio window is
+  // visible. Desktop sessions therefore trust the main-process window state;
+  // browser fallback still resolves to document.hidden.
+  if (!wallpaperEngineDesktopHostIsVisible()
+    || wallpaperEngineHostBoundsPreparing
+    || !wallpaperEngineSelection.active
+    || wallpaperEngineSelection.kind !== 'engine'
+    || !/^[a-f0-9]{24}$/i.test(String(wallpaperEngineNativeSessionId || ''))
+    || !wallpaperEngineCaptureStream) return false;
+  var layer = document.getElementById('wallpaper-engine-layer');
+  return !!(layer && layer.classList.contains('engine-ready'));
+}
+
+function flushWallpaperEnginePointerActivity() {
+  wallpaperEnginePointerActivityTimer = 0;
+  if (!wallpaperEnginePointerActivityHasPoint || !wallpaperEnginePointerActivityReady()) return;
+  var api = wallpaperEngineDesktopApi();
+  if (!api || typeof api.reportWallpaperEnginePointerActivity !== 'function') return;
+  wallpaperEnginePointerActivityLastSentAt = typeof performance !== 'undefined' && performance.now
+    ? performance.now() : Date.now();
+  try {
+    api.reportWallpaperEnginePointerActivity({
+      sessionId: String(wallpaperEngineNativeSessionId || ''),
+      xUnit: wallpaperEnginePointerActivityLatestX,
+      yUnit: wallpaperEnginePointerActivityLatestY
+    });
+  } catch (e) { }
+}
+
+function rememberWallpaperEnginePointerPosition(event) {
+  if (!event || !Number.isFinite(Number(event.clientX)) || !Number.isFinite(Number(event.clientY))) return;
+  var width = Math.max(1, Number(document.documentElement && document.documentElement.clientWidth) || Number(window.innerWidth) || 1);
+  var height = Math.max(1, Number(document.documentElement && document.documentElement.clientHeight) || Number(window.innerHeight) || 1);
+  var xRatio = Math.max(0, Math.min(1, Number(event.clientX) / Math.max(1, width - 1)));
+  var yRatio = Math.max(0, Math.min(1, Number(event.clientY) / Math.max(1, height - 1)));
+  wallpaperEnginePointerActivityLatestX = Math.round(xRatio * 65535);
+  wallpaperEnginePointerActivityLatestY = Math.round(yRatio * 65535);
+  wallpaperEnginePointerActivityHasPoint = true;
+}
+
+function queueWallpaperEnginePointerActivity(event) {
+  rememberWallpaperEnginePointerPosition(event);
+  if (!wallpaperEnginePointerActivityHasPoint || !wallpaperEnginePointerActivityReady() || wallpaperEnginePointerActivityTimer) return;
+  var now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+  var delay = Math.max(0, WALLPAPER_ENGINE_POINTER_ACTIVITY_INTERVAL_MS - Math.max(0, now - wallpaperEnginePointerActivityLastSentAt));
+  wallpaperEnginePointerActivityTimer = setTimeout(flushWallpaperEnginePointerActivity, delay);
+}
+
+function cancelWallpaperEngineHostRecovery(resetAttempts) {
+  if (wallpaperEngineHostRecoveryRetryTimer) clearTimeout(wallpaperEngineHostRecoveryRetryTimer);
+  wallpaperEngineHostRecoveryRetryTimer = 0;
+  wallpaperEngineHostRecoveryInFlight = false;
+  if (resetAttempts !== false) wallpaperEngineHostRecoveryAttempt = 0;
+}
+
+function wallpaperEngineDesktopHostIsVisible() {
+  if (!wallpaperEngineUsesDesktopHostLifecycle()) return !document.hidden;
+  try {
+    if (typeof desktopRuntimeState === 'object' && desktopRuntimeState) {
+      return desktopRuntimeState.visible !== false && desktopRuntimeState.minimized !== true;
+    }
+  } catch (e) { }
+  return true;
+}
+
+function readWallpaperEngineIdSet(key) {
+  try {
+    var raw = JSON.parse(localStorage.getItem(key) || '[]');
+    return new Set((Array.isArray(raw) ? raw : []).map(String).filter(function (id) { return /^[a-f0-9]{24}$/i.test(id); }));
+  } catch (e) {
+    return new Set();
+  }
+}
+
+var hiddenWallpaperEngineIds = readWallpaperEngineIdSet(WALLPAPER_ENGINE_HIDDEN_STORE_KEY);
+var favoriteWallpaperEngineIds = readWallpaperEngineIdSet(WALLPAPER_ENGINE_FAVORITE_STORE_KEY);
+
+function saveWallpaperEngineIdSet(key, values) {
+  try { localStorage.setItem(key, JSON.stringify(Array.from(values))); } catch (e) { }
+}
+
+function normalizeWallpaperEngineSelection(value) {
+  value = value && typeof value === 'object' ? value : {};
+  var id = String(value.id || '').replace(/[^a-f0-9]/gi, '').slice(0, 24);
+  return {
+    version: 1,
+    active: value.active === true && id.length === 24,
+    id: id,
+    title: String(value.title || '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 160),
+    kind: value.kind === 'engine' ? 'engine' : (value.kind === 'media' ? 'media' : 'preview'),
+    mediaType: value.mediaType === 'video' ? 'video' : 'image',
+    mediaAnimated: value.mediaAnimated === true,
+    projectType: String(value.projectType || 'unknown').slice(0, 32),
+    hasPreview: value.hasPreview === true,
+    previewAnimated: value.previewAnimated === true,
+    visualOpacity: Math.max(0.15, Math.min(1, Number(value.visualOpacity) || 1)),
+    visualPositionX: Math.max(-0.5, Math.min(0.5, Number(value.visualPositionX) || 0)),
+    visualPositionY: Math.max(-0.5, Math.min(0.5, Number(value.visualPositionY) || 0)),
+    visualScale: Math.max(1, Math.min(1.6, Number(value.visualScale) || 1.08)),
+    updatedAt: Math.max(0, Number(value.updatedAt) || 0)
+  };
+}
+
+function readWallpaperEngineSelection() {
+  try { return normalizeWallpaperEngineSelection(JSON.parse(localStorage.getItem(WALLPAPER_ENGINE_SELECTION_STORE_KEY) || '{}')); }
+  catch (e) { return normalizeWallpaperEngineSelection({}); }
+}
+
+var wallpaperEngineSelection = readWallpaperEngineSelection();
+
+function wallpaperEngineVisualSettings() {
+  return {
+    opacity: Math.max(0.15, Math.min(1, Number(wallpaperEngineSelection.visualOpacity) || 1)),
+    positionX: Math.max(-0.5, Math.min(0.5, Number(wallpaperEngineSelection.visualPositionX) || 0)),
+    positionY: Math.max(-0.5, Math.min(0.5, Number(wallpaperEngineSelection.visualPositionY) || 0)),
+    scale: Math.max(1, Math.min(1.6, Number(wallpaperEngineSelection.visualScale) || 1.08))
+  };
+}
+
+function syncWallpaperEngineVisualControls() {
+  var settings = wallpaperEngineVisualSettings();
+  var controls = [
+    ['wallpaper-engine-opacity', settings.opacity, Math.round(settings.opacity * 100) + '%'],
+    ['wallpaper-engine-position-x', settings.positionX * 100, Math.round(settings.positionX * 100) + '%'],
+    ['wallpaper-engine-position-y', settings.positionY * 100, Math.round(settings.positionY * 100) + '%'],
+    ['wallpaper-engine-scale', settings.scale, settings.scale.toFixed(2) + '×']
+  ];
+  controls.forEach(function (entry) {
+    var input = document.getElementById(entry[0]);
+    if (!input) return;
+    input.value = String(entry[1]);
+    var output = input.parentElement && input.parentElement.querySelector('output');
+    if (output) output.textContent = entry[2];
+  });
+}
+
+function flushWallpaperEngineVisualSettings() {
+  wallpaperEngineVisualSettingsTimer = 0;
+  var api = wallpaperEngineDesktopApi();
+  var sessionId = String(wallpaperEngineNativeSessionId || '');
+  if (!api || typeof api.updateWallpaperEngineVisualSettings !== 'function'
+    || !/^[a-f0-9]{24}$/i.test(sessionId)) return;
+  try { api.updateWallpaperEngineVisualSettings(Object.assign({ sessionId: sessionId }, wallpaperEngineVisualSettings())); }
+  catch (e) { }
+}
+
+function applyWallpaperEngineVisualSettings(immediate) {
+  var settings = wallpaperEngineVisualSettings();
+  var layer = document.getElementById('wallpaper-engine-layer');
+  if (layer) {
+    layer.style.setProperty('--wallpaper-engine-visual-opacity', settings.opacity.toFixed(3));
+    layer.style.setProperty('--wallpaper-engine-visual-position-x', (settings.positionX * 100).toFixed(2) + '%');
+    layer.style.setProperty('--wallpaper-engine-visual-position-y', (settings.positionY * 100).toFixed(2) + '%');
+    layer.style.setProperty('--wallpaper-engine-visual-scale', settings.scale.toFixed(3));
+  }
+  syncWallpaperEngineVisualControls();
+  if (wallpaperEngineVisualSettingsTimer) clearTimeout(wallpaperEngineVisualSettingsTimer);
+  if (immediate === true) flushWallpaperEngineVisualSettings();
+  else wallpaperEngineVisualSettingsTimer = setTimeout(flushWallpaperEngineVisualSettings, 42);
+}
+
+function setWallpaperEngineVisualSetting(name, rawValue) {
+  var value = Number(rawValue);
+  if (!Number.isFinite(value)) return;
+  if (name === 'opacity') wallpaperEngineSelection.visualOpacity = Math.max(0.15, Math.min(1, value));
+  else if (name === 'positionX') wallpaperEngineSelection.visualPositionX = Math.max(-0.5, Math.min(0.5, value / 100));
+  else if (name === 'positionY') wallpaperEngineSelection.visualPositionY = Math.max(-0.5, Math.min(0.5, value / 100));
+  else if (name === 'scale') wallpaperEngineSelection.visualScale = Math.max(1, Math.min(1.6, value));
+  else return;
+  saveWallpaperEngineSelection();
+  applyWallpaperEngineVisualSettings(false);
+}
+
+function saveWallpaperEngineSelection() {
+  try { localStorage.setItem(WALLPAPER_ENGINE_SELECTION_STORE_KEY, JSON.stringify(normalizeWallpaperEngineSelection(wallpaperEngineSelection))); }
+  catch (e) { }
+}
+
+function wallpaperEngineDesktopApi() {
+  try {
+    if (typeof getDesktopWindowApi === 'function') return getDesktopWindowApi();
+    return window.desktopWindow || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function wallpaperEngineUsesDesktopHostLifecycle() {
+  var api = wallpaperEngineDesktopApi();
+  return !!(api && typeof api.onWallpaperEngineHostBoundsChanged === 'function');
+}
+
+function wallpaperEngineNativeHostUnavailable() {
+  return wallpaperEngineHostBoundsPreparing
+    || (!wallpaperEngineUsesDesktopHostLifecycle() && document.hidden);
+}
+
+function normalizeWallpaperEngineProject(item) {
+  item = item && typeof item === 'object' ? item : {};
+  var id = String(item.id || '').replace(/[^a-f0-9]/gi, '').slice(0, 24);
+  if (id.length !== 24) return null;
+  var projectType = String(item.projectType || 'unknown').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32) || 'unknown';
+  var mediaType = item.mediaType === 'video' ? 'video' : (item.mediaType === 'image' ? 'image' : '');
+  return {
+    id: id,
+    title: String(item.title || 'Wallpaper Engine').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160) || 'Wallpaper Engine',
+    projectType: projectType,
+    mediaType: mediaType,
+    mediaAnimated: item.mediaAnimated === true,
+    playable: item.playable === true && !!mediaType,
+    enginePlayable: item.enginePlayable === true && projectType === 'scene',
+    previewOnly: item.previewOnly === true || (item.playable !== true && item.enginePlayable !== true),
+    hasPreview: item.hasPreview === true,
+    previewAnimated: item.previewAnimated === true,
+    source: String(item.source || '').slice(0, 32),
+    sourceLabel: String(item.sourceLabel || '本地项目').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 80),
+    workshopId: String(item.workshopId || '').replace(/\D/g, '').slice(0, 32),
+    propertyCount: Math.max(0, Math.min(256, Number(item.propertyCount) || 0)),
+    audioPropertyCount: Math.max(0, Math.min(256, Number(item.audioPropertyCount) || 0)),
+    mutedAudioPropertyCount: Math.max(0, Math.min(256, Number(item.mutedAudioPropertyCount) || 0)),
+    updatedAt: Math.max(0, Number(item.updatedAt) || 0),
+    safetyMode: item.safetyMode === 'native-engine' ? 'native-engine' : (item.safetyMode === 'direct-media' ? 'direct-media' : 'preview-only')
+  };
+}
+
+function wallpaperEngineProjectById(id) {
+  id = String(id || '');
+  for (var i = 0; i < wallpaperEngineProjects.length; i++) {
+    if (wallpaperEngineProjects[i].id === id) return wallpaperEngineProjects[i];
+  }
+  return null;
+}
+
+function wallpaperEngineMediaUrl(item, kind) {
+  item = item || {};
+  kind = kind === 'media' ? 'media' : 'preview';
+  return 'mineradio-wallpaper://' + kind + '/' + encodeURIComponent(item.id || '') + '?v=' + encodeURIComponent(String(item.updatedAt || 0)) + '&token=' + encodeURIComponent(wallpaperEngineMediaToken);
+}
+
+function wallpaperEngineProjectLabel(item) {
+  item = item || {};
+  if (item.playable && item.mediaType === 'video') return 'Video · 动态播放';
+  if (item.playable && item.mediaType === 'image') return '图片 · 原图显示';
+  if (item.projectType === 'scene' && item.enginePlayable) return 'Scene · Wallpaper Engine 原生实时运行';
+  if (item.projectType === 'scene') return 'Scene · 预览（未找到有效 PKGV 场景包）';
+  if (item.projectType === 'web') return 'Web · 安全预览（未执行 HTML）';
+  if (item.projectType === 'application') return 'Application · 安全预览（未运行程序）';
+  return '本地项目 · 安全预览';
+}
+
+function updateWallpaperEngineEntryUi(message) {
+  var value = document.getElementById('wallpaper-engine-value');
+  var restore = document.getElementById('wallpaper-engine-restore-btn');
+  var active = !!wallpaperEngineSelection.active;
+  if (value) {
+    if (message) value.textContent = message;
+    else if (active && wallpaperEngineRuntimeError) value.textContent = wallpaperEngineRuntimeError + ' · 已显示原背景';
+    else if (active && wallpaperEngineSelection.kind === 'engine' && wallpaperEngineDesktopPreviewActive) {
+      value.textContent = (wallpaperEngineSelection.title || '已选择')
+        + (wallpaperEngineDesktopPreviewUsesAsset ? ' · 桌面被动模式 · 项目预览' : ' · 桌面被动模式 · 原背景');
+    }
+    else if (active && wallpaperEngineSelection.kind === 'engine') value.textContent = (wallpaperEngineSelection.title || '已选择') + ' · WE 引擎实时运行';
+    else if (active) value.textContent = (wallpaperEngineSelection.title || '已选择') + ' · 原背景保留';
+    else value.textContent = '未启用 · 原背景保留';
+  }
+  if (restore) restore.disabled = !active;
+}
+
+function cancelWallpaperEngineSwitchTimer() {
+  if (wallpaperEngineSwitchTimer) clearTimeout(wallpaperEngineSwitchTimer);
+  wallpaperEngineSwitchTimer = 0;
+}
+
+function cancelWallpaperEngineVideoRetry() {
+  if (wallpaperEngineVideoRetryTimer) clearTimeout(wallpaperEngineVideoRetryTimer);
+  wallpaperEngineVideoRetryTimer = 0;
+}
+
+function cancelWallpaperEngineFirstFrameWait() {
+  var wait = wallpaperEngineFirstFrameWait;
+  wallpaperEngineFirstFrameWait = null;
+  if (!wait) return;
+  if (wait.timer) clearTimeout(wait.timer);
+  if (wait.video && wait.callbackId && typeof wait.video.cancelVideoFrameCallback === 'function') {
+    try { wait.video.cancelVideoFrameCallback(wait.callbackId); } catch (e) { }
+  }
+  if (wait.video && wait.loadedDataHandler) {
+    try { wait.video.removeEventListener('loadeddata', wait.loadedDataHandler); } catch (e2) { }
+  }
+  if (wait.raf1 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(wait.raf1);
+  if (wait.raf2 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(wait.raf2);
+}
+
+function resetWallpaperEngineCaptureViewport(video) {
+  wallpaperEngineCaptureViewportScaleX = 1;
+  wallpaperEngineCaptureViewportScaleY = 1;
+  video = video || document.getElementById('wallpaper-engine-video');
+  if (video) {
+    video.style.removeProperty('transform');
+    video.style.removeProperty('transform-origin');
+  }
+  var layer = document.getElementById('wallpaper-engine-layer');
+  if (layer) {
+    delete layer.dataset.captureScaleX;
+    delete layer.dataset.captureScaleY;
+  }
+}
+
+function wallpaperEngineCaptureContentSize(runtime) {
+  runtime = runtime && typeof runtime === 'object' ? runtime : {};
+  var host = runtime.hostWindowRect && typeof runtime.hostWindowRect === 'object'
+    ? runtime.hostWindowRect
+    : null;
+  var width = host ? Math.abs((Number(host.right) || 0) - (Number(host.left) || 0)) : 0;
+  var height = host ? Math.abs((Number(host.bottom) || 0) - (Number(host.top) || 0)) : 0;
+  if (!(width > 0)) width = Number(runtime.sourceWindowVisibleWidth) || 0;
+  if (!(height > 0)) height = Number(runtime.sourceWindowVisibleHeight) || 0;
+  return { width: width, height: height };
+}
+
+function calibrateWallpaperEngineCaptureViewport(video, runtime) {
+  if (!video || !runtime || runtime.sourceWindowAligned !== true) {
+    resetWallpaperEngineCaptureViewport(video);
+    return { scaleX: 1, scaleY: 1 };
+  }
+  var content = wallpaperEngineCaptureContentSize(runtime);
+  var frameWidth = Number(video.videoWidth) || Number(runtime.width) || 0;
+  var frameHeight = Number(video.videoHeight) || Number(runtime.height) || 0;
+  var rawScaleX = content.width > 0 ? frameWidth / content.width : 1;
+  var rawScaleY = content.height > 0 ? frameHeight / content.height : 1;
+  var scaleX = rawScaleX > 1.015 && rawScaleX < 4.01 ? rawScaleX : 1;
+  var scaleY = rawScaleY > 1.015 && rawScaleY < 4.01 ? rawScaleY : 1;
+  // Wallpaper Engine's play-in-window surface is reported in Windows DIPs,
+  // while desktopCapturer exposes a physical-pixel frame on scaled displays.
+  // Crop the padded right/bottom portion by enlarging only the captured layer.
+  if (scaleX !== 1 && scaleY !== 1 && Math.abs(scaleX - scaleY) <= 0.035) {
+    var uniformScale = (scaleX + scaleY) / 2;
+    scaleX = uniformScale;
+    scaleY = uniformScale;
+  }
+  wallpaperEngineCaptureViewportScaleX = scaleX;
+  wallpaperEngineCaptureViewportScaleY = scaleY;
+  video.style.transformOrigin = '0 0';
+  video.style.transform = (scaleX === 1 && scaleY === 1)
+    ? ''
+    : 'scale3d(' + scaleX.toFixed(6) + ',' + scaleY.toFixed(6) + ',1)';
+  var layer = document.getElementById('wallpaper-engine-layer');
+  if (layer) {
+    layer.dataset.captureScaleX = scaleX.toFixed(6);
+    layer.dataset.captureScaleY = scaleY.toFixed(6);
+  }
+  return { scaleX: scaleX, scaleY: scaleY };
+}
+
+function captureWallpaperEngineFreezeFrame() {
+  var layer = document.getElementById('wallpaper-engine-layer');
+  var canvas = document.getElementById('wallpaper-engine-freeze');
+  var video = document.getElementById('wallpaper-engine-video');
+  if (!layer || !canvas || !video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return false;
+  if (wallpaperEngineFreezeReleaseTimer) clearTimeout(wallpaperEngineFreezeReleaseTimer);
+  wallpaperEngineFreezeReleaseTimer = 0;
+  ++wallpaperEngineFreezeGeneration;
+  try {
+    var freezeScale = Math.min(1, 3840 / Math.max(1, video.videoWidth), 2160 / Math.max(1, video.videoHeight));
+    var width = Math.max(1, Math.round(video.videoWidth * freezeScale));
+    var height = Math.max(1, Math.round(video.videoHeight * freezeScale));
+    var sourceWidth = Math.max(1, Math.min(video.videoWidth, Math.round(video.videoWidth / Math.max(1, wallpaperEngineCaptureViewportScaleX))));
+    var sourceHeight = Math.max(1, Math.min(video.videoHeight, Math.round(video.videoHeight / Math.max(1, wallpaperEngineCaptureViewportScaleY))));
+    canvas.width = width;
+    canvas.height = height;
+    var context = canvas.getContext('2d', { alpha: false, desynchronized: true }) || canvas.getContext('2d');
+    if (!context) return false;
+    context.globalCompositeOperation = 'copy';
+    context.drawImage(video, 0, 0, sourceWidth, sourceHeight, 0, 0, width, height);
+  } catch (error) {
+    return false;
+  }
+  wallpaperEngineFreezeVisible = true;
+  layer.classList.add('ready', 'video-ready', 'engine-ready', 'freeze-ready');
+  document.body.classList.add('wallpaper-engine-active');
+  return true;
+}
+
+function clearWallpaperEngineFreezeFrame(immediate) {
+  var layer = document.getElementById('wallpaper-engine-layer');
+  var canvas = document.getElementById('wallpaper-engine-freeze');
+  if (wallpaperEngineFreezeReleaseTimer) clearTimeout(wallpaperEngineFreezeReleaseTimer);
+  wallpaperEngineFreezeReleaseTimer = 0;
+  var generation = ++wallpaperEngineFreezeGeneration;
+  wallpaperEngineFreezeVisible = false;
+  if (layer) layer.classList.remove('freeze-ready');
+  function releaseCanvas() {
+    if (generation !== wallpaperEngineFreezeGeneration || wallpaperEngineFreezeVisible || !canvas) return;
+    canvas.width = 1;
+    canvas.height = 1;
+  }
+  if (immediate) releaseCanvas();
+  else wallpaperEngineFreezeReleaseTimer = setTimeout(function () {
+    wallpaperEngineFreezeReleaseTimer = 0;
+    releaseCanvas();
+  }, WALLPAPER_ENGINE_FREEZE_FADE_MS + 30);
+}
+
+function stopWallpaperEngineMediaStream(stream) {
+  if (!stream || !stream.getTracks) return;
+  stream.getTracks().forEach(function (track) {
+    try { track.stop(); } catch (e) { }
+  });
+}
+
+function stopWallpaperEnginePreparedCaptureStreams(sessionId) {
+  var expected = String(sessionId || '');
+  wallpaperEnginePreparedCaptureStreams.forEach(function (entry, id) {
+    if (expected && id !== expected) return;
+    if (entry && entry.timer) clearTimeout(entry.timer);
+    stopWallpaperEngineMediaStream(entry && entry.stream);
+    wallpaperEnginePreparedCaptureStreams.delete(id);
+  });
+}
+
+function stopWallpaperEnginePreparedGlassCaptureStreams(sessionId) {
+  var expected = String(sessionId || '');
+  wallpaperEnginePreparedGlassCaptureStreams.forEach(function (entry, id) {
+    if (expected && id !== expected) return;
+    if (entry && entry.timer) clearTimeout(entry.timer);
+    stopWallpaperEngineMediaStream(entry && entry.stream);
+    wallpaperEnginePreparedGlassCaptureStreams.delete(id);
+  });
+}
+
+function storeWallpaperEnginePreparedCaptureStream(sessionId, stream) {
+  sessionId = String(sessionId || '');
+  stopWallpaperEnginePreparedCaptureStreams(sessionId);
+  var entry = { stream: stream, timer: 0 };
+  entry.timer = setTimeout(function () {
+    if (wallpaperEnginePreparedCaptureStreams.get(sessionId) !== entry) return;
+    wallpaperEnginePreparedCaptureStreams.delete(sessionId);
+    stopWallpaperEngineMediaStream(stream);
+  }, WALLPAPER_ENGINE_PREPARED_STREAM_TTL_MS);
+  wallpaperEnginePreparedCaptureStreams.set(sessionId, entry);
+}
+
+function takeWallpaperEnginePreparedCaptureStream(sessionId) {
+  sessionId = String(sessionId || '');
+  var entry = wallpaperEnginePreparedCaptureStreams.get(sessionId);
+  if (!entry) return null;
+  wallpaperEnginePreparedCaptureStreams.delete(sessionId);
+  if (entry.timer) clearTimeout(entry.timer);
+  return entry.stream || null;
+}
+
+function storeWallpaperEnginePreparedGlassCaptureStream(sessionId, stream) {
+  sessionId = String(sessionId || '');
+  stopWallpaperEnginePreparedGlassCaptureStreams(sessionId);
+  var entry = { stream: stream, timer: 0 };
+  entry.timer = setTimeout(function () {
+    if (wallpaperEnginePreparedGlassCaptureStreams.get(sessionId) !== entry) return;
+    wallpaperEnginePreparedGlassCaptureStreams.delete(sessionId);
+    stopWallpaperEngineMediaStream(stream);
+  }, WALLPAPER_ENGINE_PREPARED_STREAM_TTL_MS);
+  wallpaperEnginePreparedGlassCaptureStreams.set(sessionId, entry);
+}
+
+function takeWallpaperEnginePreparedGlassCaptureStream(sessionId) {
+  sessionId = String(sessionId || '');
+  var entry = wallpaperEnginePreparedGlassCaptureStreams.get(sessionId);
+  if (!entry) return null;
+  wallpaperEnginePreparedGlassCaptureStreams.delete(sessionId);
+  if (entry.timer) clearTimeout(entry.timer);
+  return entry.stream || null;
+}
+
+function stopWallpaperEngineGlassCaptureStream(keepPreparedStreams) {
+  ++wallpaperEngineGlassCaptureToken;
+  if (wallpaperEngineGlassCaptureRetryTimer) clearTimeout(wallpaperEngineGlassCaptureRetryTimer);
+  wallpaperEngineGlassCaptureRetryTimer = 0;
+  wallpaperEngineGlassCaptureRetryAttempt = 0;
+  if (!keepPreparedStreams) stopWallpaperEnginePreparedGlassCaptureStreams();
+  var stream = wallpaperEngineGlassCaptureStream;
+  wallpaperEngineGlassCaptureStream = null;
+  stopWallpaperEngineMediaStream(stream);
+  var video = document.getElementById('wallpaper-engine-glass-sampler-video');
+  if (video) {
+    video.onloadeddata = null;
+    video.onerror = null;
+    try { video.pause(); } catch (e) { }
+    if (video.srcObject) {
+      try { video.srcObject = null; } catch (e2) { }
+    }
+  }
+  document.body.classList.remove('wallpaper-engine-glass-sampler-ready');
+}
+
+function stopWallpaperEngineCaptureStream(keepPreparedStreams) {
+  cancelWallpaperEngineFirstFrameWait();
+  cancelWallpaperEnginePointerActivity();
+  if (!keepPreparedStreams) stopWallpaperEnginePreparedCaptureStreams();
+  var stream = wallpaperEngineCaptureStream;
+  wallpaperEngineCaptureStream = null;
+  wallpaperEngineCaptureMode = '';
+  stopWallpaperEngineMediaStream(stream);
+  stopWallpaperEngineGlassCaptureStream(keepPreparedStreams);
+  var video = document.getElementById('wallpaper-engine-video');
+  resetWallpaperEngineCaptureViewport(video);
+  if (video && video.srcObject) {
+    try { video.srcObject = null; } catch (e2) { }
+  }
+}
+
+async function hardenWallpaperEngineCaptureStream(stream) {
+  if (!stream) return stream;
+  var audioTracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
+  audioTracks.forEach(function (track) {
+    try { if (stream.removeTrack) stream.removeTrack(track); } catch (e) { }
+    try { track.stop(); } catch (e2) { }
+  });
+  var tracks = stream.getVideoTracks ? stream.getVideoTracks() : [];
+  var cursorResults = await Promise.all(tracks.map(function (track) {
+    if (!track || typeof track.applyConstraints !== 'function') return Promise.resolve(false);
+    return Promise.resolve(track.applyConstraints({ cursor: 'never' })).then(function () {
+      try {
+        var settings = typeof track.getSettings === 'function' ? track.getSettings() : null;
+        // Chromium's legacy chromeMediaSource path can resolve applyConstraints
+        // while silently omitting the cursor setting and continuing to bake a
+        // delayed software pointer into the captured frame. Only an explicit
+        // `never` acknowledgement counts as verified suppression.
+        if (!settings || settings.cursor !== 'never') return false;
+      } catch (e3) { return false; }
+      return true;
+    }).catch(function () { return false; });
+  }));
+  try {
+    stream.__mineradioCursorSuppressed = !!tracks.length && cursorResults.every(function (value) { return value === true; });
+  } catch (e4) { }
+  return stream;
+}
+
+function wallpaperEngineCaptureFpsPreference() {
+  var mode = typeof normalizeForegroundFpsMode === 'function'
+    ? normalizeForegroundFpsMode(fx && fx.foregroundFpsMode)
+    : 'vsync';
+  var fixed = typeof foregroundFixedFpsForMode === 'function'
+    ? foregroundFixedFpsForMode(mode)
+    : (/^(45|60|75|90|120)$/.test(String(mode)) ? Number(mode) : 0);
+  return Number(fixed) > 0 ? Math.max(24, Math.min(240, Math.round(Number(fixed)))) : 0;
+}
+
+function wallpaperEngineResolvedCaptureFps(value) {
+  var fps = Number(value);
+  if (!(fps > 0)) {
+    fps = typeof estimatedDisplayRefreshHz === 'function' ? estimatedDisplayRefreshHz() : 60;
+  }
+  return Math.max(24, Math.min(240, Math.round(Number(fps) || 60)));
+}
+
+function wallpaperEngineRuntimeCaptureFps() {
+  var preferred = wallpaperEngineCaptureFpsPreference();
+  return preferred > 0 ? preferred : wallpaperEngineResolvedCaptureFps(0);
+}
+
+async function syncWallpaperEngineCaptureFrameRate() {
+  var stream = wallpaperEngineCaptureStream;
+  var track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+  if (!track || typeof track.applyConstraints !== 'function') return { ok: false, skipped: true };
+  var target = wallpaperEngineRuntimeCaptureFps();
+  try {
+    var capabilities = typeof track.getCapabilities === 'function' ? track.getCapabilities() : null;
+    var range = capabilities && capabilities.frameRate;
+    if (range && Number(range.min) > 0) target = Math.max(Number(range.min), target);
+    if (range && Number(range.max) > 0) target = Math.min(Number(range.max), target);
+  } catch (e) { }
+  try {
+    await track.applyConstraints({ frameRate: { ideal: target, max: target } });
+    try { track.contentHint = 'motion'; } catch (e2) { }
+    return { ok: true, fps: target };
+  } catch (error) {
+    return { ok: false, error: String(error && (error.message || error.name) || error || 'FRAME_RATE_CONSTRAINT_FAILED').slice(0, 240) };
+  }
+}
+
+window.__mineradioSyncWallpaperEngineCaptureFrameRate = syncWallpaperEngineCaptureFrameRate;
+
+function stopWallpaperEngineNativeSession(sessionId) {
+  var api = wallpaperEngineDesktopApi();
+  var stopAll = arguments.length === 0;
+  var expected = String(sessionId || wallpaperEngineNativeSessionId || '');
+  if (stopAll || !sessionId || expected === wallpaperEngineNativeSessionId) wallpaperEngineNativeSessionId = '';
+  if (!api || typeof api.stopWallpaperEngineScene !== 'function') return Promise.resolve({ ok: true });
+  return Promise.resolve(api.stopWallpaperEngineScene({ sessionId: expected, all: stopAll })).catch(function () {
+    return { ok: false };
+  });
+}
+
+async function openWallpaperEngineCaptureStream(sessionId, fps, sourceId, options) {
+  if (!navigator.mediaDevices || !/^[a-f0-9]{24}$/i.test(String(sessionId || ''))) {
+    throw new Error('WALLPAPER_CAPTURE_UNSUPPORTED');
+  }
+  options = options && typeof options === 'object' ? options : {};
+  sourceId = String(sourceId || '');
+  var maxFrameRate = wallpaperEngineResolvedCaptureFps(fps);
+  var diagnostics = {
+    sessionId: String(sessionId || ''),
+    sourceId: sourceId,
+    maxFrameRate: maxFrameRate,
+    attempts: [],
+    selectedPath: '',
+    purpose: options.purpose === 'dwm-glass' ? 'dwm-glass' : 'scene',
+    sourceIdOnly: options.sourceIdOnly === true,
+    trustedCursorFreeSurface: options.trustedCursorFreeSurface === true
+  };
+  try {
+    if (diagnostics.purpose === 'dwm-glass') window.__mineradioWallpaperEngineGlassCaptureDiagnostics = diagnostics;
+    else window.__mineradioWallpaperEngineCaptureDiagnostics = diagnostics;
+  } catch (e) { }
+  function recordAttempt(path, stream, error) {
+    var track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+    var entry = {
+      path: path,
+      ok: !!track,
+      cursorSuppressed: !!(stream && stream.__mineradioCursorSuppressed),
+      settings: null,
+      constraints: null,
+      error: error ? String(error && (error.message || error.name) || error).slice(0, 500) : ''
+    };
+    try { entry.settings = track && typeof track.getSettings === 'function' ? track.getSettings() : null; } catch (e2) { }
+    try { entry.constraints = track && typeof track.getConstraints === 'function' ? track.getConstraints() : null; } catch (e3) { }
+    diagnostics.attempts.push(entry);
+    return entry;
+  }
+  // The exact desktop-source path is the only built-in Chromium route that may
+  // omit the captured cursor while keeping the real WE window under the host.
+  // Use it only when the video track explicitly acknowledges cursor: never.
+  // A resolved request without that acknowledgement is stopped immediately.
+  var sourceError = null;
+  if (/^window:\d+:\d+$/.test(sourceId) && typeof navigator.mediaDevices.getUserMedia === 'function') {
+    try {
+      var sourceStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          cursor: { exact: 'never' },
+          mandatory: {
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: sourceId,
+            maxFrameRate: maxFrameRate
+          }
+        }
+      });
+      if (sourceStream && sourceStream.getVideoTracks && sourceStream.getVideoTracks().length) {
+        var hardenedSourceStream = await hardenWallpaperEngineCaptureStream(sourceStream);
+        try { hardenedSourceStream.__mineradioCapturePath = 'source-id-media'; } catch (e4) { }
+        var sourceAttempt = recordAttempt('source-id-media', hardenedSourceStream, null);
+        if (sourceAttempt.cursorSuppressed || options.trustedCursorFreeSurface === true
+          || window.__mineradioAllowUnverifiedSourceCapture === true) {
+          try { hardenedSourceStream.__mineradioUnverifiedCursorCapture = !sourceAttempt.cursorSuppressed; } catch (e5) { }
+          diagnostics.selectedPath = 'source-id-media';
+          return hardenedSourceStream;
+        }
+        stopWallpaperEngineMediaStream(hardenedSourceStream);
+        sourceError = new Error('WALLPAPER_CAPTURE_CURSOR_SUPPRESSION_UNVERIFIED');
+      } else {
+        stopWallpaperEngineMediaStream(sourceStream);
+        throw new Error('WALLPAPER_CAPTURE_STREAM_EMPTY');
+      }
+    } catch (error) {
+      sourceError = error;
+      recordAttempt('source-id-media', null, error);
+    }
+  }
+  var displayError = null;
+  if (options.sourceIdOnly === true) {
+    displayError = new Error('DISPLAY_MEDIA_FALLBACK_DISABLED');
+    recordAttempt('display-media-disabled', null, displayError);
+  }
+  // Electron still grants only the exact WE source here. On current Chromium,
+  // getDisplayMedia can report cursor: always even when never was requested;
+  // retain it as the visual compatibility fallback and record that fact rather
+  // than treating the requested constraint as proof of cursor suppression.
+  if (options.sourceIdOnly !== true && typeof navigator.mediaDevices.getDisplayMedia === 'function') {
+    try {
+      var displayStream = await navigator.mediaDevices.getDisplayMedia({
+        audio: false,
+        video: { frameRate: { ideal: maxFrameRate, max: maxFrameRate }, displaySurface: 'window', cursor: 'never' }
+      });
+      if (displayStream && displayStream.getVideoTracks && displayStream.getVideoTracks().length) {
+        var hardenedDisplayStream = await hardenWallpaperEngineCaptureStream(displayStream);
+        try { hardenedDisplayStream.__mineradioCapturePath = 'display-media'; } catch (e6) { }
+        recordAttempt('display-media', hardenedDisplayStream, null);
+        diagnostics.selectedPath = 'display-media';
+        return hardenedDisplayStream;
+      }
+      stopWallpaperEngineMediaStream(displayStream);
+      throw new Error('WALLPAPER_CAPTURE_STREAM_EMPTY');
+    } catch (error) {
+      displayError = error;
+      recordAttempt('display-media', null, error);
+    }
+  }
+  var displayName = String(displayError && displayError.name || 'Error');
+  var displayMessage = String(displayError && displayError.message || displayError || 'display-media unavailable');
+  var sourceMessage = String(sourceError && (sourceError.message || sourceError.name) || 'source-id-media unavailable');
+  throw new Error('WALLPAPER_CAPTURE_FAILED: ' + displayName + ': ' + displayMessage + ' (source: ' + sourceMessage + ')');
+}
+
+window.__mineradioPrepareWallpaperEngineCapture = async function (sessionId, fps, sourceId) {
+  sessionId = String(sessionId || '');
+  if (!/^[a-f0-9]{24}$/i.test(sessionId)) return { ok: false, error: 'WALLPAPER_ENGINE_SESSION_INVALID' };
+  try {
+    var stream = await openWallpaperEngineCaptureStream(sessionId, fps, sourceId, {
+      sourceIdOnly: true,
+      purpose: 'scene'
+    });
+    storeWallpaperEnginePreparedCaptureStream(sessionId, stream);
+    return { ok: true };
+  } catch (error) {
+    stopWallpaperEnginePreparedCaptureStreams(sessionId);
+    return {
+      ok: false,
+      error: String(error && (error.message || error.name) || error || 'WALLPAPER_CAPTURE_PREPARE_FAILED').slice(0, 500)
+    };
+  }
+};
+
+window.__mineradioPrepareWallpaperEngineGlassCapture = async function (sessionId, fps, sourceId) {
+  sessionId = String(sessionId || '');
+  if (!/^[a-f0-9]{24}$/i.test(sessionId)) return { ok: false, error: 'WALLPAPER_ENGINE_SESSION_INVALID' };
+  try {
+    var stream = await openWallpaperEngineCaptureStream(sessionId, fps, sourceId, {
+      sourceIdOnly: true,
+      purpose: 'dwm-glass',
+      // The exact granted source is the helper's own DWM thumbnail surface.
+      // It has no cursor-rendering path, so a Chromium track reporting
+      // `cursor: always` cannot bake the user's Windows cursor into its pixels.
+      trustedCursorFreeSurface: true
+    });
+    storeWallpaperEnginePreparedGlassCaptureStream(sessionId, stream);
+    return { ok: true };
+  } catch (error) {
+    stopWallpaperEnginePreparedGlassCaptureStreams(sessionId);
+    return {
+      ok: false,
+      error: String(error && (error.message || error.name) || error || 'WALLPAPER_GLASS_CAPTURE_PREPARE_FAILED').slice(0, 500)
+    };
+  }
+};
+
+window.__mineradioPrepareWallpaperEngineHostBoundsChange = function (sessionId, reason) {
+  sessionId = String(sessionId || '');
+  reason = String(reason || '').slice(0, 80);
+  if (!wallpaperEngineSelection.active || wallpaperEngineSelection.kind !== 'engine') {
+    return { ok: true, frozen: false, skipped: true };
+  }
+  // A Promise.race timeout in main cannot cancel executeJavaScript. Requiring an
+  // exact live session here makes a late ACK harmless after a switch/restart.
+  if (sessionId && sessionId !== wallpaperEngineNativeSessionId) {
+    return { ok: false, frozen: false, error: 'WALLPAPER_ENGINE_SESSION_MISMATCH' };
+  }
+  var suspendingHost = /(?:^|[-_])(hidden|hide|minimize|minimized|tray|document-hidden)(?:$|[-_])/i.test(reason)
+    || /^(hidden|hide|minimize|minimized|tray|document-hidden)$/i.test(reason);
+  if (suspendingHost) {
+    cancelWallpaperEngineHostRecovery(true);
+    wallpaperEngineHostBoundsPreparing = true;
+    cancelWallpaperEngineSwitchTimer();
+    cancelWallpaperEngineVideoRetry();
+    cancelWallpaperEngineFirstFrameWait();
+    if (wallpaperEngineHostBoundsRestartTimer) {
+      clearTimeout(wallpaperEngineHostBoundsRestartTimer);
+      wallpaperEngineHostBoundsRestartTimer = 0;
+    }
+    ++wallpaperEngineLayerToken;
+    wallpaperEngineNativeSessionId = '';
+    wallpaperEngineCaptureMode = '';
+    restoreOriginalBackgroundAfterWallpaperEngine();
+    clearWallpaperEngineFreezeFrame(true);
+    clearWallpaperEngineLayerMedia(0);
+    return { ok: true, frozen: false, suspended: true, reason: reason };
+  }
+  if (wallpaperEngineHostBoundsPreparing) {
+    return {
+      ok: wallpaperEngineFreezeVisible === true,
+      frozen: wallpaperEngineFreezeVisible === true,
+      error: wallpaperEngineFreezeVisible ? '' : 'WALLPAPER_BOUNDS_FREEZE_UNAVAILABLE'
+    };
+  }
+  var frozen = captureWallpaperEngineFreezeFrame();
+  // Keep the current capture and native source alive when no real frame could
+  // be copied. Stopping here would recreate the black gap we are avoiding.
+  if (!frozen) {
+    return { ok: false, frozen: false, error: 'WALLPAPER_BOUNDS_FREEZE_UNAVAILABLE' };
+  }
+  wallpaperEngineHostBoundsPreparing = true;
+  // The OS hardware cursor remains authoritative while native title-bar
+  // dragging pauses renderer events.
+  cancelWallpaperEngineSwitchTimer();
+  cancelWallpaperEngineVideoRetry();
+  cancelWallpaperEngineFirstFrameWait();
+  if (wallpaperEngineHostBoundsRestartTimer) {
+    clearTimeout(wallpaperEngineHostBoundsRestartTimer);
+    wallpaperEngineHostBoundsRestartTimer = 0;
+  }
+  ++wallpaperEngineLayerToken;
+  stopWallpaperEngineCaptureStream();
+  wallpaperEngineNativeSessionId = '';
+  wallpaperEngineCaptureMode = '';
+  return { ok: true, frozen: true, reason: reason };
+};
+
+window.__mineradioPrepareWallpaperEngineDesktopPreview = function (sessionId, reason) {
+  sessionId = String(sessionId || '');
+  reason = String(reason || 'full-desktop-passive').slice(0, 80);
+  if (!wallpaperEngineSelection.active || wallpaperEngineSelection.kind !== 'engine') {
+    return Promise.resolve({ ok: true, preview: false, selectedEngine: false, skipped: true });
+  }
+  if (sessionId && sessionId !== String(wallpaperEngineNativeSessionId || '')) {
+    return Promise.resolve({
+      ok: false,
+      preview: false,
+      selectedEngine: true,
+      error: 'WALLPAPER_ENGINE_SESSION_MISMATCH'
+    });
+  }
+
+  var item = wallpaperEngineProjectById(wallpaperEngineSelection.id);
+  wallpaperEngineDesktopPreviewActive = true;
+  wallpaperEngineDesktopPreviewUsesAsset = false;
+  cancelWallpaperEngineHostRecovery(true);
+  wallpaperEngineHostBoundsPreparing = true;
+  cancelWallpaperEngineSwitchTimer();
+  cancelWallpaperEngineVideoRetry();
+  cancelWallpaperEngineFirstFrameWait();
+  if (wallpaperEngineHostBoundsRestartTimer) {
+    clearTimeout(wallpaperEngineHostBoundsRestartTimer);
+    wallpaperEngineHostBoundsRestartTimer = 0;
+  }
+  var token = ++wallpaperEngineLayerToken;
+  stopWallpaperEngineCaptureStream();
+  wallpaperEngineNativeSessionId = '';
+  wallpaperEngineCaptureMode = '';
+  restoreOriginalBackgroundAfterWallpaperEngine();
+  clearWallpaperEngineFreezeFrame(true);
+  clearWallpaperEngineLayerMedia(0);
+
+  if (!item || !item.hasPreview) {
+    updateWallpaperEngineEntryUi('桌面被动模式 · 已显示原背景');
+    return Promise.resolve({
+      ok: true,
+      preview: false,
+      selectedEngine: true,
+      fallback: true,
+      reason: reason
+    });
+  }
+
+  var layer = document.getElementById('wallpaper-engine-layer');
+  var image = document.getElementById('wallpaper-engine-image');
+  if (!layer || !image) {
+    updateWallpaperEngineEntryUi('桌面被动模式 · 已显示原背景');
+    return Promise.resolve({
+      ok: true,
+      preview: false,
+      selectedEngine: true,
+      fallback: true,
+      reason: reason
+    });
+  }
+
+  updateWallpaperEngineEntryUi('正在准备桌面壁纸预览…');
+  return new Promise(function (resolve) {
+    var settled = false;
+    var timer = 0;
+    function finish(result) {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      timer = 0;
+      image.onload = null;
+      image.onerror = null;
+      resolve(result);
+    }
+    function fallback(error) {
+      if (token !== wallpaperEngineLayerToken) {
+        finish({
+          ok: false,
+          preview: false,
+          selectedEngine: true,
+          error: 'WALLPAPER_DESKTOP_PREVIEW_SUPERSEDED'
+        });
+        return;
+      }
+      restoreOriginalBackgroundAfterWallpaperEngine();
+      clearWallpaperEngineLayerMedia(0);
+      updateWallpaperEngineEntryUi('桌面被动模式 · 已显示原背景');
+      finish({
+        ok: true,
+        preview: false,
+        selectedEngine: true,
+        fallback: true,
+        reason: reason,
+        error: String(error || '')
+      });
+    }
+    image.onload = function () {
+      if (token !== wallpaperEngineLayerToken
+        || !wallpaperEngineSelection.active
+        || wallpaperEngineSelection.kind !== 'engine'
+        || wallpaperEngineSelection.id !== item.id) {
+        finish({
+          ok: false,
+          preview: false,
+          selectedEngine: true,
+          error: 'WALLPAPER_DESKTOP_PREVIEW_SUPERSEDED'
+        });
+        return;
+      }
+      wallpaperEngineDesktopPreviewUsesAsset = true;
+      wallpaperEngineLayerReady('image', token);
+      updateWallpaperEngineEntryUi('桌面被动模式 · 项目预览');
+      finish({
+        ok: true,
+        preview: true,
+        selectedEngine: true,
+        reason: reason
+      });
+    };
+    image.onerror = function () { fallback('WALLPAPER_DESKTOP_PREVIEW_LOAD_FAILED'); };
+    timer = setTimeout(function () { fallback('WALLPAPER_DESKTOP_PREVIEW_LOAD_TIMEOUT'); }, 5000);
+    image.src = wallpaperEngineMediaUrl(item, 'preview');
+  });
+};
+
+function reportWallpaperEngineCaptureResult(sessionId, ok) {
+  var api = wallpaperEngineDesktopApi();
+  if (!api || typeof api.reportWallpaperEngineCaptureResult !== 'function') return Promise.resolve({ ok: false });
+  return Promise.resolve(api.reportWallpaperEngineCaptureResult({ sessionId: String(sessionId || ''), ok: ok === true })).catch(function () {
+    return { ok: false };
+  });
+}
+
+function waitForWallpaperEngineVideoFirstFrame(video, item, token, sessionId, runtime) {
+  cancelWallpaperEngineFirstFrameWait();
+  var wait = {
+    video: video,
+    callbackId: 0,
+    loadedDataHandler: null,
+    timer: 0,
+    raf1: 0,
+    raf2: 0
+  };
+  wallpaperEngineFirstFrameWait = wait;
+
+  function releaseWait() {
+    if (wallpaperEngineFirstFrameWait !== wait) return false;
+    wallpaperEngineFirstFrameWait = null;
+    if (wait.timer) clearTimeout(wait.timer);
+    wait.timer = 0;
+    if (wait.video && wait.loadedDataHandler) {
+      try { wait.video.removeEventListener('loadeddata', wait.loadedDataHandler); } catch (e) { }
+    }
+    if (wait.raf1 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(wait.raf1);
+    if (wait.raf2 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(wait.raf2);
+    wait.raf1 = 0;
+    wait.raf2 = 0;
+    wait.loadedDataHandler = null;
+    return true;
+  }
+
+  function firstFrameReady() {
+    if (!releaseWait()) return;
+    if (!wallpaperEngineNativeStartIsCurrent(item, token)
+      || wallpaperEngineNativeSessionId !== sessionId
+      || wallpaperEngineCaptureStream !== video.srcObject) return;
+    reportWallpaperEngineCaptureResult(sessionId, true).then(function (acknowledgement) {
+      if (!wallpaperEngineNativeStartIsCurrent(item, token)
+        || wallpaperEngineNativeSessionId !== sessionId
+        || wallpaperEngineCaptureStream !== video.srcObject) return;
+      if (!acknowledgement
+        || acknowledgement.ok !== true
+        || acknowledgement.accepted !== true
+        || acknowledgement.captureReady !== true) {
+        wallpaperEngineRuntimeError = String(acknowledgement && acknowledgement.error || 'WALLPAPER_CAPTURE_CONFIRMATION_FAILED');
+        wallpaperEngineLayerFailed(item, 'engine', token);
+        return;
+      }
+      calibrateWallpaperEngineCaptureViewport(video, runtime);
+      wallpaperEngineLayerReady('video', token);
+      clearWallpaperEngineFreezeFrame(false);
+    });
+  }
+
+  function firstFrameTimedOut() {
+    if (!releaseWait()) return;
+    if (!wallpaperEngineNativeStartIsCurrent(item, token) || wallpaperEngineNativeSessionId !== sessionId) return;
+    wallpaperEngineLayerFailed(item, 'engine', token);
+  }
+
+  wait.timer = setTimeout(firstFrameTimedOut, WALLPAPER_ENGINE_FIRST_FRAME_TIMEOUT_MS);
+  if (typeof video.requestVideoFrameCallback === 'function') {
+    wait.callbackId = video.requestVideoFrameCallback(function () { firstFrameReady(); });
+  } else {
+    wait.loadedDataHandler = function () {
+      // loadeddata can reflect the reused video element's previous source.
+      // Two paints after this session's event ensure its new pixels presented.
+      wait.raf1 = requestAnimationFrame(function () {
+        wait.raf2 = requestAnimationFrame(function () { firstFrameReady(); });
+      });
+    };
+    video.addEventListener('loadeddata', wait.loadedDataHandler, { once: true });
+  }
+}
+
+function wallpaperEngineNativeStartIsCurrent(item, token) {
+  return token === wallpaperEngineLayerToken
+    && wallpaperEngineSelection.active
+    && wallpaperEngineSelection.id === item.id
+    && !wallpaperEngineNativeHostUnavailable();
+}
+
+function wallpaperEngineGlassSamplerIsCurrent(sessionId, layerToken, captureToken) {
+  return captureToken === wallpaperEngineGlassCaptureToken
+    && layerToken === wallpaperEngineLayerToken
+    && String(wallpaperEngineNativeSessionId || '') === String(sessionId || '')
+    && wallpaperEngineSelection.active
+    && wallpaperEngineSelection.kind === 'engine'
+    && wallpaperEngineCaptureMode === 'dwm-thumbnail'
+    && document.body.classList.contains('wallpaper-engine-dwm-active');
+}
+
+function waitForWallpaperEngineGlassSamplerFrame(video, stream, timeoutMs) {
+  return new Promise(function (resolve) {
+    var settled = false;
+    var timer = 0;
+    var pollTimer = 0;
+    function finish(ok) {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (pollTimer) clearTimeout(pollTimer);
+      resolve(ok === true);
+    }
+    function ready() {
+      var track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+      return !!(video && video.srcObject === stream && track && track.readyState === 'live'
+        && video.readyState >= 2 && video.videoWidth >= 2 && video.videoHeight >= 2);
+    }
+    function poll() {
+      if (ready()) { finish(true); return; }
+      pollTimer = setTimeout(poll, 40);
+    }
+    timer = setTimeout(function () { finish(false); }, Math.max(1000, Number(timeoutMs) || 5000));
+    poll();
+  });
+}
+
+function sampleWallpaperEngineGlassSamplerPixels(video) {
+  if (!video || video.readyState < 2 || video.videoWidth < 2 || video.videoHeight < 2) return null;
+  try {
+    var canvas = document.createElement('canvas');
+    canvas.width = 24;
+    canvas.height = 14;
+    var context = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+    if (!context) return null;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    var rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    var rgb = new Uint8Array(canvas.width * canvas.height * 3);
+    for (var sourceIndex = 0, targetIndex = 0; sourceIndex < rgba.length; sourceIndex += 4) {
+      rgb[targetIndex++] = rgba[sourceIndex];
+      rgb[targetIndex++] = rgba[sourceIndex + 1];
+      rgb[targetIndex++] = rgba[sourceIndex + 2];
+    }
+    return rgb;
+  } catch (e) {
+    return null;
+  }
+}
+
+function wallpaperEngineGlassSamplerPixelDifference(first, second) {
+  if (!first || !second || first.length !== second.length || !first.length) return 0;
+  var difference = 0;
+  for (var index = 0; index < first.length; index += 1) {
+    difference += Math.abs(first[index] - second[index]);
+  }
+  return difference / first.length;
+}
+
+function waitForWallpaperEngineGlassSamplerPixelChange(video, stream, baseline, timeoutMs) {
+  return new Promise(function (resolve) {
+    var settled = false;
+    var pollTimer = 0;
+    var deadline = performance.now() + Math.max(800, Number(timeoutMs) || 3200);
+    function finish(result) {
+      if (settled) return;
+      settled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      resolve(result || null);
+    }
+    function poll() {
+      var track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+      if (!video || video.srcObject !== stream || !track || track.readyState !== 'live') {
+        finish(null);
+        return;
+      }
+      var current = sampleWallpaperEngineGlassSamplerPixels(video);
+      var difference = wallpaperEngineGlassSamplerPixelDifference(baseline, current);
+      if (current && (!baseline || difference >= 1.25)) {
+        finish({ pixels: current, meanAbsoluteRgb: difference });
+        return;
+      }
+      if (performance.now() >= deadline) { finish(null); return; }
+      pollTimer = setTimeout(poll, 45);
+    }
+    pollTimer = setTimeout(poll, 80);
+  });
+}
+
+function scheduleWallpaperEngineGlassSamplerCapture(sessionId, layerToken, attempt) {
+  if (wallpaperEngineGlassCaptureRetryTimer) clearTimeout(wallpaperEngineGlassCaptureRetryTimer);
+  wallpaperEngineGlassCaptureRetryTimer = 0;
+  attempt = Math.max(0, Number(attempt) || 0);
+  wallpaperEngineGlassCaptureRetryAttempt = attempt;
+  if (attempt > 4 || layerToken !== wallpaperEngineLayerToken
+    || String(wallpaperEngineNativeSessionId || '') !== String(sessionId || '')) return false;
+  wallpaperEngineGlassCaptureRetryTimer = setTimeout(function () {
+    wallpaperEngineGlassCaptureRetryTimer = 0;
+    ensureWallpaperEngineGlassSamplerCapture(sessionId, layerToken, attempt);
+  }, attempt === 0 ? 90 : Math.min(2400, 260 * Math.pow(1.8, attempt)));
+  return true;
+}
+
+async function ensureWallpaperEngineGlassSamplerCapture(sessionId, layerToken, attempt) {
+  sessionId = String(sessionId || '');
+  attempt = Math.max(0, Number(attempt) || 0);
+  var api = wallpaperEngineDesktopApi();
+  var video = document.getElementById('wallpaper-engine-glass-sampler-video');
+  if (!api || typeof api.prepareWallpaperEngineGlassCapture !== 'function' || !video
+    || !/^[a-f0-9]{24}$/i.test(sessionId)
+    || layerToken !== wallpaperEngineLayerToken
+    || sessionId !== String(wallpaperEngineNativeSessionId || '')
+    || wallpaperEngineCaptureMode !== 'dwm-thumbnail') return false;
+  var activeTrack = wallpaperEngineGlassCaptureStream && wallpaperEngineGlassCaptureStream.getVideoTracks
+    ? wallpaperEngineGlassCaptureStream.getVideoTracks()[0] : null;
+  if (activeTrack && activeTrack.readyState === 'live'
+    && String(video.dataset.wallpaperEngineSession || '') === sessionId) {
+    document.body.classList.add('wallpaper-engine-glass-sampler-ready');
+    return true;
+  }
+  if (typeof syncWallpaperEngineControlGlassSurface === 'function') {
+    syncWallpaperEngineControlGlassSurface(true);
+  }
+  stopWallpaperEngineGlassCaptureStream(false);
+  var captureToken = ++wallpaperEngineGlassCaptureToken;
+  try {
+    await new Promise(function (resolve) { setTimeout(resolve, 90); });
+    if (!wallpaperEngineGlassSamplerIsCurrent(sessionId, layerToken, captureToken)) return false;
+    var prepared = await api.prepareWallpaperEngineGlassCapture({
+      sessionId: sessionId,
+      fps: Math.min(60, wallpaperEngineRuntimeCaptureFps())
+    });
+    if (!wallpaperEngineGlassSamplerIsCurrent(sessionId, layerToken, captureToken)) {
+      stopWallpaperEnginePreparedGlassCaptureStreams(sessionId);
+      return false;
+    }
+    if (!prepared || prepared.ok !== true || prepared.capturePrepared !== true) {
+      throw new Error(prepared && prepared.error || 'WALLPAPER_GLASS_CAPTURE_PREPARE_FAILED');
+    }
+    var stream = takeWallpaperEnginePreparedGlassCaptureStream(sessionId);
+    var track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+    if (!track) {
+      stopWallpaperEngineMediaStream(stream);
+      throw new Error('WALLPAPER_GLASS_CAPTURE_PREPARED_STREAM_MISSING');
+    }
+    wallpaperEngineGlassCaptureStream = stream;
+    video.dataset.wallpaperEngineSession = sessionId;
+    video.muted = true;
+    video.loop = false;
+    video.playsInline = true;
+    video.srcObject = stream;
+    try { track.contentHint = 'motion'; } catch (e) { }
+    var playResult = video.play();
+    if (playResult && typeof playResult.catch === 'function') await playResult.catch(function () { return null; });
+    var frameReady = await waitForWallpaperEngineGlassSamplerFrame(video, stream, 5000);
+    if (!frameReady || !wallpaperEngineGlassSamplerIsCurrent(sessionId, layerToken, captureToken)
+      || video.srcObject !== stream) {
+      throw new Error('WALLPAPER_GLASS_CAPTURE_FIRST_FRAME_TIMEOUT');
+    }
+    var primingPixels = sampleWallpaperEngineGlassSamplerPixels(video);
+    if (typeof api.activateWallpaperEngineDwmSurface !== 'function') {
+      throw new Error('WALLPAPER_ENGINE_DWM_ACTIVATE_HANDLER_MISSING');
+    }
+    var activated = await api.activateWallpaperEngineDwmSurface({ sessionId: sessionId });
+    if (!activated || activated.ok !== true || activated.active !== true
+      || !wallpaperEngineGlassSamplerIsCurrent(sessionId, layerToken, captureToken)) {
+      throw new Error(activated && activated.error || 'WALLPAPER_ENGINE_DWM_SURFACE_FAILED');
+    }
+    // The capture session was opened while the helper HWND was a plain black
+    // surface. Confirm its pixels changed after DWM activation before exposing
+    // the clipped sampler beneath the saved SVG glass. This remains reliable
+    // even when Chromium marks the transparent host as document.hidden.
+    var livePixels = await waitForWallpaperEngineGlassSamplerPixelChange(video, stream, primingPixels, 3600);
+    if (!livePixels || !wallpaperEngineGlassSamplerIsCurrent(sessionId, layerToken, captureToken)) {
+      throw new Error('WALLPAPER_GLASS_CAPTURE_LIVE_PIXELS_TIMEOUT');
+    }
+    wallpaperEngineGlassCaptureRetryAttempt = 0;
+    document.body.classList.add('wallpaper-engine-glass-sampler-ready');
+    try {
+      window.__mineradioWallpaperEngineGlassSamplerState = {
+        ok: true,
+        sessionId: sessionId,
+        captureMode: 'dwm-glass-svg-sampler',
+        videoWidth: Number(video.videoWidth) || 0,
+        videoHeight: Number(video.videoHeight) || 0,
+        meanAbsoluteRgbFromPriming: Number(livePixels.meanAbsoluteRgb) || 0,
+        trackSettings: typeof track.getSettings === 'function' ? track.getSettings() : null
+      };
+    } catch (e2) { }
+    track.addEventListener('ended', function () {
+      if (!wallpaperEngineGlassSamplerIsCurrent(sessionId, layerToken, captureToken)) return;
+      stopWallpaperEngineGlassCaptureStream(false);
+      scheduleWallpaperEngineGlassSamplerCapture(sessionId, layerToken, 1);
+    }, { once: true });
+    video.onerror = function () {
+      if (!wallpaperEngineGlassSamplerIsCurrent(sessionId, layerToken, captureToken)) return;
+      stopWallpaperEngineGlassCaptureStream(false);
+      scheduleWallpaperEngineGlassSamplerCapture(sessionId, layerToken, 1);
+    };
+    return true;
+  } catch (error) {
+    if (captureToken === wallpaperEngineGlassCaptureToken) {
+      try {
+        window.__mineradioWallpaperEngineGlassSamplerState = {
+          ok: false,
+          sessionId: sessionId,
+          captureMode: 'dwm-glass-svg-sampler',
+          error: String(error && (error.message || error.name) || error || 'WALLPAPER_GLASS_CAPTURE_FAILED').slice(0, 500)
+        };
+      } catch (e3) { }
+      stopWallpaperEngineGlassCaptureStream(false);
+      scheduleWallpaperEngineGlassSamplerCapture(sessionId, layerToken, attempt + 1);
+    }
+    return false;
+  }
+}
+
+async function startWallpaperEngineNativeBackground(item, token) {
+  var api = wallpaperEngineDesktopApi();
+  if (!api || typeof api.startWallpaperEngineScene !== 'function') throw new Error('WALLPAPER_ENGINE_RUNTIME_UNAVAILABLE');
+  if (!wallpaperEngineNativeStartIsCurrent(item, token)) throw new Error('WALLPAPER_ENGINE_START_SUPERSEDED');
+  var result = await api.startWallpaperEngineScene({
+    id: item.id,
+    width: Math.max(640, Math.min(3840, Math.round(window.innerWidth || 1920))),
+    height: Math.max(360, Math.min(2160, Math.round(window.innerHeight || 1080))),
+    fps: wallpaperEngineCaptureFpsPreference()
+  });
+  if (!result || result.ok === false) {
+    var failedSessionId = String(result && result.sessionId || '');
+    if (/^[a-f0-9]{24}$/i.test(failedSessionId)) {
+      stopWallpaperEnginePreparedCaptureStreams(failedSessionId);
+      await reportWallpaperEngineCaptureResult(failedSessionId, false);
+      await stopWallpaperEngineNativeSession(failedSessionId);
+    }
+    throw new Error(result && result.error || 'WALLPAPER_ENGINE_SCENE_START_FAILED');
+  }
+  var sessionId = String(result.sessionId || '');
+  if (!/^[a-f0-9]{24}$/i.test(sessionId)) throw new Error('WALLPAPER_ENGINE_SESSION_INVALID');
+  if (!wallpaperEngineNativeStartIsCurrent(item, token)) {
+    stopWallpaperEnginePreparedCaptureStreams(sessionId);
+    await reportWallpaperEngineCaptureResult(sessionId, false);
+    await stopWallpaperEngineNativeSession(sessionId);
+    throw new Error('WALLPAPER_ENGINE_START_SUPERSEDED');
+  }
+  if (result.captureMode === 'dwm-thumbnail') {
+    stopWallpaperEnginePreparedCaptureStreams();
+    stopWallpaperEnginePreparedGlassCaptureStreams();
+    stopWallpaperEngineCaptureStream(false);
+    wallpaperEngineCaptureMode = 'dwm-thumbnail';
+    wallpaperEngineNativeSessionId = sessionId;
+    applyWallpaperEngineVisualSettings(true);
+    var dwmAcknowledgement = await reportWallpaperEngineCaptureResult(sessionId, true);
+    if (!wallpaperEngineNativeStartIsCurrent(item, token)
+      || wallpaperEngineNativeSessionId !== sessionId) return;
+    if (!dwmAcknowledgement
+      || dwmAcknowledgement.ok !== true
+      || dwmAcknowledgement.accepted !== true
+      || dwmAcknowledgement.captureReady !== true) {
+      wallpaperEngineRuntimeError = String(dwmAcknowledgement && dwmAcknowledgement.error
+        || 'WALLPAPER_ENGINE_DWM_SURFACE_FAILED');
+      wallpaperEngineLayerFailed(item, 'engine', token);
+      return;
+    }
+    wallpaperEngineLayerReady('dwm', token);
+    clearWallpaperEngineFreezeFrame(false);
+    return;
+  }
+  stopWallpaperEngineGlassCaptureStream(false);
+  var stream = takeWallpaperEnginePreparedCaptureStream(sessionId);
+  if (!stream) {
+    await reportWallpaperEngineCaptureResult(sessionId, false);
+    await stopWallpaperEngineNativeSession(sessionId);
+    throw new Error(result.captureError || 'WALLPAPER_CAPTURE_PREPARED_STREAM_MISSING');
+  }
+  if (!wallpaperEngineNativeStartIsCurrent(item, token)) {
+    stopWallpaperEngineMediaStream(stream);
+    await reportWallpaperEngineCaptureResult(sessionId, false);
+    await stopWallpaperEngineNativeSession(sessionId);
+    throw new Error('WALLPAPER_ENGINE_START_SUPERSEDED');
+  }
+  var video = document.getElementById('wallpaper-engine-video');
+  if (!video) {
+    stopWallpaperEngineMediaStream(stream);
+    await reportWallpaperEngineCaptureResult(sessionId, false);
+    await stopWallpaperEngineNativeSession(sessionId);
+    throw new Error('WALLPAPER_ENGINE_VIDEO_LAYER_MISSING');
+  }
+  stopWallpaperEngineCaptureStream(true);
+  wallpaperEngineCaptureStream = stream;
+  wallpaperEngineCaptureMode = result.captureMode === 'main-prepared' ? 'main-prepared' : 'renderer-prepared';
+  wallpaperEngineNativeSessionId = sessionId;
+  video.muted = true;
+  video.loop = false;
+  video.playsInline = true;
+  video.onloadedmetadata = function () {
+    if (token !== wallpaperEngineLayerToken) return;
+    calibrateWallpaperEngineCaptureViewport(video, result);
+    requestWallpaperEngineVideoPlayback(video, item, 'engine', token, false, 0);
+  };
+  video.srcObject = stream;
+  waitForWallpaperEngineVideoFirstFrame(video, item, token, sessionId, result);
+  var track = stream.getVideoTracks && stream.getVideoTracks()[0];
+  if (track) {
+    try { track.contentHint = 'motion'; } catch (e2) { }
+    track.addEventListener('ended', function () {
+      if (token !== wallpaperEngineLayerToken || wallpaperEngineNativeHostUnavailable()) return;
+      wallpaperEngineLayerFailed(item, 'engine', token);
+    }, { once: true });
+  }
+  video.onerror = function () { wallpaperEngineLayerFailed(item, 'engine', token); };
+  requestWallpaperEngineVideoPlayback(video, item, 'engine', token, false, 0);
+}
+
+function wallpaperEnginePlayWasInterrupted(error) {
+  var name = String(error && error.name || '');
+  var message = String(error && error.message || error || '');
+  return name === 'AbortError' || /interrupted|pause\(\)|new load request/i.test(message);
+}
+
+function wallpaperEngineRuntimeErrorText(error) {
+  var code = String(error && (error.code || error.message) || error || '');
+  if (/WALLPAPER_ENGINE_HOST_ELEVATED/.test(code)) return '深空折韵正以管理员身份运行，无法捕获 WE 实时窗口；请取消“以管理员身份运行”后重启播放器';
+  if (/WALLPAPER_ENGINE_NOT_INSTALLED/.test(code)) return '未找到 Wallpaper Engine 本体';
+  if (/WALLPAPER_ENGINE_SIGNATURE_INVALID/.test(code)) return 'Wallpaper Engine 运行组件校验未通过，无法实时运行该场景';
+  if (/WALLPAPER_ENGINE_WINDOW_CLOSE_FAILED/.test(code)) return '上一次深空折韵实时壁纸窗口仍在收尾，请稍后重试；Wallpaper Engine 本体会保留';
+  if (/WALLPAPER_ENGINE_DWM_SURFACE_FAILED|WALLPAPER_ENGINE_PARALLAX_RELAY_FAILED/.test(code)) return 'WE 原生鼠标视差连接失败，本次会话已关闭；请再次点击重连';
+  if (/WALLPAPER_ENGINE_CONTROL_FAILED/.test(code)) return 'WE 场景控制暂时未就绪，请稍后重试';
+  if (/WALLPAPER_ENGINE_WINDOW_TIMEOUT/.test(code)) return 'WE 场景窗口启动超时';
+  if (/WALLPAPER_ENGINE_CAPTURE_UNAVAILABLE|WALLPAPER_CAPTURE_UNSUPPORTED/.test(code)) return '当前系统不支持实时窗口捕获';
+  if (/InvalidStateError/.test(code)) return 'WE 实时画面连接需要深空折韵保持在前台';
+  if (/NotAllowedError|Permission denied|PermissionDismissed/i.test(code)) return 'WE 实时画面捕获权限被拒绝';
+  if (/NotReadableError/.test(code)) return 'WE 实时捕获通道暂时忙，已清理本次会话；请再次点击重连';
+  if (/WALLPAPER_ENGINE_REFRESH_SUPERSEDED/.test(code)) return 'WE 实时窗口正在切换，请重试';
+  if (/WALLPAPER_CAPTURE_PREPARE_TIMEOUT/.test(code)) return 'WE 实时画面连接超时';
+  if (/WALLPAPER_CAPTURE_PREPARE_HANDLER_MISSING|WALLPAPER_CAPTURE_PREPARED_STREAM_MISSING/.test(code)) return 'WE 实时画面连接尚未准备完成';
+  if (/WALLPAPER_CAPTURE_FAILED|WALLPAPER_CAPTURE_STREAM_EMPTY/.test(code)) return 'WE 实时画面连接失败';
+  if (/WALLPAPER_SCENE_PACKAGE_INVALID/.test(code)) return '所选 .pkg/.pak 不是有效的 Wallpaper Engine PKGV 场景包';
+  if (/WALLPAPER_SCENE_MANIFEST_INVALID/.test(code)) return '该场景缺少有效的 project.json';
+  if (/WALLPAPER_SCENE_NOT_FOUND/.test(code)) return '没有找到该项目的有效场景包';
+  return 'WE 引擎运行失败';
+}
+
+function requestWallpaperEngineVideoPlayback(video, item, kind, token, revealLayer, attempt) {
+  cancelWallpaperEngineVideoRetry();
+  if (!video || token !== wallpaperEngineLayerToken || !wallpaperEngineSelection.active) return;
+  var hostUnavailable = kind === 'engine' ? wallpaperEngineNativeHostUnavailable() : document.hidden;
+  if (hostUnavailable) {
+    try { video.pause(); } catch (e) { }
+    if (revealLayer) wallpaperEngineLayerReady('video', token);
+    return;
+  }
+  var promise;
+  try {
+    promise = video.play();
+  } catch (error) {
+    handleWallpaperEngineVideoPlayFailure(error, video, item, kind, token, revealLayer, attempt);
+    return;
+  }
+  if (!promise || !promise.then) {
+    if (revealLayer) wallpaperEngineLayerReady('video', token);
+    return;
+  }
+  promise.then(function () {
+    if (token !== wallpaperEngineLayerToken || !wallpaperEngineSelection.active) return;
+    if (revealLayer) wallpaperEngineLayerReady('video', token);
+  }).catch(function (error) {
+    handleWallpaperEngineVideoPlayFailure(error, video, item, kind, token, revealLayer, attempt);
+  });
+}
+
+function handleWallpaperEngineVideoPlayFailure(error, video, item, kind, token, revealLayer, attempt) {
+  if (token !== wallpaperEngineLayerToken || !wallpaperEngineSelection.active) return;
+  var hostUnavailable = kind === 'engine' ? wallpaperEngineNativeHostUnavailable() : document.hidden;
+  var interrupted = hostUnavailable || wallpaperEnginePlayWasInterrupted(error);
+  if (!interrupted) {
+    wallpaperEngineLayerFailed(item, kind, token);
+    return;
+  }
+  if (revealLayer) wallpaperEngineLayerReady('video', token);
+  if (hostUnavailable || Number(attempt) >= 2) return;
+  wallpaperEngineVideoRetryTimer = setTimeout(function () {
+    wallpaperEngineVideoRetryTimer = 0;
+    requestWallpaperEngineVideoPlayback(video, item, kind, token, false, Number(attempt) + 1);
+  }, 160);
+}
+
+function clearWallpaperEngineLayerMedia(delay) {
+  cancelWallpaperEngineVideoRetry();
+  cancelWallpaperEngineFirstFrameWait();
+  var token = wallpaperEngineLayerToken;
+  var layer = document.getElementById('wallpaper-engine-layer');
+  var image = document.getElementById('wallpaper-engine-image');
+  var video = document.getElementById('wallpaper-engine-video');
+  function release() {
+    if (token !== wallpaperEngineLayerToken) return;
+    if (layer) layer.classList.remove('ready', 'image-ready', 'video-ready', 'engine-ready', 'freeze-ready');
+    clearWallpaperEngineFreezeFrame(true);
+    if (image) {
+      image.onload = null;
+      image.onerror = null;
+      image.removeAttribute('src');
+    }
+    if (video) {
+      video.onloadeddata = null;
+      video.onerror = null;
+      try { video.pause(); } catch (e) { }
+      if (video.srcObject) {
+        try { video.srcObject = null; } catch (e2) { }
+      }
+      video.removeAttribute('poster');
+      video.removeAttribute('src');
+      try { video.load(); } catch (e3) { }
+    }
+    stopWallpaperEngineCaptureStream();
+  }
+  if (delay) setTimeout(release, delay);
+  else release();
+}
+
+function restoreOriginalBackgroundAfterWallpaperEngine() {
+  document.body.classList.remove('wallpaper-engine-active', 'wallpaper-engine-dwm-active');
+  stopWallpaperEngineGlassCaptureStream(false);
+  if (typeof syncWallpaperEngineControlGlassSurface === 'function') {
+    syncWallpaperEngineControlGlassSurface(true);
+  }
+  try {
+    if (typeof applyCustomBackground === 'function') applyCustomBackground();
+  } catch (e) { }
+}
+
+function suspendOriginalBackgroundForWallpaperEngine() {
+  var video = document.getElementById('custom-bg-video');
+  if (video) {
+    try { video.pause(); } catch (e) { }
+  }
+}
+
+function wallpaperEngineLayerReady(kind, token) {
+  if (token !== wallpaperEngineLayerToken || !wallpaperEngineSelection.active) return;
+  cancelWallpaperEngineHostRecovery(true);
+  var layer = document.getElementById('wallpaper-engine-layer');
+  if (!layer) return;
+  layer.classList.remove('ready', 'image-ready', 'video-ready', 'engine-ready', 'freeze-ready');
+  document.body.classList.toggle('wallpaper-engine-dwm-active', kind === 'dwm');
+  if (kind !== 'dwm') {
+    stopWallpaperEngineGlassCaptureStream(false);
+    layer.classList.add(kind === 'video' ? 'video-ready' : 'image-ready', 'ready');
+    if (kind === 'video' && wallpaperEngineSelection.kind === 'engine') layer.classList.add('engine-ready');
+    if (kind === 'video' && wallpaperEngineSelection.kind === 'engine') queueWallpaperEnginePointerActivity();
+  }
+  document.body.classList.add('wallpaper-engine-active');
+  applyWallpaperEngineVisualSettings(true);
+  if (kind === 'dwm' && typeof animateWallpaperEngineControlGlassSurface === 'function') {
+    animateWallpaperEngineControlGlassSurface(560);
+  }
+  if (kind === 'dwm') {
+    scheduleWallpaperEngineGlassSamplerCapture(String(wallpaperEngineNativeSessionId || ''), token, 0);
+  }
+  suspendOriginalBackgroundForWallpaperEngine();
+  wallpaperEngineRuntimeError = '';
+  updateWallpaperEngineEntryUi();
+  renderWallpaperEngineLibrary();
+}
+
+function wallpaperEngineLayerFailed(item, attemptedKind, token) {
+  if (token !== wallpaperEngineLayerToken) return;
+  var nativeStopPromise = Promise.resolve({ ok: true });
+  if (attemptedKind === 'engine') {
+    cancelWallpaperEngineFirstFrameWait();
+    var failedSessionId = String(wallpaperEngineNativeSessionId || '');
+    if (/^[a-f0-9]{24}$/i.test(failedSessionId)) reportWallpaperEngineCaptureResult(failedSessionId, false);
+    stopWallpaperEngineCaptureStream();
+    nativeStopPromise = stopWallpaperEngineNativeSession();
+    if (wallpaperEngineHostRecoveryInFlight
+      && wallpaperEngineHostRecoveryAttempt < WALLPAPER_ENGINE_HOST_RECOVERY_MAX_ATTEMPTS
+      && wallpaperEngineDesktopHostIsVisible()) {
+      wallpaperEngineHostBoundsPreparing = true;
+      wallpaperEngineRuntimeError = '';
+      restoreOriginalBackgroundAfterWallpaperEngine();
+      clearWallpaperEngineLayerMedia(0);
+      updateWallpaperEngineEntryUi('正在恢复 ' + (item && item.title || 'Wallpaper Engine') + '…');
+      Promise.resolve(nativeStopPromise).finally(function () {
+        if (!wallpaperEngineHostRecoveryInFlight || wallpaperEngineHostRecoveryRetryTimer) return;
+        wallpaperEngineHostRecoveryRetryTimer = setTimeout(function () {
+          wallpaperEngineHostRecoveryRetryTimer = 0;
+          if (!wallpaperEngineHostRecoveryInFlight
+            || !wallpaperEngineSelection.active
+            || wallpaperEngineSelection.kind !== 'engine'
+            || !wallpaperEngineDesktopHostIsVisible()) return;
+          wallpaperEngineHostBoundsPreparing = false;
+          restartWallpaperEngineAfterHostBoundsChange();
+        }, 650);
+      });
+      return;
+    }
+    cancelWallpaperEngineHostRecovery(true);
+  }
+  if ((attemptedKind === 'media' || attemptedKind === 'engine') && item && item.hasPreview) {
+    wallpaperEngineSelection.kind = 'preview';
+    wallpaperEngineSelection.mediaType = 'image';
+    showToast(attemptedKind === 'engine' ? ((wallpaperEngineRuntimeError || 'Wallpaper Engine 实时运行失败') + '，已切换到项目预览；再次点击可重试') : '动态媒体解码失败，已切换到安全预览');
+    applyWallpaperEngineBackground(item, true);
+    return;
+  }
+  wallpaperEngineRuntimeError = attemptedKind === 'engine' ? 'WE 引擎运行失败' : '媒体不可用';
+  restoreOriginalBackgroundAfterWallpaperEngine();
+  clearWallpaperEngineLayerMedia(0);
+  updateWallpaperEngineEntryUi();
+  showToast('壁纸媒体不可用，已恢复原背景');
+}
+
+function applyWallpaperEngineBackground(item, quiet) {
+  item = item || wallpaperEngineProjectById(wallpaperEngineSelection.id);
+  if (!item || !wallpaperEngineSelection.active) {
+    wallpaperEngineRuntimeError = item ? '' : '项目离线';
+    restoreOriginalBackgroundAfterWallpaperEngine();
+    clearWallpaperEngineLayerMedia(0);
+    updateWallpaperEngineEntryUi(item ? '' : '项目离线 · 已显示原背景');
+    return false;
+  }
+  var kind = wallpaperEngineSelection.kind === 'engine' && item.enginePlayable
+    ? 'engine'
+    : (wallpaperEngineSelection.kind === 'media' && item.playable ? 'media' : 'preview');
+  if (kind === 'preview' && !item.hasPreview) {
+    wallpaperEngineLayerFailed(item, kind, wallpaperEngineLayerToken);
+    return false;
+  }
+  var layer = document.getElementById('wallpaper-engine-layer');
+  var image = document.getElementById('wallpaper-engine-image');
+  var video = document.getElementById('wallpaper-engine-video');
+  var preserveOutgoingFrame = !!(layer && (layer.classList.contains('ready') || wallpaperEngineSwitchTimer));
+  cancelWallpaperEngineSwitchTimer();
+  var token = ++wallpaperEngineLayerToken;
+  if (kind !== 'engine') stopWallpaperEngineNativeSession();
+  restoreOriginalBackgroundAfterWallpaperEngine();
+  if (!layer || !image || !video) return false;
+  updateWallpaperEngineEntryUi('正在加载 ' + (item.title || '壁纸') + '…');
+
+  function beginWallpaperEngineMediaLoad() {
+    if (token !== wallpaperEngineLayerToken || !wallpaperEngineSelection.active || wallpaperEngineSelection.id !== item.id) return;
+    if (kind === 'engine' && wallpaperEngineNativeHostUnavailable()) return;
+    clearWallpaperEngineLayerMedia(0);
+    if (kind === 'engine') {
+      startWallpaperEngineNativeBackground(item, token).catch(function (error) {
+        if (token !== wallpaperEngineLayerToken) return;
+        if (wallpaperEngineNativeHostUnavailable() || /WALLPAPER_ENGINE_START_SUPERSEDED/.test(String(error && (error.code || error.message) || error || ''))) return;
+        console.warn('[Wallpaper Engine Scene]', error);
+        wallpaperEngineRuntimeError = wallpaperEngineRuntimeErrorText(error);
+        wallpaperEngineLayerFailed(item, kind, token);
+      });
+    } else if (kind === 'media' && item.mediaType === 'video') {
+      video.muted = true;
+      video.loop = true;
+      video.playsInline = true;
+      if (item.hasPreview) video.poster = wallpaperEngineMediaUrl(item, 'preview');
+      video.onloadeddata = function () {
+        if (token !== wallpaperEngineLayerToken) return;
+        requestWallpaperEngineVideoPlayback(video, item, kind, token, true, 0);
+      };
+      video.onerror = function () { wallpaperEngineLayerFailed(item, kind, token); };
+      video.src = wallpaperEngineMediaUrl(item, 'media');
+      video.load();
+    } else {
+      image.onload = function () { wallpaperEngineLayerReady('image', token); };
+      image.onerror = function () { wallpaperEngineLayerFailed(item, kind, token); };
+      image.src = wallpaperEngineMediaUrl(item, kind === 'media' ? 'media' : 'preview');
+    }
+  }
+
+  if (preserveOutgoingFrame) {
+    clearWallpaperEngineLayerMedia(WALLPAPER_ENGINE_SWITCH_FADE_MS);
+    wallpaperEngineSwitchTimer = setTimeout(function () {
+      wallpaperEngineSwitchTimer = 0;
+      beginWallpaperEngineMediaLoad();
+    }, WALLPAPER_ENGINE_SWITCH_FADE_MS + 20);
+  } else {
+    clearWallpaperEngineLayerMedia(0);
+    beginWallpaperEngineMediaLoad();
+  }
+  if (!quiet) showToast(kind === 'engine' ? '正在用 Wallpaper Engine 原生引擎载入 Scene…' : (kind === 'media' ? 'Wallpaper Engine 壁纸已启用' : '已启用安全预览，原背景仍保留'));
+  return true;
+}
+
+function activateWallpaperEngineItem(id) {
+  var item = wallpaperEngineProjectById(id);
+  if (!item || (!item.playable && !item.enginePlayable && !item.hasPreview)) {
+    showToast('该项目没有可安全导入的媒体');
+    return;
+  }
+  wallpaperEngineSelection = normalizeWallpaperEngineSelection({
+    active: true,
+    id: item.id,
+    title: item.title,
+    kind: item.enginePlayable ? 'engine' : (item.playable ? 'media' : 'preview'),
+    mediaType: item.enginePlayable ? 'video' : (item.playable ? item.mediaType : 'image'),
+    mediaAnimated: item.mediaAnimated,
+    projectType: item.projectType,
+    hasPreview: item.hasPreview,
+    previewAnimated: item.previewAnimated,
+    visualOpacity: wallpaperEngineSelection.visualOpacity,
+    visualPositionX: wallpaperEngineSelection.visualPositionX,
+    visualPositionY: wallpaperEngineSelection.visualPositionY,
+    visualScale: wallpaperEngineSelection.visualScale,
+    updatedAt: item.updatedAt
+  });
+  wallpaperEngineDesktopPreviewActive = false;
+  wallpaperEngineDesktopPreviewUsesAsset = false;
+  cancelWallpaperEngineHostRecovery(true);
+  saveWallpaperEngineSelection();
+  wallpaperEngineRuntimeError = '';
+  applyWallpaperEngineBackground(item, false);
+  closeWallpaperEngineLibrary();
+}
+
+function deactivateWallpaperEngineBackground(quiet) {
+  cancelWallpaperEngineHostRecovery(true);
+  wallpaperEngineDesktopPreviewActive = false;
+  wallpaperEngineDesktopPreviewUsesAsset = false;
+  wallpaperEngineSelection.active = false;
+  if (wallpaperEngineHostBoundsRestartTimer) {
+    clearTimeout(wallpaperEngineHostBoundsRestartTimer);
+    wallpaperEngineHostBoundsRestartTimer = 0;
+  }
+  saveWallpaperEngineSelection();
+  wallpaperEngineRuntimeError = '';
+  cancelWallpaperEngineSwitchTimer();
+  cancelWallpaperEngineVideoRetry();
+  cancelWallpaperEngineFirstFrameWait();
+  wallpaperEngineHostBoundsPreparing = false;
+  stopWallpaperEngineCaptureStream();
+  stopWallpaperEngineNativeSession();
+  ++wallpaperEngineLayerToken;
+  restoreOriginalBackgroundAfterWallpaperEngine();
+  clearWallpaperEngineFreezeFrame(true);
+  clearWallpaperEngineLayerMedia(0);
+  updateWallpaperEngineEntryUi();
+  renderWallpaperEngineLibrary();
+  if (!quiet) showToast('已恢复原背景媒体，原设置没有被覆盖');
+}
+
+function restartWallpaperEngineAfterHostBoundsChange() {
+  if (!wallpaperEngineSelection.active || wallpaperEngineSelection.kind !== 'engine' || wallpaperEngineNativeHostUnavailable()) return;
+  var item = wallpaperEngineProjectById(wallpaperEngineSelection.id);
+  if (!item || !item.enginePlayable) {
+    clearWallpaperEngineFreezeFrame(false);
+    return;
+  }
+  cancelWallpaperEngineSwitchTimer();
+  cancelWallpaperEngineVideoRetry();
+  cancelWallpaperEngineFirstFrameWait();
+  if (wallpaperEngineHostBoundsRestartTimer) {
+    clearTimeout(wallpaperEngineHostBoundsRestartTimer);
+    wallpaperEngineHostBoundsRestartTimer = 0;
+  }
+  var token = ++wallpaperEngineLayerToken;
+  wallpaperEngineHostRecoveryInFlight = true;
+  wallpaperEngineHostRecoveryAttempt += 1;
+  wallpaperEngineRuntimeError = '';
+  updateWallpaperEngineEntryUi('正在恢复 ' + (item.title || 'Wallpaper Engine') + '…');
+  startWallpaperEngineNativeBackground(item, token).catch(function (error) {
+    if (token !== wallpaperEngineLayerToken) return;
+    if (wallpaperEngineNativeHostUnavailable() || /WALLPAPER_ENGINE_START_SUPERSEDED/.test(String(error && (error.code || error.message) || error || ''))) return;
+    console.warn('[Wallpaper Engine Scene bounds restart]', error);
+    wallpaperEngineRuntimeError = wallpaperEngineRuntimeErrorText(error);
+    wallpaperEngineLayerFailed(item, 'engine', token);
+  });
+}
+
+function handleWallpaperEngineHostBoundsChange(payload) {
+  var phase = String(payload && payload.phase || 'restart');
+  if (phase === 'resident') {
+    var residentSessionId = String(payload && payload.sessionId || '');
+    if (!wallpaperEngineSelection.active
+      || wallpaperEngineSelection.kind !== 'engine'
+      || wallpaperEngineCaptureMode !== 'dwm-thumbnail'
+      || residentSessionId !== String(wallpaperEngineNativeSessionId || '')) return;
+    // Minimize no longer destroys the native DWM base. Restore only the
+    // renderer-side visual state and, if Chromium ended it in the background,
+    // reacquire the narrow glass sampler without restarting the Scene.
+    wallpaperEngineHostBoundsPreparing = false;
+    wallpaperEngineDesktopPreviewActive = false;
+    wallpaperEngineDesktopPreviewUsesAsset = false;
+    applyWallpaperEngineVisualSettings(true);
+    clearWallpaperEngineFreezeFrame(false);
+    if (!wallpaperEngineCaptureStream
+      || !wallpaperEngineCaptureStream.getVideoTracks
+      || !wallpaperEngineCaptureStream.getVideoTracks().some(function (track) { return track && track.readyState === 'live'; })) {
+      scheduleWallpaperEngineGlassSamplerCapture(residentSessionId, wallpaperEngineLayerToken, 0);
+    }
+    updateWallpaperEngineEntryUi();
+    return;
+  }
+  if (phase === 'restart') {
+    if (!wallpaperEngineHostBoundsPreparing && !wallpaperEngineDesktopPreviewActive) return;
+    // BrowserWindow.show()/restore can fire before Chromium has published the
+    // visible document state. Keep the session suspended until visibilitychange
+    // confirms that capture can be created without an immediate preview fallback.
+    if (document.hidden && !(payload && payload.forceVisibleHost === true)) return;
+    wallpaperEngineDesktopPreviewActive = false;
+    wallpaperEngineDesktopPreviewUsesAsset = false;
+    wallpaperEngineHostBoundsPreparing = false;
+    restartWallpaperEngineAfterHostBoundsChange();
+    return;
+  }
+  if (phase === 'prepare' && typeof window.__mineradioPrepareWallpaperEngineHostBoundsChange === 'function') {
+    window.__mineradioPrepareWallpaperEngineHostBoundsChange(payload && payload.sessionId, payload && payload.reason);
+  }
+}
+
+function wallpaperEngineFilteredProjects() {
+  var search = document.getElementById('wallpaper-engine-search');
+  var query = String(search && search.value || '').trim().toLowerCase();
+  return wallpaperEngineProjects.filter(function (item) {
+    if (hiddenWallpaperEngineIds.has(item.id)) return false;
+    if (!query) return true;
+    return (item.title + ' ' + item.projectType + ' ' + item.sourceLabel + ' ' + item.workshopId).toLowerCase().indexOf(query) >= 0;
+  }).sort(function (a, b) {
+    var activeA = wallpaperEngineSelection.active && wallpaperEngineSelection.id === a.id ? 1 : 0;
+    var activeB = wallpaperEngineSelection.active && wallpaperEngineSelection.id === b.id ? 1 : 0;
+    var favA = favoriteWallpaperEngineIds.has(a.id) ? 1 : 0;
+    var favB = favoriteWallpaperEngineIds.has(b.id) ? 1 : 0;
+    return activeB - activeA || favB - favA || Number(b.playable) - Number(a.playable) || Number(b.enginePlayable) - Number(a.enginePlayable) || a.title.localeCompare(b.title, 'zh-CN');
+  });
+}
+
+function disconnectWallpaperEnginePreviewObserver() {
+  if (wallpaperEnginePreviewObserver) wallpaperEnginePreviewObserver.disconnect();
+  wallpaperEnginePreviewObserver = null;
+}
+
+function loadWallpaperEnginePreviewsNearViewport() {
+  var grid = document.getElementById('wallpaper-engine-grid');
+  var modal = document.getElementById('wallpaper-engine-modal');
+  if (!grid || (modal && !modal.classList.contains('show'))) return;
+  var viewport = grid.getBoundingClientRect();
+  grid.querySelectorAll('img[data-src]').forEach(function (image) {
+    var rect = image.getBoundingClientRect();
+    var nearby = rect.bottom >= viewport.top - 220 && rect.top <= viewport.bottom + 220;
+    if (nearby) {
+      if (!image.getAttribute('src')) image.src = image.dataset.src || '';
+    } else if (image.dataset.animated === '1') {
+      image.removeAttribute('src');
+      image.classList.remove('loaded');
+    }
+  });
+}
+
+function extendWallpaperEngineLibraryNearEnd() {
+  var grid = document.getElementById('wallpaper-engine-grid');
+  if (!grid || !grid.querySelector('[data-wallpaper-action="load-more"]')) return;
+  var remaining = grid.scrollHeight - grid.scrollTop - grid.clientHeight;
+  if (remaining > Math.max(280, grid.clientHeight * 0.7)) return;
+  wallpaperEngineRenderLimit += WALLPAPER_ENGINE_RENDER_BATCH;
+  renderWallpaperEngineLibrary(true);
+}
+
+function scheduleWallpaperEnginePreviewViewportUpdate() {
+  if (wallpaperEnginePreviewObserver) {
+    extendWallpaperEngineLibraryNearEnd();
+    return;
+  }
+  if (wallpaperEnginePreviewScrollTimer) return;
+  wallpaperEnginePreviewScrollTimer = setTimeout(function () {
+    wallpaperEnginePreviewScrollTimer = 0;
+    loadWallpaperEnginePreviewsNearViewport();
+    extendWallpaperEngineLibraryNearEnd();
+  }, 60);
+}
+
+function observeWallpaperEnginePreviews() {
+  disconnectWallpaperEnginePreviewObserver();
+  var grid = document.getElementById('wallpaper-engine-grid');
+  if (!grid || typeof IntersectionObserver === 'undefined') {
+    if (grid) {
+      grid.querySelectorAll('img[data-src]').forEach(function (img) {
+        img.onload = function () { img.classList.add('loaded'); };
+      });
+      loadWallpaperEnginePreviewsNearViewport();
+    }
+    return;
+  }
+  wallpaperEnginePreviewObserver = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      var img = entry.target;
+      if (entry.isIntersecting) {
+        if (!img.getAttribute('src')) img.src = img.dataset.src || '';
+      } else if (img.dataset.animated === '1') {
+        img.removeAttribute('src');
+        img.classList.remove('loaded');
+      }
+    });
+  }, { root: grid, rootMargin: '220px 0px', threshold: 0.01 });
+  grid.querySelectorAll('img[data-src]').forEach(function (img) {
+    img.onload = function () { img.classList.add('loaded'); };
+    wallpaperEnginePreviewObserver.observe(img);
+  });
+  loadWallpaperEnginePreviewsNearViewport();
+}
+
+function renderWallpaperEngineManualRoots() {
+  var host = document.getElementById('wallpaper-engine-manual-roots');
+  if (!host) return;
+  var roots = wallpaperEngineLibrarySnapshot && Array.isArray(wallpaperEngineLibrarySnapshot.manualRoots)
+    ? wallpaperEngineLibrarySnapshot.manualRoots : [];
+  host.innerHTML = roots.map(function (root) {
+    return '<span class="wallpaper-engine-root-chip"><span title="手动导入目录">' + escHtml(root.name || '导入目录') + '</span>' +
+      '<button type="button" data-wallpaper-action="remove-root" data-root-id="' + escHtml(root.id || '') + '" title="移除此索引目录">×</button></span>';
+  }).join('');
+}
+
+function renderWallpaperEngineLibrary(preserveRenderLimit) {
+  var grid = document.getElementById('wallpaper-engine-grid');
+  if (!grid) return;
+  var modal = document.getElementById('wallpaper-engine-modal');
+  if (modal && !modal.classList.contains('show')) {
+    disconnectWallpaperEnginePreviewObserver();
+    return;
+  }
+  if (!preserveRenderLimit) wallpaperEngineRenderLimit = WALLPAPER_ENGINE_RENDER_BATCH;
+  disconnectWallpaperEnginePreviewObserver();
+  if (wallpaperEngineLibraryBusy) {
+    grid.innerHTML = '<div class="wallpaper-engine-empty">正在读取 project.json 元数据，不扫描 94GB 素材文件…</div>';
+    return;
+  }
+  var items = wallpaperEngineFilteredProjects();
+  if (!items.length) {
+    grid.innerHTML = '<div class="wallpaper-engine-empty">' + (wallpaperEngineProjects.length ? '没有符合筛选条件的壁纸' : '没有识别到 Wallpaper Engine 项目<br>可以点击“导入目录”手动选择项目或素材库') + '</div>';
+    return;
+  }
+  var visibleItems = items.slice(0, wallpaperEngineRenderLimit);
+  grid.innerHTML = visibleItems.map(function (item) {
+    var favorite = favoriteWallpaperEngineIds.has(item.id);
+    var active = wallpaperEngineSelection.active && wallpaperEngineSelection.id === item.id;
+    var preview = item.hasPreview ? wallpaperEngineMediaUrl(item, 'preview') : '';
+    return '<article class="wallpaper-engine-card' + (favorite ? ' favorite' : '') + (active ? ' active' : '') + '" tabindex="0" role="button" data-wallpaper-id="' + item.id + '">' +
+      (preview ? '<img class="wallpaper-engine-card-preview" data-src="' + escHtml(preview) + '" data-animated="' + (item.previewAnimated ? '1' : '0') + '" alt="" loading="lazy" decoding="async">' : '<div class="wallpaper-engine-card-placeholder"></div>') +
+      '<button class="wallpaper-engine-card-star' + (favorite ? ' active' : '') + '" type="button" data-wallpaper-action="favorite" data-wallpaper-id="' + item.id + '" title="' + (favorite ? '取消星标' : '星标并置顶') + '">' + (favorite ? '★' : '☆') + '</button>' +
+      '<button class="wallpaper-engine-card-settings" type="button" data-wallpaper-action="details" data-wallpaper-id="' + item.id + '" title="读取项目设置">⚙</button>' +
+      '<button class="wallpaper-engine-card-hide" type="button" data-wallpaper-action="hide" data-wallpaper-id="' + item.id + '" title="从列表隐藏">×</button>' +
+      '<div class="wallpaper-engine-card-meta">' + escHtml(item.title) + '<small>' + escHtml(wallpaperEngineProjectLabel(item)) + '</small></div>' +
+      '</article>';
+  }).join('') + (visibleItems.length < items.length
+    ? '<button type="button" class="wallpaper-engine-load-more" data-wallpaper-action="load-more">继续加载 ' + visibleItems.length + ' / ' + items.length + '</button>'
+    : '');
+  observeWallpaperEnginePreviews();
+}
+
+function normalizeWallpaperEngineProjectDetails(details) {
+  details = details && typeof details === 'object' ? details : {};
+  var id = String(details.id || '').replace(/[^a-f0-9]/gi, '').slice(0, 24);
+  if (id.length !== 24) return null;
+  var properties = Array.isArray(details.properties) ? details.properties.slice(0, 256).map(function (property) {
+    property = property && typeof property === 'object' ? property : {};
+    var key = String(property.key || '').replace(/[^a-z0-9_.-]/gi, '').slice(0, 128);
+    if (!key) return null;
+    var value = property.value;
+    if (typeof value !== 'boolean' && typeof value !== 'number' && typeof value !== 'string') value = null;
+    if (typeof value === 'string') value = value.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 512);
+    var options = Array.isArray(property.options) ? property.options.slice(0, 64).map(function (option) {
+      option = option && typeof option === 'object' ? option : {};
+      var optionValue = option.value;
+      if (typeof optionValue !== 'boolean' && typeof optionValue !== 'number' && typeof optionValue !== 'string') return null;
+      return {
+        label: String(option.label || '选项').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 160),
+        value: optionValue
+      };
+    }).filter(Boolean) : [];
+    return {
+      key: key,
+      label: String(property.label || key).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160) || key,
+      type: String(property.type || 'unknown').replace(/[^a-z0-9_-]/gi, '').slice(0, 32) || 'unknown',
+      value: value,
+      options: options,
+      audio: property.audio === true,
+      autoMuted: property.autoMuted === true
+    };
+  }).filter(Boolean) : [];
+  return {
+    id: id,
+    title: String(details.title || 'Wallpaper Engine').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160) || 'Wallpaper Engine',
+    projectType: String(details.projectType || 'unknown').replace(/[^a-z0-9_-]/gi, '').slice(0, 32) || 'unknown',
+    workshopId: String(details.workshopId || '').replace(/\D/g, '').slice(0, 32),
+    propertyCount: Math.max(0, Math.min(256, Number(details.propertyCount) || properties.length)),
+    audioPropertyCount: Math.max(0, Math.min(256, Number(details.audioPropertyCount) || 0)),
+    mutedAudioPropertyCount: Math.max(0, Math.min(256, Number(details.mutedAudioPropertyCount) || 0)),
+    properties: properties
+  };
+}
+
+function wallpaperEnginePropertyValueLabel(property) {
+  if (property.options && property.options.length) {
+    var selected = property.options.find(function (option) { return String(option.value) === String(property.value); });
+    if (selected) return selected.label;
+  }
+  if (typeof property.value === 'boolean') return property.value ? '开启' : '关闭';
+  if (typeof property.value === 'number') return String(Math.round(property.value * 1000) / 1000);
+  if (typeof property.value === 'string' && property.value) return property.value;
+  return '未设置';
+}
+
+function renderWallpaperEngineProjectDetails(details, error) {
+  var drawer = document.getElementById('wallpaper-engine-details-drawer');
+  var title = document.getElementById('wallpaper-engine-details-title');
+  var summary = document.getElementById('wallpaper-engine-details-summary');
+  var properties = document.getElementById('wallpaper-engine-details-properties');
+  var weButton = document.getElementById('wallpaper-engine-details-we');
+  var workshopButton = document.getElementById('wallpaper-engine-details-workshop');
+  if (!drawer || !title || !summary || !properties) return;
+  drawer.classList.add('show');
+  drawer.setAttribute('aria-hidden', 'false');
+  if (error) {
+    title.textContent = '项目设置';
+    summary.textContent = error;
+    properties.innerHTML = '<div class="wallpaper-engine-details-empty">无法读取此项目的 project.json 设置。</div>';
+    if (weButton) weButton.disabled = true;
+    if (workshopButton) workshopButton.disabled = true;
+    return;
+  }
+  if (!details) {
+    title.textContent = '正在读取项目设置…';
+    summary.textContent = '只读取 project.json 元数据，不解包大型 Scene 文件。';
+    properties.innerHTML = '<div class="wallpaper-engine-details-empty">读取中…</div>';
+    if (weButton) weButton.disabled = true;
+    if (workshopButton) workshopButton.disabled = true;
+    return;
+  }
+  title.textContent = details.title;
+  summary.textContent = '已读取 ' + details.propertyCount + ' 项设置 · 检测到 ' + details.audioPropertyCount +
+    ' 项音频控制 · 每次加载自动静音 ' + details.mutedAudioPropertyCount + ' 项';
+  properties.innerHTML = details.properties.length ? details.properties.map(function (property) {
+    var badge = property.audio
+      ? '<span class="wallpaper-engine-property-badge' + (property.autoMuted ? '' : ' warning') + '">' + (property.autoMuted ? '加载时静音' : '音频相关') + '</span>'
+      : '';
+    return '<div class="wallpaper-engine-property-row">' +
+      '<div class="wallpaper-engine-property-copy"><strong>' + escHtml(property.label) + '</strong><small>' +
+      escHtml(property.key + ' · ' + property.type) + '</small></div>' +
+      badge + '<span class="wallpaper-engine-property-value">' + escHtml(wallpaperEnginePropertyValueLabel(property)) + '</span></div>';
+  }).join('') : '<div class="wallpaper-engine-details-empty">这个项目没有声明可调整的用户属性。</div>';
+  var canOpen = /^\d{5,32}$/.test(details.workshopId);
+  if (weButton) weButton.disabled = !canOpen;
+  if (workshopButton) workshopButton.disabled = !canOpen;
+}
+
+async function showWallpaperEngineProjectDetails(id) {
+  id = String(id || '');
+  var api = wallpaperEngineDesktopApi();
+  wallpaperEngineProjectDetailsId = id;
+  renderWallpaperEngineProjectDetails(null, '');
+  if (!api || typeof api.getWallpaperEngineProjectDetails !== 'function') {
+    renderWallpaperEngineProjectDetails(null, '当前环境不支持读取 Wallpaper Engine 项目设置');
+    return;
+  }
+  try {
+    var response = await api.getWallpaperEngineProjectDetails(id);
+    if (wallpaperEngineProjectDetailsId !== id) return;
+    if (!response || response.ok === false) throw new Error(response && response.error || '读取失败');
+    var details = normalizeWallpaperEngineProjectDetails(response);
+    if (!details) throw new Error('项目设置格式无效');
+    renderWallpaperEngineProjectDetails(details, '');
+  } catch (error) {
+    if (wallpaperEngineProjectDetailsId === id) renderWallpaperEngineProjectDetails(null, error.message || '读取失败');
+  }
+}
+
+function closeWallpaperEngineProjectDetails() {
+  wallpaperEngineProjectDetailsId = '';
+  var drawer = document.getElementById('wallpaper-engine-details-drawer');
+  if (drawer) {
+    drawer.classList.remove('show');
+    drawer.setAttribute('aria-hidden', 'true');
+  }
+}
+
+async function launchWallpaperEngineProjectDetails(target) {
+  var id = wallpaperEngineProjectDetailsId;
+  var api = wallpaperEngineDesktopApi();
+  if (!id || !api || typeof api.openWallpaperEngineProjectDetails !== 'function') return;
+  try {
+    var response = await api.openWallpaperEngineProjectDetails(id, target === 'workshop' ? 'workshop' : 'we');
+    if (!response || response.ok === false) throw new Error(response && response.error || '打开失败');
+    if (response.opened === 'wallpaper-engine') showToast('已在 Wallpaper Engine 中定位此壁纸；可打开项目设置栏调整');
+    else if (response.fallback) showToast('当前 WE 版本无法直接定位，已打开创意工坊详情');
+    else showToast('已打开创意工坊详情');
+  } catch (error) {
+    showToast(error.message === 'WALLPAPER_ENGINE_WORKSHOP_DETAILS_UNAVAILABLE'
+      ? '手动导入项目没有 Workshop ID，暂时无法在 WE 中定位'
+      : (error.message || '无法打开 Wallpaper Engine 项目详情'));
+  }
+}
+
+function scheduleWallpaperEngineLibraryRender() {
+  clearTimeout(wallpaperEngineSearchRenderTimer);
+  wallpaperEngineSearchRenderTimer = setTimeout(function () {
+    wallpaperEngineSearchRenderTimer = 0;
+    renderWallpaperEngineLibrary();
+  }, 90);
+}
+
+function updateWallpaperEngineLibraryStatus(snapshot, error) {
+  var status = document.getElementById('wallpaper-engine-library-status');
+  if (!status) return;
+  status.classList.toggle('loading', wallpaperEngineLibraryBusy);
+  if (wallpaperEngineLibraryBusy) {
+    status.textContent = '正在识别 Steam 创意工坊与本地项目…';
+  } else if (error) {
+    status.textContent = '识别失败：' + error;
+  } else if (snapshot) {
+    var runtimeText = snapshot.runtime && snapshot.runtime.available === false ? ' · 未找到可用的 Wallpaper Engine 本体' : '';
+    status.textContent = '已识别 ' + (snapshot.count || 0) + ' 个项目 · ' + (snapshot.dynamicCount || 0) + ' 个媒体动态 · ' +
+      (snapshot.enginePlayableCount || 0) + ' 个 Scene 原生运行 · ' + (snapshot.previewOnlyCount || 0) + ' 个安全预览 · 用时 ' + (snapshot.elapsedMs || 0) + 'ms' + runtimeText;
+  } else {
+    status.textContent = '等待识别本机 Wallpaper Engine 库';
+  }
+}
+
+function consumeWallpaperEngineSnapshot(snapshot) {
+  wallpaperEngineLibrarySnapshot = snapshot || null;
+  wallpaperEngineMediaToken = /^[a-f0-9]{48}$/i.test(String(snapshot && snapshot.mediaToken || ''))
+    ? String(snapshot.mediaToken).toLowerCase() : '';
+  wallpaperEngineProjects = snapshot && Array.isArray(snapshot.projects)
+    ? snapshot.projects.map(normalizeWallpaperEngineProject).filter(Boolean)
+    : [];
+  renderWallpaperEngineManualRoots();
+  updateWallpaperEngineLibraryStatus(snapshot, '');
+  renderWallpaperEngineLibrary();
+  if (wallpaperEngineSelection.active) {
+    var selected = wallpaperEngineProjectById(wallpaperEngineSelection.id);
+    if (selected) {
+      wallpaperEngineSelection = normalizeWallpaperEngineSelection(Object.assign({}, wallpaperEngineSelection, {
+        title: selected.title,
+        kind: wallpaperEngineSelection.kind === 'engine' && !selected.enginePlayable ? (selected.playable ? 'media' : 'preview') : wallpaperEngineSelection.kind,
+        mediaType: wallpaperEngineSelection.kind === 'engine' && selected.enginePlayable ? 'video' : (wallpaperEngineSelection.kind === 'media' ? selected.mediaType : 'image'),
+        mediaAnimated: selected.mediaAnimated,
+        projectType: selected.projectType,
+        hasPreview: selected.hasPreview,
+        previewAnimated: selected.previewAnimated,
+        updatedAt: selected.updatedAt
+      }));
+      saveWallpaperEngineSelection();
+    }
+  }
+}
+
+async function loadWallpaperEngineLibrary(force, showNotice) {
+  var api = wallpaperEngineDesktopApi();
+  if (!api || typeof api.listWallpaperEngineProjects !== 'function') {
+    updateWallpaperEngineLibraryStatus(null, '仅桌面版支持本地壁纸识别');
+    if (showNotice) showToast('当前环境不支持 Wallpaper Engine 本地识别');
+    return [];
+  }
+  if (wallpaperEngineLibraryBusy) return wallpaperEngineProjects;
+  wallpaperEngineLibraryBusy = true;
+  var failure = '';
+  updateWallpaperEngineLibraryStatus(null, '');
+  renderWallpaperEngineLibrary();
+  try {
+    var snapshot = await api.listWallpaperEngineProjects({ force: force === true });
+    if (!snapshot || snapshot.ok === false) throw new Error(snapshot && snapshot.error || '扫描失败');
+    consumeWallpaperEngineSnapshot(snapshot);
+    if (showNotice) showToast(snapshot.count ? ('已识别 ' + snapshot.count + ' 个 Wallpaper Engine 项目') : '没有识别到 Wallpaper Engine 项目');
+    return wallpaperEngineProjects;
+  } catch (e) {
+    failure = e.message || '扫描失败';
+    wallpaperEngineProjects = [];
+    wallpaperEngineLibrarySnapshot = null;
+    wallpaperEngineMediaToken = '';
+    if (showNotice) showToast('Wallpaper Engine 识别失败');
+    return [];
+  } finally {
+    wallpaperEngineLibraryBusy = false;
+    updateWallpaperEngineLibraryStatus(wallpaperEngineLibrarySnapshot, failure);
+    renderWallpaperEngineLibrary();
+  }
+}
+
+async function openWallpaperEngineLibrary() {
+  var modal = document.getElementById('wallpaper-engine-modal');
+  if (modal) modal.classList.add('show');
+  if (!wallpaperEngineLibrarySnapshot) await loadWallpaperEngineLibrary(false, false);
+  else renderWallpaperEngineLibrary();
+}
+
+function closeWallpaperEngineLibrary() {
+  closeWallpaperEngineProjectDetails();
+  var modal = document.getElementById('wallpaper-engine-modal');
+  if (modal) modal.classList.remove('show');
+  clearTimeout(wallpaperEngineSearchRenderTimer);
+  wallpaperEngineSearchRenderTimer = 0;
+  clearTimeout(wallpaperEnginePreviewScrollTimer);
+  wallpaperEnginePreviewScrollTimer = 0;
+  disconnectWallpaperEnginePreviewObserver();
+  document.querySelectorAll('#wallpaper-engine-grid img[data-animated="1"]').forEach(function (image) {
+    image.removeAttribute('src');
+    image.classList.remove('loaded');
+  });
+}
+
+async function refreshWallpaperEngineLibrary() {
+  await loadWallpaperEngineLibrary(true, true);
+}
+
+async function chooseWallpaperEngineDirectory() {
+  var api = wallpaperEngineDesktopApi();
+  if (!api || typeof api.chooseWallpaperEngineDirectory !== 'function') {
+    showToast('当前环境不支持目录导入');
+    return;
+  }
+  if (wallpaperEngineLibraryBusy) return;
+  wallpaperEngineLibraryBusy = true;
+  var failure = '';
+  updateWallpaperEngineLibraryStatus(null, '');
+  renderWallpaperEngineLibrary();
+  try {
+    var snapshot = await api.chooseWallpaperEngineDirectory();
+    if (snapshot && snapshot.canceled) return;
+    if (!snapshot || snapshot.ok === false) throw new Error(snapshot && snapshot.error || '导入失败');
+    consumeWallpaperEngineSnapshot(snapshot);
+    showToast('目录已加入壁纸索引，共识别 ' + (snapshot.count || 0) + ' 个项目');
+  } catch (e) {
+    failure = e.message || '导入失败';
+    showToast(e.message || 'Wallpaper Engine 目录导入失败');
+  } finally {
+    wallpaperEngineLibraryBusy = false;
+    updateWallpaperEngineLibraryStatus(wallpaperEngineLibrarySnapshot, failure);
+    renderWallpaperEngineLibrary();
+  }
+}
+
+async function chooseWallpaperEngineProjectFile() {
+  var api = wallpaperEngineDesktopApi();
+  if (!api || typeof api.chooseWallpaperEngineProjectFile !== 'function') {
+    showToast('当前环境不支持 Wallpaper Engine 场景包导入');
+    return;
+  }
+  if (wallpaperEngineLibraryBusy) return;
+  wallpaperEngineLibraryBusy = true;
+  var failure = '';
+  updateWallpaperEngineLibraryStatus(null, '');
+  renderWallpaperEngineLibrary();
+  try {
+    var snapshot = await api.chooseWallpaperEngineProjectFile();
+    if (snapshot && snapshot.canceled) return;
+    if (!snapshot || snapshot.ok === false) throw new Error(snapshot && snapshot.error || '导入失败');
+    consumeWallpaperEngineSnapshot(snapshot);
+    showToast('Wallpaper Engine 项目已加入索引；Scene 将由本机官方引擎实时运行');
+  } catch (e) {
+    failure = e.message || '项目文件导入失败';
+    showToast(failure);
+  } finally {
+    wallpaperEngineLibraryBusy = false;
+    updateWallpaperEngineLibraryStatus(wallpaperEngineLibrarySnapshot, failure);
+    renderWallpaperEngineLibrary();
+  }
+}
+
+async function removeWallpaperEngineDirectory(rootId) {
+  var api = wallpaperEngineDesktopApi();
+  if (!api || typeof api.removeWallpaperEngineDirectory !== 'function') return;
+  if (wallpaperEngineLibraryBusy) return;
+  wallpaperEngineLibraryBusy = true;
+  updateWallpaperEngineLibraryStatus(null, '');
+  renderWallpaperEngineLibrary();
+  var failure = '';
+  try {
+    var snapshot = await api.removeWallpaperEngineDirectory(rootId);
+    if (!snapshot || snapshot.ok === false) throw new Error(snapshot && snapshot.error || '移除失败');
+    consumeWallpaperEngineSnapshot(snapshot);
+    showToast('已移除手动导入目录，Steam 自动识别不受影响');
+  } catch (e) {
+    failure = e.message || '目录移除失败';
+    showToast(e.message || '目录移除失败');
+  } finally {
+    wallpaperEngineLibraryBusy = false;
+    updateWallpaperEngineLibraryStatus(wallpaperEngineLibrarySnapshot, failure);
+    renderWallpaperEngineLibrary();
+  }
+}
+
+function toggleFavoriteWallpaperEngineItem(id) {
+  id = String(id || '');
+  if (favoriteWallpaperEngineIds.has(id)) favoriteWallpaperEngineIds.delete(id);
+  else favoriteWallpaperEngineIds.add(id);
+  saveWallpaperEngineIdSet(WALLPAPER_ENGINE_FAVORITE_STORE_KEY, favoriteWallpaperEngineIds);
+  renderWallpaperEngineLibrary();
+}
+
+function hideWallpaperEngineItem(id) {
+  id = String(id || '');
+  hiddenWallpaperEngineIds.add(id);
+  saveWallpaperEngineIdSet(WALLPAPER_ENGINE_HIDDEN_STORE_KEY, hiddenWallpaperEngineIds);
+  renderWallpaperEngineLibrary();
+}
+
+function restoreHiddenWallpaperEngineItems() {
+  if (!hiddenWallpaperEngineIds.size) {
+    showToast('没有已隐藏的壁纸');
+    return;
+  }
+  hiddenWallpaperEngineIds.clear();
+  saveWallpaperEngineIdSet(WALLPAPER_ENGINE_HIDDEN_STORE_KEY, hiddenWallpaperEngineIds);
+  renderWallpaperEngineLibrary();
+  showToast('已恢复全部隐藏壁纸');
+}
+
+function bindWallpaperEngineLibraryEvents() {
+  var desktopApi = wallpaperEngineDesktopApi();
+  if (!wallpaperEngineHostBoundsUnsubscribe && desktopApi && typeof desktopApi.onWallpaperEngineHostBoundsChanged === 'function') {
+    wallpaperEngineHostBoundsUnsubscribe = desktopApi.onWallpaperEngineHostBoundsChanged(function (payload) {
+      handleWallpaperEngineHostBoundsChange(payload || {});
+    });
+  }
+  var grid = document.getElementById('wallpaper-engine-grid');
+  if (grid && !grid._wallpaperEngineBound) {
+    grid._wallpaperEngineBound = true;
+    grid.addEventListener('scroll', scheduleWallpaperEnginePreviewViewportUpdate, { passive: true });
+    grid.addEventListener('click', function (event) {
+      var action = event.target && event.target.closest ? event.target.closest('[data-wallpaper-action]') : null;
+      if (action) {
+        event.preventDefault();
+        event.stopPropagation();
+        var actionName = action.getAttribute('data-wallpaper-action');
+        var id = action.getAttribute('data-wallpaper-id');
+        if (actionName === 'favorite') toggleFavoriteWallpaperEngineItem(id);
+        else if (actionName === 'hide') hideWallpaperEngineItem(id);
+        else if (actionName === 'details') showWallpaperEngineProjectDetails(id);
+        else if (actionName === 'load-more') {
+          wallpaperEngineRenderLimit += WALLPAPER_ENGINE_RENDER_BATCH;
+          renderWallpaperEngineLibrary(true);
+        }
+        return;
+      }
+      var card = event.target && event.target.closest ? event.target.closest('[data-wallpaper-id]') : null;
+      if (card) activateWallpaperEngineItem(card.getAttribute('data-wallpaper-id'));
+    });
+    grid.addEventListener('keydown', function (event) {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      if (event.target && event.target.closest && event.target.closest('[data-wallpaper-action]')) return;
+      var card = event.target && event.target.closest ? event.target.closest('.wallpaper-engine-card[data-wallpaper-id]') : null;
+      if (!card || event.target !== card) return;
+      event.preventDefault();
+      activateWallpaperEngineItem(card.getAttribute('data-wallpaper-id'));
+    });
+  }
+  var roots = document.getElementById('wallpaper-engine-manual-roots');
+  if (roots && !roots._wallpaperEngineBound) {
+    roots._wallpaperEngineBound = true;
+    roots.addEventListener('click', function (event) {
+      var button = event.target && event.target.closest ? event.target.closest('[data-wallpaper-action="remove-root"]') : null;
+      if (button) removeWallpaperEngineDirectory(button.getAttribute('data-root-id'));
+    });
+  }
+  if (!document._wallpaperEngineKeyBound) {
+    document._wallpaperEngineKeyBound = true;
+    document.addEventListener('pointermove', queueWallpaperEnginePointerActivity, { passive: true, capture: true });
+    document.addEventListener('mousemove', queueWallpaperEnginePointerActivity, { passive: true, capture: true });
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') {
+        var drawer = document.getElementById('wallpaper-engine-details-drawer');
+        if (drawer && drawer.classList.contains('show')) closeWallpaperEngineProjectDetails();
+        else closeWallpaperEngineLibrary();
+      }
+    });
+    document.addEventListener('visibilitychange', function () {
+      var video = document.getElementById('wallpaper-engine-video');
+      if (!wallpaperEngineSelection.active) return;
+      var item = wallpaperEngineProjectById(wallpaperEngineSelection.id);
+      if (wallpaperEngineSelection.kind === 'engine') {
+        if (wallpaperEngineDesktopPreviewActive) return;
+        if (wallpaperEngineUsesDesktopHostLifecycle()) {
+          if (!document.hidden && item && wallpaperEngineHostBoundsPreparing) {
+            wallpaperEngineHostBoundsPreparing = false;
+            restartWallpaperEngineAfterHostBoundsChange();
+          }
+          return;
+        }
+        if (document.hidden) {
+          window.__mineradioPrepareWallpaperEngineHostBoundsChange(wallpaperEngineNativeSessionId, 'document-hidden');
+          stopWallpaperEngineNativeSession();
+        } else if (item && wallpaperEngineHostBoundsPreparing) {
+          wallpaperEngineHostBoundsPreparing = false;
+          restartWallpaperEngineAfterHostBoundsChange();
+        }
+        return;
+      }
+      if (wallpaperEngineSelection.mediaType === 'video') {
+        if (!video) return;
+        if (document.hidden) {
+          cancelWallpaperEngineVideoRetry();
+          try { video.pause(); } catch (e) { }
+        } else if (document.body.classList.contains('wallpaper-engine-active')) {
+          var token = wallpaperEngineLayerToken;
+          requestWallpaperEngineVideoPlayback(video, item, 'media', token, false, 0);
+        }
+        return;
+      }
+      var animatedImage = wallpaperEngineSelection.kind === 'preview'
+        ? wallpaperEngineSelection.previewAnimated : wallpaperEngineSelection.mediaAnimated;
+      if (!animatedImage || !item) return;
+      if (document.hidden) {
+        ++wallpaperEngineLayerToken;
+        clearWallpaperEngineLayerMedia(0);
+      } else {
+        applyWallpaperEngineBackground(item, true);
+      }
+    });
+    window.addEventListener('pagehide', function () {
+      if (typeof wallpaperEngineHostBoundsUnsubscribe === 'function') {
+        try { wallpaperEngineHostBoundsUnsubscribe(); } catch (e) { }
+        wallpaperEngineHostBoundsUnsubscribe = null;
+      }
+      cancelWallpaperEngineSwitchTimer();
+      cancelWallpaperEngineVideoRetry();
+      cancelWallpaperEngineFirstFrameWait();
+      cancelWallpaperEnginePointerActivity();
+      ++wallpaperEngineLayerToken;
+      stopWallpaperEngineCaptureStream();
+      clearWallpaperEngineFreezeFrame(true);
+    });
+  }
+}
+
+function initializeWallpaperEngineLibrary() {
+  bindWallpaperEngineLibraryEvents();
+  applyWallpaperEngineVisualSettings(false);
+  updateWallpaperEngineEntryUi();
+  if (!wallpaperEngineSelection.active) return;
+  setTimeout(function () {
+    loadWallpaperEngineLibrary(false, false).then(function () {
+      var item = wallpaperEngineProjectById(wallpaperEngineSelection.id);
+      if (item) applyWallpaperEngineBackground(item, true);
+      else {
+        wallpaperEngineRuntimeError = '项目离线';
+        updateWallpaperEngineEntryUi('项目离线 · 已显示原背景');
+      }
+    });
+  }, 120);
+}
+
+initializeWallpaperEngineLibrary();
+;
+
 // ==================== 07-fx/09-console-workspace.js ====================
 'use strict';
 
@@ -24228,6 +26185,815 @@ function initFxConsoleSearchAndHistory() {
 
 window.undoFxConsoleHistory = undoFxConsoleHistory;
 window.rollbackFxConsoleHistoryTo = rollbackFxConsoleHistoryTo;
+;
+
+// ==================== 09-idle-toast-libraries.js ====================
+// ============================================================
+var idleGuideCanvas = null;
+var idleGuideCtx = null;
+var idleGuideW = 0, idleGuideH = 0, idleGuideDpr = 1;
+var idleGuideParticles = [];
+var idleGuideTrails = [[], [], [], []];
+var idleGuideStartedAt = performance.now();
+var idleGuideVisible = false;
+var idleGuideLastFrameAt = performance.now();
+var idleGuideDelayTimer = null;
+// Keep Wallpaper as the only startup idle background.
+var IDLE_GUIDE_BACKGROUND_ENABLED = false;
+var idleGuideInteraction = {
+  angle: 0,
+  velocity: 0,
+  rotX: -0.12,
+  rotY: 0,
+  spinX: 0,
+  spinY: 0,
+  zoom: 1,
+  zoomTarget: 1,
+  zoomPulse: 0,
+  dragging: false,
+  lastX: 0,
+  lastY: 0,
+  lastT: 0,
+  pointerX: 0.5,
+  pointerY: 0.5,
+  pointerActive: false,
+  focus: 0,
+  press: 0,
+  tiltX: 0,
+  tiltY: 0
+};
+function setIdleGuideVisible(show, interactive) {
+  document.body.classList.toggle('idle-guide-on', show);
+  document.body.classList.toggle('idle-guide-interactive', !!interactive);
+  if (!interactive) document.body.classList.remove('idle-guide-dragging');
+  if (idleGuideVisible === show) return;
+  idleGuideVisible = show;
+}
+function shouldShowIdleGuide() {
+  if (!IDLE_GUIDE_BACKGROUND_ENABLED) return false;
+  if (document.body.classList.contains('splash-active')) return false;
+  if (immersiveMode) return false;
+  if (playing) return false;
+  if (loginGuideAnimating) return false;
+  if (document.querySelector('.modal-mask.show')) return false;
+  if (uniforms && uniforms.uHasCover && uniforms.uHasCover.value > 0.5) return false;
+  return true;
+}
+function shouldShowShelfHoverCue(value) {
+  if (document.body.classList.contains('splash-active')) return false;
+  if (!shelfHoverCue.guide && document.querySelector('.modal-mask.show')) return false;
+  if (!shelfHoverCue.guide) {
+    if (shelfPinnedOpen) return false;
+    if (!shelfManager || !shelfManager.canInteract || !shelfManager.canInteract()) return false;
+    if (shelfManager.hasOpenContent && shelfManager.hasOpenContent()) return false;
+    if (!shelfManager.getMode || shelfManager.getMode() !== 'side') return false;
+  }
+  return shelfHoverCue.guide || shelfHoverCue.target > 0 || (value || shelfHoverCue.value) > 0.015;
+}
+function shouldHandleIdleGuidePointer(e) {
+  if (!idleGuideCanvas || !shouldShowIdleGuide()) return false;
+  if (isPointerOverUi(e)) return false;
+  return true;
+}
+function clampIdleGuideSpin(v) {
+  if (!isFinite(v)) return 0;
+  return Math.max(-4.8, Math.min(4.8, v));
+}
+function idleGuidePointerDown(e) {
+  if (!shouldHandleIdleGuidePointer(e)) return;
+  idleGuideInteraction.dragging = true;
+  idleGuideInteraction.pointerActive = true;
+  idleGuideInteraction.lastX = e.clientX;
+  idleGuideInteraction.lastY = e.clientY;
+  idleGuideInteraction.lastT = performance.now();
+  idleGuideInteraction.pointerX = e.clientX / Math.max(1, idleGuideW || innerWidth);
+  idleGuideInteraction.pointerY = e.clientY / Math.max(1, idleGuideH || innerHeight);
+  document.body.classList.add('idle-guide-dragging');
+}
+function idleGuidePointerMove(e) {
+  if (!idleGuideCanvas) return;
+  var canReact = shouldHandleIdleGuidePointer(e) || idleGuideInteraction.dragging;
+  idleGuideInteraction.pointerActive = canReact;
+  if (canReact) {
+    idleGuideInteraction.pointerX = e.clientX / Math.max(1, idleGuideW || innerWidth);
+    idleGuideInteraction.pointerY = e.clientY / Math.max(1, idleGuideH || innerHeight);
+  }
+  if (!idleGuideInteraction.dragging) return;
+  var now = performance.now();
+  var dt = Math.max(1 / 120, Math.min(0.08, (now - idleGuideInteraction.lastT) / 1000 || 1 / 60));
+  var dx = e.clientX - idleGuideInteraction.lastX;
+  var dy = e.clientY - idleGuideInteraction.lastY;
+  var rx = -dy * 0.0032;
+  var ry = dx * 0.0034;
+  idleGuideInteraction.rotX += rx;
+  idleGuideInteraction.rotY += ry;
+  idleGuideInteraction.angle += ry * 0.22;
+  idleGuideInteraction.spinX = clampIdleGuideSpin(rx / dt * 0.46);
+  idleGuideInteraction.spinY = clampIdleGuideSpin(ry / dt * 0.46);
+  idleGuideInteraction.velocity = Math.sqrt(idleGuideInteraction.spinX * idleGuideInteraction.spinX + idleGuideInteraction.spinY * idleGuideInteraction.spinY);
+  idleGuideInteraction.lastX = e.clientX;
+  idleGuideInteraction.lastY = e.clientY;
+  idleGuideInteraction.lastT = now;
+}
+function idleGuidePointerUp() {
+  if (!idleGuideInteraction.dragging) return;
+  idleGuideInteraction.dragging = false;
+  document.body.classList.remove('idle-guide-dragging');
+}
+function idleGuidePointerLeave() {
+  if (!idleGuideInteraction.dragging) idleGuideInteraction.pointerActive = false;
+}
+function idleGuideWheel(e) {
+  if (!shouldHandleIdleGuidePointer(e)) return false;
+  var guide = idleGuideInteraction;
+  guide.pointerActive = true;
+  guide.pointerX = e.clientX / Math.max(1, idleGuideW || innerWidth);
+  guide.pointerY = e.clientY / Math.max(1, idleGuideH || innerHeight);
+  var nextZoom = guide.zoomTarget * Math.exp(-e.deltaY * 0.0012);
+  guide.zoomTarget = Math.max(0.58, Math.min(1.82, nextZoom));
+  guide.zoomPulse = Math.min(1, guide.zoomPulse + Math.min(0.28, Math.abs(e.deltaY) * 0.0014));
+  return true;
+}
+function resizeIdleGuideCanvas() {
+  if (!idleGuideCanvas) return;
+  idleGuideDpr = Math.min(window.devicePixelRatio || 1, 1.6);
+  idleGuideW = window.innerWidth;
+  idleGuideH = window.innerHeight;
+  idleGuideCanvas.width = Math.max(1, Math.floor(idleGuideW * idleGuideDpr));
+  idleGuideCanvas.height = Math.max(1, Math.floor(idleGuideH * idleGuideDpr));
+  idleGuideCanvas.style.width = idleGuideW + 'px';
+  idleGuideCanvas.style.height = idleGuideH + 'px';
+  idleGuideCtx.setTransform(idleGuideDpr, 0, 0, idleGuideDpr, 0, 0);
+  idleGuideParticles = [];
+  resetIdleGuideTrails();
+  if (!IDLE_GUIDE_BACKGROUND_ENABLED) return;
+  var minDim = Math.min(idleGuideW, idleGuideH);
+  var maxDim = Math.max(idleGuideW, idleGuideH);
+  var count = idleGuideW < 800 ? 150 : 240;
+  for (var i = 0; i < count; i++) {
+    var ring = i < count * 0.76;
+    var a = Math.random() * Math.PI * 2;
+    var r = ring
+      ? (minDim * 0.035 + Math.pow(Math.random(), 0.58) * minDim * 0.335)
+      : (Math.pow(Math.random(), 0.82) * maxDim * 0.58);
+    var wobbleAmp = minDim * (ring ? (0.012 + Math.random() * 0.035) : (0.010 + Math.random() * 0.055));
+    idleGuideParticles.push({
+      a: a,
+      r: r,
+      cx: ring ? 0.5 : Math.random(),
+      cy: ring ? 0.5 : Math.random(),
+      size: ring ? (0.30 + Math.random() * 0.62) : (0.18 + Math.random() * 0.44),
+      speed: ((ring ? 0.018 : 0.010) + Math.random() * (ring ? 0.045 : 0.030)) * (Math.random() < 0.5 ? -1 : 1),
+      phase: Math.random() * Math.PI * 2,
+      wobbleAmp: wobbleAmp,
+      wobbleSpeed: 0.18 + Math.random() * 0.76,
+      oval: 0.56 + Math.random() * 0.36,
+      zAmp: 0.34 + Math.random() * 0.82,
+      driftX: (Math.random() * 2 - 1) * wobbleAmp * 0.75,
+      driftY: (Math.random() * 2 - 1) * wobbleAmp * 0.75,
+      layer: Math.random(),
+      z: (Math.random() * 2 - 1) * (ring ? minDim * 0.28 : maxDim * 0.42),
+      ring: ring
+    });
+  }
+}
+function projectIdleGuidePoint(x, y, z, rot, cx, cy, depth) {
+  var x1 = x * rot.cy + z * rot.sy;
+  var z1 = -x * rot.sy + z * rot.cy;
+  var y1 = y * rot.cx - z1 * rot.sx;
+  var z2 = y * rot.sx + z1 * rot.cx;
+  var scale = depth / (depth - z2 * 0.72);
+  scale = Math.max(0.52, Math.min(1.74, scale));
+  return {
+    x: cx + x1 * scale,
+    y: cy + y1 * scale,
+    z: z2,
+    scale: scale
+  };
+}
+function resetIdleGuideTrails() {
+  idleGuideTrails = [[], [], [], []];
+}
+function pushIdleGuideTrail(index, pt, alpha, now) {
+  var trail = idleGuideTrails[index];
+  if (!trail) trail = idleGuideTrails[index] = [];
+  var last = trail[trail.length - 1];
+  var dx = last ? pt.x - last.x : 999;
+  var dy = last ? pt.y - last.y : 999;
+  if (!last || Math.sqrt(dx * dx + dy * dy) > 1.4 || now - last.t > 42) {
+    trail.push({ x: pt.x, y: pt.y, scale: pt.scale || 1, alpha: alpha || 1, t: now });
+  }
+  while (trail.length > 26) trail.shift();
+}
+function drawIdleGuideTrail(ctx, trail, now, alpha, energy) {
+  if (!trail || trail.length < 2) return;
+  while (trail.length && now - trail[0].t > 680) trail.shift();
+  if (trail.length < 2) return;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (var i = 1; i < trail.length; i++) {
+    var prev = trail[i - 1];
+    var cur = trail[i];
+    var age = (now - cur.t) / 680;
+    var order = i / Math.max(1, trail.length - 1);
+    var fade = Math.max(0, 1 - age) * order;
+    if (fade <= 0) continue;
+    ctx.strokeStyle = 'rgba(255,255,255,' + (alpha * fade * (0.18 + energy * 0.24)).toFixed(3) + ')';
+    ctx.lineWidth = (0.7 + cur.scale * 0.9 + energy * 1.2) * fade;
+    ctx.beginPath();
+    ctx.moveTo(prev.x, prev.y);
+    var mx = (prev.x + cur.x) * 0.5;
+    var my = (prev.y + cur.y) * 0.5;
+    ctx.quadraticCurveTo(mx, my, cur.x, cur.y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function scheduleIdleGuideFrame(delay) {
+  if (idleGuideDelayTimer) {
+    clearTimeout(idleGuideDelayTimer);
+    idleGuideDelayTimer = null;
+  }
+  if (delay && delay > 0) {
+    idleGuideDelayTimer = setTimeout(function () {
+      idleGuideDelayTimer = null;
+      requestAnimationFrame(drawIdleGuideFrame);
+    }, delay);
+  } else {
+    requestAnimationFrame(drawIdleGuideFrame);
+  }
+}
+function drawIdleGuideFrame() {
+  if (!idleGuideCanvas || !idleGuideCtx) return;
+  var ctx = idleGuideCtx;
+  var nowFrame = performance.now();
+  var dtFrame = Math.max(1 / 120, Math.min(0.05, (nowFrame - idleGuideLastFrameAt) / 1000 || 1 / 60));
+  idleGuideLastFrameAt = nowFrame;
+  var idleShow = shouldShowIdleGuide();
+  var shelfCueValue = tickShelfHoverCue(dtFrame);
+  var shelfCueShow = shouldShowShelfHoverCue(shelfCueValue);
+  var show = idleShow || shelfCueShow;
+  setIdleGuideVisible(show, idleShow);
+  if (!show) {
+    idleGuideCtx.clearRect(0, 0, idleGuideW, idleGuideH);
+    resetIdleGuideTrails();
+    scheduleIdleGuideFrame(140);
+    return;
+  }
+  var t = (nowFrame - idleGuideStartedAt) / 1000;
+  if (!idleShow) {
+    ctx.clearRect(0, 0, idleGuideW, idleGuideH);
+    resetIdleGuideTrails();
+    ctx.globalCompositeOperation = 'lighter';
+    drawShelfGuideCue(ctx, t, shelfCueValue);
+    ctx.globalCompositeOperation = 'source-over';
+    scheduleIdleGuideFrame(0);
+    return;
+  }
+  var cx = idleGuideW * 0.5;
+  var cy = idleGuideH * 0.50;
+  var guide = idleGuideInteraction;
+  if (!guide.dragging) {
+    guide.rotX += guide.spinX * dtFrame;
+    guide.rotY += guide.spinY * dtFrame;
+    guide.spinX *= Math.pow(0.90, dtFrame * 60);
+    guide.spinY *= Math.pow(0.90, dtFrame * 60);
+    if (Math.abs(guide.spinX) < 0.01) guide.spinX = 0;
+    if (Math.abs(guide.spinY) < 0.01) guide.spinY = 0;
+  }
+  guide.rotY += 0.012 * dtFrame;
+  guide.angle += guide.spinY * dtFrame * 0.20 + 0.010 * dtFrame;
+  guide.velocity = Math.sqrt(guide.spinX * guide.spinX + guide.spinY * guide.spinY);
+  var targetFocus = guide.pointerActive ? 1 : 0;
+  var targetPress = guide.dragging ? 1 : 0;
+  guide.focus += (targetFocus - guide.focus) * 0.10;
+  guide.press += (targetPress - guide.press) * 0.16;
+  guide.zoom += (guide.zoomTarget - guide.zoom) * 0.13;
+  guide.zoomPulse *= Math.pow(0.84, dtFrame * 60);
+  if (guide.zoomPulse < 0.002) guide.zoomPulse = 0;
+  guide.tiltX += (((guide.pointerX - 0.5) * 0.26) - guide.tiltX) * 0.08;
+  guide.tiltY += (((guide.pointerY - 0.5) * 0.18) - guide.tiltY) * 0.08;
+  ctx.clearRect(0, 0, idleGuideW, idleGuideH);
+  ctx.globalCompositeOperation = 'lighter';
+
+  var breathe = 0.5 + 0.5 * Math.sin(t * 0.72);
+  var zoom = guide.zoom;
+  var zoomBoost = guide.zoomPulse;
+  var halo = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.min(idleGuideW, idleGuideH) * ((0.36 + breathe * 0.035 + guide.press * 0.018) * zoom));
+  halo.addColorStop(0, 'rgba(255,255,255,' + (0.034 + breathe * 0.020 + guide.focus * 0.014 + guide.press * 0.018 + zoomBoost * 0.018).toFixed(3) + ')');
+  halo.addColorStop(0.44, 'rgba(255,255,255,' + (0.014 + guide.focus * 0.010).toFixed(3) + ')');
+  halo.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = halo;
+  ctx.fillRect(0, 0, idleGuideW, idleGuideH);
+
+  var ringPts = [];
+  var pointerX = guide.pointerX * idleGuideW;
+  var pointerY = guide.pointerY * idleGuideH;
+  var spinEnergy = Math.min(1, guide.velocity / 1.5 + guide.press * 0.42);
+  var rot = {
+    sx: Math.sin(guide.rotX),
+    cx: Math.cos(guide.rotX),
+    sy: Math.sin(guide.rotY),
+    cy: Math.cos(guide.rotY)
+  };
+  var depth = Math.max(520, Math.min(idleGuideW, idleGuideH) * 0.92);
+  for (var i = 0; i < idleGuideParticles.length; i++) {
+    var p = idleGuideParticles[i];
+    var localA = p.a + t * p.speed;
+    var wanderA = p.phase + t * p.wobbleSpeed;
+    var wobble = Math.sin(wanderA) * p.wobbleAmp + Math.sin(t * (p.wobbleSpeed * 0.57 + 0.11) + p.phase * 1.7) * p.wobbleAmp * 0.45;
+    var x, y;
+    var projected = null;
+    var pointScale = 1;
+    if (p.ring) {
+      var rr = (p.r + wobble + breathe * 12) * zoom * (1 + guide.press * 0.030 + zoomBoost * 0.018);
+      var baseX = Math.cos(localA) * rr + Math.sin(wanderA * 0.73) * p.wobbleAmp * 0.54 + p.driftX;
+      var baseY = Math.sin(localA + Math.sin(wanderA) * 0.10) * rr * p.oval + Math.sin(t * 0.33 + p.phase) * p.wobbleAmp * 0.68 + p.driftY;
+      var baseZ = (Math.sin(localA * 0.84 + p.phase * 0.31) * rr * p.zAmp + p.z * 0.54 + Math.cos(wanderA * 0.91) * p.wobbleAmp) * zoom;
+      projected = projectIdleGuidePoint(baseX, baseY, baseZ, rot, cx, cy, depth);
+      pointScale = projected.scale;
+      x = projected.x + guide.tiltX * projected.z * 0.020;
+      y = projected.y + guide.tiltY * projected.z * 0.018;
+      var nDx = pointerX - x, nDy = pointerY - y;
+      var near = guide.focus * Math.max(0, 1 - Math.sqrt(nDx * nDx + nDy * nDy) / 210);
+      x += nDx * near * 0.040;
+      y += nDy * near * 0.040;
+      ringPts.push({ x: x, y: y, z: projected.z, scale: projected.scale, alpha: 0.08 + breathe * 0.04 + near * 0.08 });
+    } else {
+      var driftX = ((p.cx - 0.5) * idleGuideW * 0.92 + Math.cos(localA) * (12 + p.wobbleAmp * 0.28) + wobble * 0.28) * zoom;
+      var driftY = ((p.cy - 0.5) * idleGuideH * 0.72 + Math.sin(localA * 0.8 + p.phase * 0.2) * (12 + p.wobbleAmp * 0.24)) * zoom;
+      var driftZ = (p.z + Math.sin(localA + p.phase) * (32 + p.wobbleAmp * 0.32)) * zoom;
+      var fieldPt = projectIdleGuidePoint(driftX, driftY, driftZ, rot, cx, cy, depth * 1.16);
+      pointScale = fieldPt.scale;
+      x = fieldPt.x;
+      y = fieldPt.y;
+    }
+    var depthGlow = p.ring && projected ? (0.66 + projected.scale * 0.20) : 1;
+    var aP = p.ring ? ((0.070 + breathe * 0.065 + Math.sin(t * (0.8 + p.layer) + p.phase) * 0.024 + spinEnergy * 0.032) * depthGlow) : (0.034 + guide.focus * 0.010);
+    ctx.beginPath();
+    ctx.arc(x, y, p.size * pointScale * Math.sqrt(zoom) * (1 + spinEnergy * (p.ring ? 0.24 : 0.08) + zoomBoost * 0.12), 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,' + Math.max(0, aP).toFixed(3) + ')';
+    ctx.fill();
+  }
+
+  ctx.lineWidth = 1;
+  for (var j = 0; j < ringPts.length; j += 3) {
+    var aPt = ringPts[j];
+    var bPt = ringPts[(j + 7) % ringPts.length];
+    if (!aPt || !bPt) continue;
+    var dx = aPt.x - bPt.x, dy = aPt.y - bPt.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > Math.min(idleGuideW, idleGuideH) * 0.17) continue;
+    ctx.strokeStyle = 'rgba(255,255,255,' + (0.018 + breathe * 0.020 + guide.focus * 0.012 + spinEnergy * 0.018).toFixed(3) + ')';
+    ctx.beginPath();
+    ctx.moveTo(aPt.x, aPt.y);
+    ctx.lineTo(bPt.x, bPt.y);
+    ctx.stroke();
+  }
+
+  if (guide.focus > 0.03 || spinEnergy > 0.05) {
+    var orbitR = Math.min(idleGuideW, idleGuideH) * (0.305 + guide.press * 0.018) * zoom;
+    var anchorAlpha = Math.min(0.68, 0.16 + guide.focus * 0.24 + spinEnergy * 0.38);
+    for (var k = 0; k < 4; k++) {
+      var anchorA = guide.angle + t * 0.08 + k * 1.72 + (k === 2 ? 0.38 : 0);
+      var anchorPt = projectIdleGuidePoint(
+        Math.cos(anchorA) * orbitR,
+        Math.sin(anchorA) * orbitR * 0.52,
+        Math.sin(anchorA + k * 0.54) * orbitR * 0.48,
+        rot, cx, cy, depth
+      );
+      pushIdleGuideTrail(k, anchorPt, anchorAlpha, nowFrame);
+      drawIdleGuideTrail(ctx, idleGuideTrails[k], nowFrame, anchorAlpha, spinEnergy);
+      ctx.beginPath();
+      ctx.arc(anchorPt.x, anchorPt.y, (2.0 + spinEnergy * 1.8 + (k === 0 ? guide.press * 1.8 : 0)) * anchorPt.scale, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,' + anchorAlpha.toFixed(3) + ')';
+      ctx.fill();
+    }
+  }
+
+  if (guide.focus > 0.03) {
+    var handleA = guide.angle + t * 0.36;
+    var handleR = Math.min(idleGuideW, idleGuideH) * (0.315 + breathe * 0.012 + guide.press * 0.012) * zoom;
+    var handlePt = projectIdleGuidePoint(
+      Math.cos(handleA) * handleR,
+      Math.sin(handleA) * handleR * 0.52,
+      Math.sin(handleA + 0.62) * handleR * 0.48,
+      rot, cx, cy, depth
+    );
+    var hx = handlePt.x;
+    var hy = handlePt.y;
+    var handleGlow = ctx.createRadialGradient(hx, hy, 0, hx, hy, 28 + guide.press * 12);
+    handleGlow.addColorStop(0, 'rgba(255,255,255,' + (0.22 * guide.focus + 0.16 * guide.press).toFixed(3) + ')');
+    handleGlow.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = handleGlow;
+    ctx.beginPath();
+    ctx.arc(hx, hy, 28 + guide.press * 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(hx, hy, 2.4 + guide.press * 1.6, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.54 * guide.focus + 0.24 * guide.press).toFixed(3) + ')';
+    ctx.fill();
+  }
+
+  if (shelfCueShow) drawShelfGuideCue(ctx, t, shelfCueValue);
+  ctx.globalCompositeOperation = 'source-over';
+  scheduleIdleGuideFrame(0);
+}
+function idleRoundRect(ctx, x, y, w, h, r) {
+  if (ctx.roundRect) {
+    ctx.roundRect(x, y, w, h, r);
+    return;
+  }
+  r = Math.min(r || 0, Math.abs(w) * 0.5, Math.abs(h) * 0.5);
+  var x2 = x + w, y2 = y + h;
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x2 - r, y);
+  ctx.quadraticCurveTo(x2, y, x2, y + r);
+  ctx.lineTo(x2, y2 - r);
+  ctx.quadraticCurveTo(x2, y2, x2 - r, y2);
+  ctx.lineTo(x + r, y2);
+  ctx.quadraticCurveTo(x, y2, x, y2 - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+}
+function drawShelfGuideCue(ctx, t, strength) {
+  strength = Math.max(0, Math.min(1, strength == null ? shelfHoverCue.value : strength));
+  if (strength <= 0.01) return;
+  var r = shelfCueRect();
+  var c = shelfCueCenter();
+  var pulse = 0.5 + 0.5 * Math.sin(t * 1.55);
+  var floatY = Math.sin(t * 0.92) * 8 * strength;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  var glow = ctx.createLinearGradient(r.left, 0, r.right, 0);
+  glow.addColorStop(0, 'rgba(255,255,255,0)');
+  glow.addColorStop(0.58, 'rgba(255,255,255,' + (0.010 * strength).toFixed(3) + ')');
+  glow.addColorStop(0.82, 'rgba(244,210,138,' + (0.024 * strength + pulse * 0.012 * strength).toFixed(3) + ')');
+  glow.addColorStop(1, 'rgba(255,255,255,' + (0.035 * strength).toFixed(3) + ')');
+  ctx.fillStyle = glow;
+  ctx.fillRect(r.left, r.top - 26, r.width + 18, r.height + 52);
+
+  var halo = ctx.createRadialGradient(c.x + r.width * 0.18, c.y + floatY, 0, c.x + r.width * 0.18, c.y + floatY, r.width * 0.62);
+  halo.addColorStop(0, 'rgba(244,210,138,' + (0.070 * strength + pulse * 0.026 * strength).toFixed(3) + ')');
+  halo.addColorStop(0.45, 'rgba(255,255,255,' + (0.020 * strength).toFixed(3) + ')');
+  halo.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = halo;
+  ctx.fillRect(r.left, r.top - 40, r.width, r.height + 80);
+
+  for (var i = 0; i < 10; i++) {
+    var seed = i * 19.17;
+    var phase = (t * (0.10 + (i % 4) * 0.014) + i * 0.113) % 1;
+    var x = r.left + r.width * (0.45 + (i % 4) * 0.13) + Math.sin(t * 0.44 + seed) * 12;
+    var y = r.top + r.height * (0.18 + ((i * 0.137 + Math.sin(seed)) % 0.64)) + floatY * (0.42 + (i % 3) * 0.10);
+    var alpha = (0.035 + Math.sin(Math.PI * phase) * 0.050) * strength;
+    if (alpha <= 0) continue;
+    ctx.beginPath();
+    ctx.arc(x, y, 0.9 + (i % 3) * 0.26 + pulse * 0.18, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(244,210,138,' + alpha.toFixed(3) + ')';
+    ctx.fill();
+  }
+  ctx.restore();
+}
+function initIdleGuideCanvas() {
+  idleGuideCanvas = document.getElementById('idle-guide-canvas');
+  if (!idleGuideCanvas) return;
+  idleGuideCtx = idleGuideCanvas.getContext('2d');
+  if (!idleGuideCtx) return;
+  idleGuideStartedAt = performance.now();
+  resizeIdleGuideCanvas();
+  window.addEventListener('resize', resizeIdleGuideCanvas);
+  drawIdleGuideFrame();
+}
+
+// ============================================================
+//  toast
+// ============================================================
+var toastTimer = null;
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.classList.remove('show');
+  void t.offsetWidth;
+  t.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2600);
+}
+
+var visualGuideSteps = [
+  {
+    target: 'stage',
+    kicker: '01 / Welcome',
+    title: 'Mineradio 是用来听歌的视觉播放器',
+    body: '它不是单纯歌单页：搜索或导入一首歌后，封面、歌词、粒子和镜头会跟着音乐一起动。'
+  },
+  {
+    selector: '#search-box',
+    kicker: '02 / Play',
+    title: '从搜索或导入开始',
+    body: '输入歌名、歌手或关键词即可播放；如果有本地音乐，也可以用导入入口直接放进舞台。'
+  },
+  {
+    selector: '#bottom-bar',
+    kicker: '03 / Control',
+    title: '播放以后看底部控制台',
+    body: '播放、切歌、进度、队列和歌词都集中在底部，先把它当作一个正常播放器使用就可以。'
+  },
+  {
+    selector: '#user-btn',
+    kicker: '04 / Account',
+    title: '登录只是为了同步你的音乐库',
+    body: '登录后会同步歌单、红心和播客；不登录也可以搜索和播放，不会强制卡住你。'
+  },
+  {
+    target: 'shelf',
+    kicker: '05 / Visual',
+    title: '进阶视觉都放在舞台周围',
+    body: '右侧 3D 歌单架和 DIY 玩家模式是进阶入口；先播放一首歌，再慢慢调视觉效果。'
+  },
+  {
+    selector: '#diy-mode-btn',
+    kicker: '06 / DIY',
+    title: '高级功能在 DIY 玩家模式',
+    body: '视觉控制台、上传/封面、自定义歌词、音质和更多面板都会在这里展开。'
+  }
+];
+var visualGuideStepsDiy = [
+  {
+    selector: '#diy-mode-btn',
+    kicker: '01 / DIY',
+    title: 'DIY 玩家模式已展开',
+    body: '这里可以随时切回默认模式。DIY 模式会显示完整控制台、上传、视觉面板和高级调参。'
+  },
+  {
+    selector: '#search-box',
+    kicker: '02 / Search',
+    title: '搜索源和导入入口会展开',
+    body: '顶部搜索支持更多来源切换，上传歌曲、封面等入口也会在 DIY 模式中显示。'
+  },
+  {
+    selector: '#playlist-panel',
+    kicker: '03 / Library',
+    title: '左侧是完整歌单和队列',
+    body: '靠近左侧边缘可以打开歌单/队列面板，在这里管理队列、个人歌单和播客。'
+  },
+  {
+    selector: '#fx-panel',
+    kicker: '04 / Visual Lab',
+    title: '右侧是视觉控制台',
+    body: '靠近右下角或点击视觉按钮，可以调节粒子、歌词、镜头、3D 歌单架和更多视觉参数。'
+  },
+  {
+    selector: '#quality-control',
+    kicker: '05 / Controls',
+    title: '高级播放控制会补全',
+    body: '音质、播放顺序、收藏、歌词源和更多按钮会在 DIY 模式中完整显示。'
+  },
+  {
+    target: 'shelf',
+    kicker: '06 / Shelf',
+    title: '3D 歌单架支持直接打开',
+    body: '右侧的 3D 歌单架会在靠近时半透明浮现，点击卡片可打开歌单，点卡片里的播放按钮可直接播放整张歌单。'
+  }
+];
+function activeVisualGuideSteps() {
+  return diyPlayerMode ? visualGuideStepsDiy : visualGuideSteps;
+}
+function visualGuideWasSeen() {
+  try { return localStorage.getItem(VISUAL_GUIDE_SEEN_STORE_KEY) === '1'; } catch (e) { return true; }
+}
+function markVisualGuideSeen() {
+  try { localStorage.setItem(VISUAL_GUIDE_SEEN_STORE_KEY, '1'); } catch (e) { }
+}
+function maybeRunStartupVisualGuide(source) {
+  if (visualGuideWasSeen() || visualGuideActive || immersiveMode || playing) return false;
+  if (source !== 'manual' && !hasAnyPlatformLogin()) return false;
+  setTimeout(function () {
+    if (!visualGuideWasSeen() || source === 'manual') startVisualGuide({ source: source || 'startup' });
+  }, source === 'splash' ? 3600 : 1400);
+  return true;
+}
+function startVisualGuide(opts) {
+  opts = opts || {};
+  if (document.body.classList.contains('splash-active')) {
+    setTimeout(function () { startVisualGuide(opts); }, 700);
+    return;
+  }
+  if (immersiveMode) setImmersiveMode(false);
+  closeMiniQueue();
+  closeUploadTip(false);
+  visualGuideActive = true;
+  document.body.classList.add('visual-guide-active');
+  visualGuideStep = 0;
+  visualGuideState = {
+    bottomWasVisible: !!(document.getElementById('bottom-bar') && document.getElementById('bottom-bar').classList.contains('visible')),
+    searchWasPeek: !!(document.getElementById('search-area') && document.getElementById('search-area').classList.contains('peek')),
+    fxWasPeek: !!(document.getElementById('fx-panel') && document.getElementById('fx-panel').classList.contains('peek')),
+    plWasPeek: !!(document.getElementById('playlist-panel') && document.getElementById('playlist-panel').classList.contains('peek')),
+    mode: diyPlayerMode ? 'diy' : 'simple',
+    manual: !!opts.manual
+  };
+  var guide = document.getElementById('visual-guide');
+  if (guide) {
+    guide.classList.add('show');
+    guide.setAttribute('aria-hidden', 'false');
+  }
+  if (!visualGuideResizeBound) {
+    visualGuideResizeBound = true;
+    window.addEventListener('resize', positionVisualGuideStep);
+    window.addEventListener('scroll', positionVisualGuideStep, true);
+  }
+  showVisualGuideStep(0);
+}
+function prepareVisualGuideStep(step) {
+  var search = document.getElementById('search-area');
+  var bottom = document.getElementById('bottom-bar');
+  var fxPanel = document.getElementById('fx-panel');
+  var playlistPanel = document.getElementById('playlist-panel');
+  if (typeof setShelfGuideCueActive === 'function') setShelfGuideCueActive(step && step.target === 'shelf');
+  if (step && step.selector === '#search-box') setPeek(search, true, 'search');
+  if (step && step.selector === '#playlist-panel') setPeek(playlistPanel, true, 'pl');
+  else if (playlistPanel && !visualGuideState.plWasPeek) setPeek(playlistPanel, false, 'pl');
+  if (step && step.selector === '#fx-panel') setPeek(fxPanel, true, 'fx');
+  else if (fxPanel && !visualGuideState.fxWasPeek) setPeek(fxPanel, false, 'fx');
+  if (step && (step.selector === '#bottom-bar' || step.selector === '#mini-queue-btn' || step.selector === '#immersive-btn' || step.selector === '#quality-control')) {
+    if (bottom) bottom.classList.add('visible');
+    revealBottomControls(1500);
+  }
+}
+function scheduleVisualGuidePositioning() {
+  requestAnimationFrame(positionVisualGuideStep);
+  setTimeout(positionVisualGuideStep, 180);
+  setTimeout(positionVisualGuideStep, 620);
+}
+function showVisualGuideStep(index) {
+  var steps = activeVisualGuideSteps();
+  visualGuideStep = Math.max(0, Math.min(steps.length - 1, index));
+  var step = steps[visualGuideStep];
+  prepareVisualGuideStep(step);
+  var title = document.getElementById('visual-guide-title');
+  var body = document.getElementById('visual-guide-body');
+  var kicker = document.getElementById('visual-guide-kicker');
+  var hint = document.getElementById('visual-guide-hint');
+  var progress = document.getElementById('visual-guide-progress');
+  var next = document.getElementById('visual-guide-next');
+  if (title) title.textContent = step.title;
+  if (body) body.textContent = step.body;
+  if (kicker) kicker.textContent = step.kicker;
+  if (hint) hint.textContent = visualGuideStep === steps.length - 1 ? '点击空白处完成引导' : '点击空白处也可以继续';
+  if (progress) progress.textContent = (visualGuideStep + 1) + ' / ' + steps.length;
+  if (next) next.textContent = visualGuideStep === steps.length - 1 ? '完成' : '下一步';
+  scheduleVisualGuidePositioning();
+}
+function guideTargetRect(step) {
+  if (step && step.target === 'stage') {
+    var stageW = Math.min(620, Math.max(260, innerWidth - 72));
+    var stageH = Math.min(310, Math.max(178, innerHeight * 0.34));
+    var stageLeft = innerWidth * 0.5 - stageW * 0.5;
+    var stageTop = Math.max(116, innerHeight * 0.32 - stageH * 0.5);
+    return { left: stageLeft, top: stageTop, width: stageW, height: stageH, right: stageLeft + stageW, bottom: stageTop + stageH };
+  }
+  if (step && step.target === 'shelf' && typeof shelfCueRect === 'function') {
+    var shelfRect = shelfCueRect();
+    var shelfLeft = shelfRect.left;
+    var shelfTop = shelfRect.top - 26;
+    var shelfRight = Math.min(innerWidth - 12, shelfRect.right + 18);
+    var shelfBottom = shelfRect.bottom + 26;
+    return { left: shelfLeft, top: shelfTop, width: shelfRight - shelfLeft, height: shelfBottom - shelfTop, right: shelfRight, bottom: shelfBottom };
+  }
+  if (step && step.selector === '#bottom-bar') {
+    var bar = document.getElementById('bottom-bar');
+    var progress = document.getElementById('progress-bar');
+    var controls = document.getElementById('controls');
+    if (bar) {
+      var br = bar.getBoundingClientRect();
+      var left = br.left, top = br.top, right = br.right, bottom = br.bottom;
+      [progress, controls].forEach(function (el) {
+        if (!el) return;
+        var r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return;
+        left = Math.min(left, r.left);
+        top = Math.min(top, r.top);
+        right = Math.max(right, r.right);
+        bottom = Math.max(bottom, r.bottom);
+      });
+      return { left: left, top: top, width: right - left, height: bottom - top, right: right, bottom: bottom };
+    }
+  }
+  var isFullscreenDiyStep = !!(step && step.selector === '#diy-mode-btn' && (desktopRuntimeState.fullscreen || desktopFullscreenActive || document.fullscreenElement || document.body.classList.contains('desktop-fullscreen')));
+  var useFullscreenDiyTarget = isFullscreenDiyStep && !shouldSuppressFullscreenDiyPeek();
+  if (useFullscreenDiyTarget) {
+    layoutFullscreenDiyZone();
+    document.body.classList.add('fullscreen-diy-peek');
+  }
+  var target = step && step.selector ? document.querySelector(useFullscreenDiyTarget ? '#fullscreen-diy-btn' : step.selector) : null;
+  if (target) {
+    var style = window.getComputedStyle(target);
+    var rect = target.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') return rect;
+  }
+  if (step && step.selector === '#diy-mode-btn') {
+    var fallbackRight = Math.max(116, innerWidth - 26);
+    var fallbackTop = 16;
+    return { left: fallbackRight - 88, top: fallbackTop, width: 88, height: 38, right: fallbackRight, bottom: fallbackTop + 38 };
+  }
+  return { left: innerWidth * 0.5 - 120, top: innerHeight * 0.5 - 40, width: 240, height: 80, right: innerWidth * 0.5 + 120, bottom: innerHeight * 0.5 + 40 };
+}
+function positionVisualGuideStep() {
+  if (!visualGuideActive) return;
+  var guide = document.getElementById('visual-guide');
+  var ring = document.getElementById('visual-guide-ring');
+  var card = document.getElementById('visual-guide-card');
+  if (!guide || !ring || !card) return;
+  var step = activeVisualGuideSteps()[visualGuideStep];
+  var rect = guideTargetRect(step);
+  ring.classList.toggle('shelf-target', !!(step && step.target === 'shelf'));
+  var pad = step && step.target === 'shelf' ? 14 : (step && step.selector === '#bottom-bar' ? 10 : 8);
+  var left = Math.max(12, rect.left - pad);
+  var top = Math.max(12, rect.top - pad);
+  var width = Math.min(innerWidth - left - 12, rect.width + pad * 2);
+  var height = Math.min(innerHeight - top - 12, rect.height + pad * 2);
+  ring.style.left = left + 'px';
+  ring.style.top = top + 'px';
+  ring.style.width = Math.max(44, width) + 'px';
+  ring.style.height = Math.max(38, height) + 'px';
+  ring.style.borderRadius = step && step.target === 'shelf' ? '28px' : ((step && step.selector === '#bottom-bar') ? '20px' : '16px');
+  var scrim = guide.querySelector('.visual-guide-scrim');
+  if (scrim) {
+    scrim.style.setProperty('--gx', ((rect.left + rect.width / 2) / Math.max(1, innerWidth) * 100).toFixed(2) + '%');
+    scrim.style.setProperty('--gy', ((rect.top + rect.height / 2) / Math.max(1, innerHeight) * 100).toFixed(2) + '%');
+  }
+  var cardW = Math.min(326, innerWidth - 32);
+  var cardH = card.offsetHeight || 170;
+  var cardLeft = rect.left + rect.width / 2 - cardW / 2;
+  cardLeft = Math.max(16, Math.min(innerWidth - cardW - 16, cardLeft));
+  var below = rect.bottom + 18;
+  var above = rect.top - cardH - 18;
+  var cardTop = below + cardH < innerHeight - 16 ? below : Math.max(16, above);
+  card.style.left = cardLeft + 'px';
+  card.style.top = cardTop + 'px';
+}
+function nextVisualGuideStep() {
+  var steps = activeVisualGuideSteps();
+  if (visualGuideStep >= steps.length - 1) {
+    closeVisualGuide(true);
+    return;
+  }
+  showVisualGuideStep(visualGuideStep + 1);
+}
+function closeVisualGuide(markSeen) {
+  var guide = document.getElementById('visual-guide');
+  visualGuideActive = false;
+  if (markSeen) markVisualGuideSeen();
+  if (guide) {
+    guide.classList.remove('show');
+    guide.setAttribute('aria-hidden', 'true');
+  }
+  document.body.classList.remove('visual-guide-active');
+  document.body.classList.remove('fullscreen-diy-peek');
+  var search = document.getElementById('search-area');
+  var bottom = document.getElementById('bottom-bar');
+  var fxPanel = document.getElementById('fx-panel');
+  var playlistPanel = document.getElementById('playlist-panel');
+  if (typeof setShelfGuideCueActive === 'function') setShelfGuideCueActive(false);
+  if (search && !visualGuideState.searchWasPeek && document.activeElement !== $input) setPeek(search, false, 'search');
+  if (fxPanel && !visualGuideState.fxWasPeek) setPeek(fxPanel, false, 'fx');
+  if (playlistPanel && !visualGuideState.plWasPeek) setPeek(playlistPanel, false, 'pl');
+  if (bottom && !visualGuideState.bottomWasVisible && !playing) bottom.classList.remove('visible', 'soft-hidden');
+}
+function handleVisualGuideSurfaceClick(e) {
+  if (!visualGuideActive) return;
+  if (e && e.target && e.target.closest && e.target.closest('button')) return;
+  if (e && e.preventDefault) e.preventDefault();
+  nextVisualGuideStep();
+}
+(function bindVisualGuideSurfaceClick() {
+  var guide = document.getElementById('visual-guide');
+  if (guide) guide.addEventListener('click', handleVisualGuideSurfaceClick);
+})();
+
+// ============================================================
+//  动态库加载
+// ============================================================
+function loadScriptOnce(src) {
+  return new Promise(function (resolve, reject) {
+    var hit = document.querySelector('script[src="' + src + '"]');
+    if (hit) { resolve(); return; }
+    var sc = document.createElement('script'); sc.src = src; sc.async = true;
+    sc.onload = resolve; sc.onerror = reject;
+    document.head.appendChild(sc);
+  });
+}
+
+// ============================================================
+//  摄像头 / 手势 v8 — 仅保留手势, 头部追踪已下线
+//   - 21 个关键点用 EMA 平滑滤波, 消除抖动
+//   - 食指尖 + 手掌中心 共同推开粒子 (真实手感, 不再是单点小球)
+//   - 在 hand-canvas 上画出手掌骨架, 视觉跟随手
+//   - 捏合 = 拖动旋转封面 (Y 反向修正)
+//   - 没有挥扫 / 没有手势切歌
 ;
 
 // ==================== sonic-topography-preset.js ====================
@@ -25312,6 +28078,833 @@ window.rollbackFxConsoleHistoryTo = rollbackFxConsoleHistoryTo;
     pointerRipple: pointerRipple
   };
 })(typeof window !== 'undefined' ? window : globalThis);
+;
+
+// ==================== sonic-workshop-preset.js ====================
+'use strict';
+
+// Ported from Mineradio 2.2.0, GPL-3.0, public/sonic-workshop-preset.js 全文。
+// DSH 适配 1 处（[DSH 适配] 标注）：BRIDGE_SRC 相对路径加 mr/ 前缀——MR 页面在 public 根，
+// DSH 页面在 renderer/，bridge 文件在 renderer/mr/vendor/sonic-workshop/。
+// 其余原样：依赖的全局（playQueue/currentIdx/fx/audio/playing/frequencyData/stageLyrics/
+// songCoverSrc/coverUrlWithSize）bundle 与适配层均已就位；file:// 下 bridge 的 module 脚本
+// 加载已 CDP 烟测实测通过（root 渲染 canvas、wallpaperRegisterAudioListener 注入成功）。
+(function (global) {
+  var INDEX = 8;
+  var BRIDGE_SRC = 'mr/vendor/sonic-workshop/mineradio-bridge.html'; // [DSH 适配]
+  var MOUNT_ID = 'sonic-workshop-layer';
+  var AUDIO_PUSH_INTERVAL_MS = 33;
+  var MEDIA_PUSH_INTERVAL_MS = 250;
+  var PROPERTIES_PUSH_INTERVAL_MS = 1000;
+  var WORKSHOP_THEME_TRANSITION_MS = 1280;
+  var WORKSHOP_AUDIO_TARGET_MAX_SAMPLE = 0.52;
+  var WORKSHOP_AUDIO_BODY_GAIN = 0.33;
+  var WORKSHOP_AUDIO_PEAK_GAIN = 0.12;
+  var WORKSHOP_AUDIO_GAMMA = 1.55;
+  var WORKSHOP_AUDIO_MIN_FLOOR = 0.035;
+  var WORKSHOP_AUDIO_LOW_LIFT = 0.035;
+  var WORKSHOP_AUDIO_PAUSED_GAIN = 0.12;
+  var WORKSHOP_DEFAULT_PROPERTIES = {
+    schemecolor: '0.3333333333333333 0.0196078431372549 0.3333333333333333',
+    theme: 'coral-mirage',
+    mineradioCustomTheme: null,
+    themeCycleInterval: 50,
+    peakColorEnabled: true,
+    peakColorIntensity: 0.62,
+    gridSize: 320,
+    audioIntensity: 1.15,
+    responseRange: 1.3,
+    pulseEnabled: true,
+    pulseSensitivity: 0.05,
+    pulseCooldown: 0,
+    meteorEnabled: true,
+    meteorSensitivity: 0.3,
+    meteorCooldown: 60,
+    meteorClickEnabled: true,
+    idleWaveEnabled: true,
+    idleWaveDebounce: 1,
+    idleWaveFadeDuration: 1,
+    cameraDistance: 80,
+    autoRotateEnabled: true,
+    autoRotateSpeed: 7,
+    cameraAngleX: 150,
+    cameraAngleY: 30,
+    showPlayerController: false,
+    showAlbumCover: true,
+    controllerSize: 'large',
+    controllerX: 2,
+    controllerY: 3
+  };
+
+  var zeroSamples = new Array(512).fill(0);
+  var state = {
+    layer: null,
+    iframe: null,
+    active: false,
+    ready: false,
+    opacity: 0,
+    lastAudioAt: 0,
+    lastMediaAt: 0,
+    lastPropertiesAt: 0,
+    lastMediaKey: '',
+    lastPropertiesKey: '',
+    samples: zeroSamples.slice(),
+    media: null,
+    displayedTheme: null,
+    themeTransition: null,
+    themeTransitionRaf: 0
+  };
+
+  function nowMs() {
+    return global.performance && performance.now ? performance.now() : Date.now();
+  }
+
+  function clamp(value, min, max) {
+    value = Number(value);
+    if (!isFinite(value)) value = min;
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function clamp01(value) {
+    return clamp(value, 0, 1);
+  }
+
+  function isActive(fx) {
+    return !!(fx && Number(fx.preset) === INDEX);
+  }
+
+  function currentSong() {
+    if (Array.isArray(global.playQueue) && global.currentIdx >= 0 && global.currentIdx < global.playQueue.length) return global.playQueue[global.currentIdx];
+    if (Array.isArray(global.playlist) && global.currentIdx >= 0 && global.currentIdx < global.playlist.length) return global.playlist[global.currentIdx];
+    return null;
+  }
+
+  function normalizeHex(value, fallback) {
+    value = String(value || '').trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(value)) return value;
+    if (/^#[0-9a-fA-F]{3}$/.test(value)) {
+      return '#' + value.slice(1).split('').map(function (c) { return c + c; }).join('');
+    }
+    return fallback || '#ffffff';
+  }
+
+  function cssColorToHex(value, fallback) {
+    value = String(value || '').trim();
+    if (/^#[0-9a-fA-F]{3,6}$/.test(value)) return normalizeHex(value, fallback);
+    var m = value.match(/^rgba?\(\s*([.\d]+)\s*,\s*([.\d]+)\s*,\s*([.\d]+)/i);
+    if (m) {
+      var r = Math.max(0, Math.min(255, Math.round(parseFloat(m[1]) || 0)));
+      var g = Math.max(0, Math.min(255, Math.round(parseFloat(m[2]) || 0)));
+      var b = Math.max(0, Math.min(255, Math.round(parseFloat(m[3]) || 0)));
+      return '#' + [r, g, b].map(function (n) { return n.toString(16).padStart(2, '0'); }).join('');
+    }
+    return fallback || '#ffffff';
+  }
+
+  function hexRgb(hex, fallback) {
+    hex = normalizeHex(hex || fallback || '#ffffff', fallback || '#ffffff').slice(1);
+    var n = parseInt(hex, 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+
+  function rgbToHslLocal(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    var max = Math.max(r, g, b), min = Math.min(r, g, b);
+    var h = 0, s = 0, l = (max + min) / 2;
+    if (max !== min) {
+      var d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      switch (max) {
+        case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+        case g: h = (b - r) / d + 2; break;
+        default: h = (r - g) / d + 4; break;
+      }
+      h /= 6;
+    }
+    return { h: h, s: s, l: l };
+  }
+
+  function hslToRgbLocal(h, s, l) {
+    function hue2rgb(p, q, t) {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    }
+    var r, g, b;
+    h = ((Number(h) || 0) % 1 + 1) % 1;
+    s = clamp01(Number(s) || 0);
+    l = clamp01(Number(l) || 0);
+    if (s === 0) {
+      r = g = b = l;
+    } else {
+      var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+      var p = 2 * l - q;
+      r = hue2rgb(p, q, h + 1 / 3);
+      g = hue2rgb(p, q, h);
+      b = hue2rgb(p, q, h - 1 / 3);
+    }
+    return { r: Math.round(r * 255), g: Math.round(g * 255), b: Math.round(b * 255) };
+  }
+
+  function rgbToHexLocal(r, g, b) {
+    return '#' + [r, g, b].map(function (v) {
+      return Math.round(clamp(v, 0, 255)).toString(16).padStart(2, '0');
+    }).join('');
+  }
+
+  function mixHex(a, b, t) {
+    var ca = hexRgb(a, '#000000');
+    var cb = hexRgb(b, '#ffffff');
+    t = clamp01(t);
+    return rgbToHexLocal(
+      ca.r + (cb.r - ca.r) * t,
+      ca.g + (cb.g - ca.g) * t,
+      ca.b + (cb.b - ca.b) * t
+    );
+  }
+
+  function hexToSchemeColor(hex) {
+    var rgb = hexRgb(hex, '#cb6c89');
+    return [rgb.r / 255, rgb.g / 255, rgb.b / 255].map(function (v) {
+      return String(clamp(v, 0, 1));
+    }).join(' ');
+  }
+
+  var WORKSHOP_THEME_ALIASES = {
+    'minimal-mono': 'minimal-monochrome',
+    'arctic-blue': 'arctic-aurora',
+    'emerald-forest': 'cyber-forest',
+    crimson: 'crimson-sunset',
+    aurora: 'arctic-aurora',
+    'violet-dream': 'neon-tokyo'
+  };
+  var WORKSHOP_THEME_COLORS = {
+    nocturnal: '#7d3fff',
+    'ocean-deep': '#1b6fb8',
+    'arctic-aurora': '#79e1c4',
+    'cyber-forest': '#3fc78a',
+    'golden-hour': '#e8b44c',
+    'ember-fire': '#f27a28',
+    'crimson-sunset': '#d84252',
+    'coral-mirage': '#cb6c89',
+    'neon-tokyo': '#ff4fb8',
+    'minimal-monochrome': '#d9dde3'
+  };
+
+  function workshopCoverHex(role) {
+    var pal = global.stageLyrics && (global.stageLyrics.coverPalette || global.stageLyrics.palette) || {};
+    role = String(role || 'primary');
+    var fallback = role === 'base' ? '#16060f' : (role === 'cool' || role === 'peak' ? '#99c4ff' : (role === 'ripple' ? '#f8d8ff' : '#cb6c89'));
+    var value = pal.rawAreaPrimary || pal.rawPrimary || pal.primary || pal.highlight || pal.secondary;
+    if (role === 'base') value = pal.rawAreaBase || pal.rawDark || pal.rawAverage || pal.secondary || pal.rawAreaPrimary || pal.rawPrimary || pal.primary;
+    else if (role === 'warm') value = pal.rawAreaWarm || pal.rawAreaPrimary || pal.rawWarm || pal.rawPrimary || pal.secondary || pal.primary || pal.highlight;
+    else if (role === 'cool') value = pal.rawAreaCool || pal.rawAreaLight || pal.rawCool || pal.rawLight || pal.highlight || pal.rawAreaPrimary || pal.rawPrimary || pal.primary;
+    else if (role === 'ripple') value = pal.rawAreaLight || pal.rawAreaAccent || pal.rawLight || pal.rawAccent || pal.rawAreaCool || pal.rawCool || pal.highlight || pal.primary;
+    else if (role === 'peak') value = pal.rawAreaAccent || pal.rawAreaCool || pal.rawAreaLight || pal.rawCool || pal.rawAccent || pal.rawLight || pal.highlight || pal.primary;
+    return cssColorToHex(value, fallback);
+  }
+
+  function colorDistance(a, b) {
+    var ca = hexRgb(a, '#000000');
+    var cb = hexRgb(b, '#000000');
+    var dr = (ca.r - cb.r) / 255;
+    var dg = (ca.g - cb.g) / 255;
+    var db = (ca.b - cb.b) / 255;
+    return Math.sqrt(dr * dr + dg * dg + db * db);
+  }
+
+  function workshopPaletteHexesFromCover() {
+    var pal = global.stageLyrics && (global.stageLyrics.coverPalette || global.stageLyrics.palette) || {};
+    var values = [];
+    if (Array.isArray(pal.sonicWorkshopColors)) values = values.concat(pal.sonicWorkshopColors);
+    if (Array.isArray(pal.coverColors)) values = values.concat(pal.coverColors);
+    [
+      pal.rawAreaPrimary,
+      pal.rawAreaBase,
+      pal.rawAreaWarm,
+      pal.rawAreaCool,
+      pal.rawAreaLight,
+      pal.rawAreaAccent,
+      pal.rawPrimary,
+      pal.rawWarm,
+      pal.rawCool,
+      pal.rawLight,
+      pal.rawDark,
+      pal.rawAccent,
+      pal.rawAverage,
+      pal.primary,
+      pal.secondary,
+      pal.highlight,
+      pal.glowColor
+    ].forEach(function (value) { if (value) values.push(value); });
+    var out = [];
+    values.forEach(function (value) {
+      var hex = cssColorToHex(value, '');
+      if (!hex) return;
+      var key = hex.toLowerCase();
+      for (var i = 0; i < out.length; i++) {
+        if (out[i].toLowerCase() === key || colorDistance(out[i], hex) < 0.035) return;
+      }
+      out.push(hex);
+    });
+    if (!out.length) out.push('#cb6c89');
+    return out.slice(0, 8);
+  }
+
+  function workshopHexInfo(hex) {
+    var rgb = hexRgb(hex, '#cb6c89');
+    var hsl = rgbToHslLocal(rgb.r, rgb.g, rgb.b);
+    var lum = (rgb.r * 0.299 + rgb.g * 0.587 + rgb.b * 0.114) / 255;
+    return { hex: normalizeHex(hex, '#cb6c89'), rgb: rgb, hsl: hsl, lum: lum, chroma: hsl.s };
+  }
+
+  function workshopHueBandScore(h, center, width) {
+    var d = Math.abs((((h - center) % 1) + 1) % 1);
+    d = Math.min(d, 1 - d);
+    return Math.max(0, 1 - d / width);
+  }
+
+  function workshopPickPaletteHex(hexes, kind, fallback, avoidHex) {
+    var best = null;
+    var bestScore = -Infinity;
+    (hexes && hexes.length ? hexes : [fallback || '#cb6c89']).forEach(function (hex) {
+      var info = workshopHexInfo(hex);
+      var h = info.hsl.h;
+      var score = 0;
+      if (kind === 'dark') score = (1 - info.lum) * 1.20 + info.chroma * 0.34;
+      else if (kind === 'light') score = info.lum * 1.18 + info.chroma * 0.34;
+      else if (kind === 'warm') score = Math.max(workshopHueBandScore(h, 0.06, 0.22), workshopHueBandScore(h, 0.98, 0.16)) * 1.05 + info.chroma * 0.62 + info.lum * 0.10;
+      else if (kind === 'cool') score = workshopHueBandScore(h, 0.56, 0.30) * 1.08 + info.chroma * 0.58 + info.lum * 0.10;
+      else if (kind === 'accent') score = info.chroma * 0.95 + Math.min(0.42, Math.abs(info.lum - 0.50)) * 0.20 + (avoidHex ? colorDistance(info.hex, avoidHex) * 0.36 : 0);
+      else score = info.chroma * 0.88 + (0.50 - Math.abs(info.lum - 0.56)) * 0.34;
+      if (score > bestScore) {
+        best = info.hex;
+        bestScore = score;
+      }
+    });
+    return best || fallback || '#cb6c89';
+  }
+
+  function workshopThemeForColor(hex) {
+    var rgb = hexRgb(hex, '#cb6c89');
+    var hsl = rgbToHslLocal(rgb.r, rgb.g, rgb.b);
+    if (hsl.s < 0.08) return 'minimal-monochrome';
+    if (hsl.h < 0.035 || hsl.h >= 0.94) return 'crimson-sunset';
+    if (hsl.h < 0.10) return 'coral-mirage';
+    if (hsl.h < 0.14) return 'ember-fire';
+    if (hsl.h < 0.18) return 'golden-hour';
+    if (hsl.h < 0.42) return 'cyber-forest';
+    if (hsl.h < 0.66) return 'arctic-aurora';
+    if (hsl.h < 0.74) return 'ocean-deep';
+    return 'neon-tokyo';
+  }
+
+  function normalizeWorkshopTheme(theme) {
+    theme = String(theme || '');
+    theme = WORKSHOP_THEME_ALIASES[theme] || theme;
+    return /^(nocturnal|coral-mirage|ocean-deep|arctic-aurora|cyber-forest|minimal-monochrome|neon-tokyo|golden-hour|ember-fire|crimson-sunset)$/.test(theme) ? theme : 'coral-mirage';
+  }
+
+  function workshopThemeColor(theme) {
+    return WORKSHOP_THEME_COLORS[normalizeWorkshopTheme(theme)] || '#cb6c89';
+  }
+
+  function workshopCustomThemeForColor(hex) {
+    hex = normalizeHex(hex, '#cb6c89');
+    var rgb = hexRgb(hex, '#cb6c89');
+    var hsl = rgbToHslLocal(rgb.r, rgb.g, rgb.b);
+    var peakRgb = hslToRgbLocal(hsl.h + 0.54, clamp(0.62 + hsl.s * 0.28, 0.62, 0.92), clamp(0.54 + hsl.l * 0.14, 0.50, 0.72));
+    var peak = rgbToHexLocal(peakRgb.r, peakRgb.g, peakRgb.b);
+    var glow = clamp(0.62 + hsl.s * 0.20 + hsl.l * 0.10, 0.62, 0.98);
+    return {
+      name: 'Mineradio Custom',
+      id: 'mineradio-custom',
+      __primaryColor: hex,
+      uBaseColor1: mixHex('#000000', hex, 0.075),
+      uBaseColor2: mixHex('#000000', hex, 0.18),
+      uCoolCore: hex,
+      uCoolEdge: mixHex('#000000', hex, 0.46),
+      uWarmCore: hex,
+      uWarmEdge: mixHex('#000000', hex, 0.58),
+      uRippleColor: hex,
+      uPeakColor: peak,
+      uGlowIntensity: Number(glow.toFixed(3))
+    };
+  }
+
+  function workshopCustomThemeForPalette(hexes, fallbackHex) {
+    hexes = Array.isArray(hexes) ? hexes.slice() : [];
+    fallbackHex = normalizeHex(fallbackHex || hexes[0] || '#cb6c89', '#cb6c89');
+    if (hexes.length <= 1) return workshopCustomThemeForColor(fallbackHex);
+    var primary = workshopPickPaletteHex(hexes, 'primary', fallbackHex);
+    var dark = workshopPickPaletteHex(hexes, 'dark', primary);
+    var warm = workshopPickPaletteHex(hexes, 'warm', primary, primary);
+    var cool = workshopPickPaletteHex(hexes, 'cool', primary, warm);
+    var light = workshopPickPaletteHex(hexes, 'light', primary);
+    var accent = workshopPickPaletteHex(hexes, 'accent', light, primary);
+    return workshopCustomThemeForRegions({
+      primary: primary,
+      base: dark,
+      warm: warm,
+      cool: cool,
+      ripple: light,
+      peak: colorDistance(cool, warm) > 0.14 ? cool : accent
+    });
+  }
+
+  function workshopCustomThemeForRegions(regions) {
+    regions = regions || {};
+    var primary = normalizeHex(regions.primary || '#cb6c89', '#cb6c89');
+    var base = normalizeHex(regions.base || mixHex('#000000', primary, 0.16), '#16060f');
+    var warm = normalizeHex(regions.warm || primary, primary);
+    var cool = normalizeHex(regions.cool || '#99c4ff', '#99c4ff');
+    var ripple = normalizeHex(regions.ripple || regions.peak || cool, '#f8d8ff');
+    var peak = normalizeHex(regions.peak || cool, '#99c4ff');
+    var info = workshopHexInfo(primary);
+    var coolInfo = workshopHexInfo(cool);
+    var peakInfo = workshopHexInfo(peak);
+    var glow = clamp(0.62 + info.chroma * 0.10 + Math.max(coolInfo.chroma, peakInfo.chroma) * 0.08 + Math.max(0, info.lum - 0.38) * 0.06, 0.62, 0.96);
+    return {
+      name: 'Mineradio Region Palette',
+      id: 'mineradio-custom',
+      __primaryColor: primary,
+      uBaseColor1: mixHex('#000000', base, 0.20),
+      uBaseColor2: mixHex(base, primary, 0.22),
+      uCoolCore: cool,
+      uCoolEdge: mixHex('#000000', cool, 0.48),
+      uWarmCore: warm,
+      uWarmEdge: mixHex('#000000', warm, 0.56),
+      uRippleColor: ripple,
+      uPeakColor: peak,
+      uGlowIntensity: Number(glow.toFixed(3))
+    };
+  }
+
+  function workshopRegionHex(fx, role, colorKey, modeKey, fallback) {
+    fallback = normalizeHex(fallback || '#cb6c89', '#cb6c89');
+    if (fx && fx[modeKey] === 'custom') return cssColorToHex(fx[colorKey] || fallback, fallback);
+    return workshopCoverHex(role) || fallback;
+  }
+
+  function workshopRegionsFromFx(fx) {
+    fx = fx || {};
+    var customTheme = normalizeWorkshopTheme(fx.sonicWorkshopTheme);
+    var themeHex = workshopThemeColor(customTheme);
+    var primary = fx.sonicWorkshopColorMode === 'custom'
+      ? cssColorToHex(fx.sonicWorkshopCustomColor || themeHex, themeHex)
+      : workshopCoverHex('primary');
+    primary = normalizeHex(primary, '#cb6c89');
+    return {
+      primary: primary,
+      base: workshopRegionHex(fx, 'base', 'sonicWorkshopBaseColor', 'sonicWorkshopBaseColorMode', mixHex('#000000', primary, 0.12)),
+      warm: workshopRegionHex(fx, 'warm', 'sonicWorkshopWarmColor', 'sonicWorkshopWarmColorMode', primary),
+      cool: workshopRegionHex(fx, 'cool', 'sonicWorkshopCoolColor', 'sonicWorkshopCoolColorMode', '#99c4ff'),
+      ripple: workshopRegionHex(fx, 'ripple', 'sonicWorkshopRippleColor', 'sonicWorkshopRippleColorMode', '#f8d8ff'),
+      peak: workshopRegionHex(fx, 'peak', 'sonicWorkshopPeakColor', 'sonicWorkshopPeakColorMode', '#99c4ff')
+    };
+  }
+
+  var WORKSHOP_THEME_COLOR_KEYS = ['uBaseColor1', 'uBaseColor2', 'uCoolCore', 'uCoolEdge', 'uWarmCore', 'uWarmEdge', 'uRippleColor', 'uPeakColor'];
+
+  function workshopThemeSignature(theme) {
+    theme = theme || {};
+    return JSON.stringify(WORKSHOP_THEME_COLOR_KEYS.map(function (key) {
+      return normalizeHex(theme[key] || '#000000', '#000000');
+    }).concat([Number(theme.uGlowIntensity) || 1, normalizeHex(theme.__primaryColor || '#cb6c89', '#cb6c89')]));
+  }
+
+  function cloneWorkshopTheme(theme) {
+    theme = theme || workshopCustomThemeForColor('#cb6c89');
+    var out = {
+      name: theme.name || 'Mineradio Region Palette',
+      id: theme.id || 'mineradio-custom',
+      __primaryColor: normalizeHex(theme.__primaryColor || '#cb6c89', '#cb6c89'),
+      uGlowIntensity: Number(theme.uGlowIntensity) || 1
+    };
+    WORKSHOP_THEME_COLOR_KEYS.forEach(function (key) {
+      out[key] = normalizeHex(theme[key] || '#000000', '#000000');
+    });
+    return out;
+  }
+
+  function mixWorkshopTheme(from, to, t) {
+    from = cloneWorkshopTheme(from);
+    to = cloneWorkshopTheme(to);
+    t = clamp01(t);
+    var out = {
+      name: to.name || from.name || 'Mineradio Region Palette',
+      id: to.id || from.id || 'mineradio-custom',
+      __primaryColor: mixHex(from.__primaryColor, to.__primaryColor, t),
+      uGlowIntensity: Number((from.uGlowIntensity + (to.uGlowIntensity - from.uGlowIntensity) * t).toFixed(3))
+    };
+    WORKSHOP_THEME_COLOR_KEYS.forEach(function (key) {
+      out[key] = mixHex(from[key], to[key], t);
+    });
+    return out;
+  }
+
+  function workshopEase(t) {
+    t = clamp01(t);
+    return 0.5 - Math.cos(Math.PI * t) * 0.5;
+  }
+
+  function scheduleWorkshopThemeTransition() {
+    if (!state.themeTransition || state.themeTransitionRaf) return;
+    var raf = global.requestAnimationFrame || function (fn) { return setTimeout(function () { fn(nowMs()); }, 33); };
+    state.themeTransitionRaf = raf(function () {
+      state.themeTransitionRaf = 0;
+      if (state.themeTransition) pushProperties(true);
+    });
+  }
+
+  function applyWorkshopThemeTransition(props) {
+    if (!props || !props.mineradioCustomTheme) return props;
+    var target = cloneWorkshopTheme(props.mineradioCustomTheme);
+    state.displayedTheme = target;
+    state.themeTransition = null;
+    props.mineradioCustomTheme = target;
+    props.schemecolor = hexToSchemeColor(target.__primaryColor);
+    return props;
+  }
+
+  function buildMediaState() {
+    var song = currentSong();
+    var cover = '';
+    if (song && typeof global.songCoverSrc === 'function') cover = global.songCoverSrc(song, 512) || '';
+    if (!cover && song && song.cover) {
+      cover = typeof global.coverUrlWithSize === 'function' ? global.coverUrlWithSize(song.cover, 512) : song.cover;
+    }
+    var pal = global.stageLyrics && (global.stageLyrics.coverPalette || global.stageLyrics.palette) || {};
+    var duration = global.audio && isFinite(global.audio.duration) ? Number(global.audio.duration) : Number(song && (song.duration || song.durationSec || 0)) || 0;
+    if (duration > 10000) duration /= 1000;
+    return {
+      title: String((song && (song.name || song.title)) || ''),
+      artist: String((song && (song.artist || song.ar || song.author)) || ''),
+      thumbnail: cover || '',
+      primaryColor: cssColorToHex(pal.primary || pal.secondary || pal.highlight, '#6bd9ff'),
+      textColor: cssColorToHex(pal.highlight || pal.primary, '#f8fbff'),
+      isPlaying: !!(global.playing && global.audio && !global.audio.paused),
+      position: global.audio && isFinite(global.audio.currentTime) ? Number(global.audio.currentTime) : 0,
+      duration: duration
+    };
+  }
+
+  function postMessage(type, payload) {
+    var frame = state.iframe && state.iframe.contentWindow;
+    if (!frame) return;
+    try {
+      if (type === 'mineradio-sonic-workshop-audio' && typeof frame.__mineradioApplyAudio === 'function') {
+        frame.__mineradioApplyAudio(payload.samples);
+        return;
+      }
+      if (type === 'mineradio-sonic-workshop-media' && typeof frame.__mineradioApplyMedia === 'function') {
+        frame.__mineradioApplyMedia(payload.media);
+        return;
+      }
+      if (type === 'mineradio-sonic-workshop-properties' && typeof frame.__mineradioApplyProperties === 'function') {
+        frame.__mineradioApplyProperties(payload.properties);
+        return;
+      }
+    } catch (e) {}
+    try { frame.postMessage(Object.assign({ type: type }, payload), '*'); } catch (e2) {}
+  }
+
+  function ensureLayer() {
+    if (state.layer && state.iframe) return;
+    var layer = document.getElementById(MOUNT_ID);
+    if (!layer) {
+      layer = document.createElement('div');
+      layer.id = MOUNT_ID;
+      layer.setAttribute('aria-hidden', 'true');
+      layer.setAttribute('inert', '');
+      layer.tabIndex = -1;
+      layer.style.pointerEvents = 'none';
+      layer.style.userSelect = 'none';
+      layer.style.webkitUserSelect = 'none';
+      var canvasAnchor = document.getElementById('canvas-container');
+      if (canvasAnchor && canvasAnchor.parentNode) canvasAnchor.parentNode.insertBefore(layer, canvasAnchor);
+      else document.body.insertBefore(layer, document.body.firstChild);
+    }
+    layer.style.opacity = '0';
+    layer.style.pointerEvents = 'none';
+    layer.setAttribute('inert', '');
+    var iframe = layer.querySelector('iframe');
+    if (!iframe) {
+      iframe = document.createElement('iframe');
+      iframe.setAttribute('title', 'Sonic Workshop Visual');
+      iframe.setAttribute('aria-hidden', 'true');
+      iframe.setAttribute('tabindex', '-1');
+      iframe.setAttribute('inert', '');
+      iframe.setAttribute('allow', 'autoplay');
+      iframe.setAttribute('frameborder', '0');
+      iframe.draggable = false;
+      iframe.tabIndex = -1;
+      iframe.style.pointerEvents = 'none';
+      iframe.style.userSelect = 'none';
+      iframe.style.webkitUserSelect = 'none';
+      iframe.src = BRIDGE_SRC;
+      layer.appendChild(iframe);
+    }
+    iframe.style.pointerEvents = 'none';
+    iframe.setAttribute('inert', '');
+    iframe.onload = function () {
+      state.ready = true;
+      pushProperties(true);
+      pushMedia(true);
+      pushAudio(true);
+    };
+    state.layer = layer;
+    state.iframe = iframe;
+  }
+
+  function removeLayer() {
+    if (state.themeTransitionRaf) {
+      try {
+        if (global.cancelAnimationFrame) global.cancelAnimationFrame(state.themeTransitionRaf);
+        else clearTimeout(state.themeTransitionRaf);
+      } catch (e) {}
+    }
+    if (state.layer && state.layer.parentNode) state.layer.parentNode.removeChild(state.layer);
+    state.layer = null;
+    state.iframe = null;
+    state.ready = false;
+    state.lastMediaKey = '';
+    state.lastPropertiesKey = '';
+    state.displayedTheme = null;
+    state.themeTransition = null;
+    state.themeTransitionRaf = 0;
+  }
+
+  function bodyClass(active) {
+    if (document && document.body) document.body.classList.toggle('sonic-workshop-active', !!active);
+  }
+
+  function deriveProperties(fx) {
+    fx = fx || {};
+    var coverHexes = workshopPaletteHexesFromCover();
+    var props = Object.assign({}, WORKSHOP_DEFAULT_PROPERTIES);
+    props.audioIntensity = clamp(fx.sonicWorkshopAudioIntensity == null ? props.audioIntensity : Number(fx.sonicWorkshopAudioIntensity), 0.3, 2.5);
+    props.responseRange = clamp(fx.sonicWorkshopResponseRange == null ? props.responseRange : Number(fx.sonicWorkshopResponseRange), 0.3, 2);
+    props.peakColorIntensity = clamp(fx.sonicWorkshopPeakIntensity == null ? props.peakColorIntensity : Number(fx.sonicWorkshopPeakIntensity), 0, 1.4);
+    var customTheme = normalizeWorkshopTheme(fx.sonicWorkshopTheme);
+    var regions = workshopRegionsFromFx(fx);
+    var colorHex = normalizeHex(regions.primary, '#cb6c89');
+    var paletteHexes = [
+      regions.primary,
+      regions.base,
+      regions.warm,
+      regions.cool,
+      regions.ripple,
+      regions.peak
+    ];
+    coverHexes.forEach(function (hex) {
+      if (!hex) return;
+      var key = hex.toLowerCase();
+      for (var i = 0; i < paletteHexes.length; i++) {
+        if (paletteHexes[i] && paletteHexes[i].toLowerCase() === key) return;
+      }
+      paletteHexes.push(hex);
+    });
+    props.theme = 'mineradio-custom';
+    props.mineradioCustomTheme = workshopCustomThemeForRegions(regions);
+    props.schemecolor = hexToSchemeColor(colorHex);
+    props.__mineradioColorHex = colorHex;
+    props.__mineradioPaletteHexes = paletteHexes.join(',');
+    props.__mineradioNearestTheme = fx.sonicWorkshopColorMode === 'custom' ? customTheme : workshopThemeForColor(colorHex);
+    return props;
+  }
+
+  function pushProperties(force) {
+    if (!state.iframe) return;
+    var props = applyWorkshopThemeTransition(deriveProperties(global.fx || {}));
+    var key = JSON.stringify(props);
+    var now = nowMs();
+    if (!force && key === state.lastPropertiesKey && now - state.lastPropertiesAt < PROPERTIES_PUSH_INTERVAL_MS) return;
+    state.lastPropertiesKey = key;
+    state.lastPropertiesAt = now;
+    postMessage('mineradio-sonic-workshop-properties', { properties: props });
+  }
+
+  function pushMedia(force) {
+    if (!state.iframe) return;
+    var media = buildMediaState();
+    var key = [
+      media.title,
+      media.artist,
+      media.thumbnail,
+      media.primaryColor,
+      media.textColor,
+      media.isPlaying ? 1 : 0,
+      Math.round(media.duration || 0),
+      Math.floor((media.position || 0) * 2) / 2
+    ].join('|');
+    var now = nowMs();
+    if (!force && key === state.lastMediaKey && now - state.lastMediaAt < MEDIA_PUSH_INTERVAL_MS) return;
+    state.lastMediaKey = key;
+    state.lastMediaAt = now;
+    state.media = media;
+    postMessage('mineradio-sonic-workshop-media', { media: media });
+  }
+
+  function rawAudioArray() {
+    if (global.frequencyData && global.frequencyData.length) return global.frequencyData;
+    return null;
+  }
+
+  function frameValue(audioFrame, key) {
+    return audioFrame && isFinite(audioFrame[key]) ? Number(audioFrame[key]) : 0;
+  }
+
+  function rawBinValue(raw, idx) {
+    var value = Number(raw[idx]) || 0;
+    return clamp01(value > 1 ? value / 255 : value);
+  }
+
+  function workshopAudioFrameStats(raw) {
+    var len = raw && raw.length || 0;
+    var sum = 0;
+    var max = 0;
+    if (!len) return { mean: 0, max: 0, floor: WORKSHOP_AUDIO_MIN_FLOOR, peakFloor: 0.38, bodyGain: WORKSHOP_AUDIO_BODY_GAIN };
+    for (var i = 0; i < 512; i++) {
+      var idx = Math.min(len - 1, Math.floor(i * len / 512));
+      var v = rawBinValue(raw, idx);
+      sum += v;
+      if (v > max) max = v;
+    }
+    var mean = sum / 512;
+    return {
+      mean: mean,
+      max: max,
+      floor: clamp(Math.max(WORKSHOP_AUDIO_MIN_FLOOR, mean * 0.48), WORKSHOP_AUDIO_MIN_FLOOR, 0.20),
+      peakFloor: clamp(Math.max(0.38, mean * 1.72), 0.38, 0.76),
+      bodyGain: clamp(WORKSHOP_AUDIO_BODY_GAIN - mean * 0.10, 0.28, WORKSHOP_AUDIO_BODY_GAIN)
+    };
+  }
+
+  function shapeWorkshopAudioValue(value, i, stats, beat, bassDrive) {
+    var floor = stats && isFinite(stats.floor) ? stats.floor : WORKSHOP_AUDIO_MIN_FLOOR;
+    var body = Math.pow(clamp01((value - floor) / Math.max(0.001, 1 - floor)), WORKSHOP_AUDIO_GAMMA);
+    var peakFloor = stats && isFinite(stats.peakFloor) ? stats.peakFloor : 0.38;
+    var peak = Math.pow(clamp01((value - peakFloor) / Math.max(0.001, 1 - peakFloor)), 1.08);
+    var lowLift = i < 36 ? (1 - i / 36) * (beat * WORKSHOP_AUDIO_LOW_LIFT + bassDrive * 0.022) : 0;
+    var shaped = body * (stats && stats.bodyGain || WORKSHOP_AUDIO_BODY_GAIN) + peak * WORKSHOP_AUDIO_PEAK_GAIN + lowLift;
+    return clamp(shaped, 0, WORKSHOP_AUDIO_TARGET_MAX_SAMPLE);
+  }
+
+  function buildAudioSamples(audioFrame) {
+    var raw = rawAudioArray();
+    var out = new Array(512);
+    var inputGainValue = global.fx && global.fx.sonicWorkshopInputGain != null ? Number(global.fx.sonicWorkshopInputGain) : 82;
+    var inputGain = clamp(inputGainValue, 40, 100) / 100;
+    var beat = Math.max(frameValue(audioFrame, 'beat'), frameValue(audioFrame, 'kickEnvelope'), frameValue(audioFrame, 'triggerPulse'));
+    var bassDrive = Math.max(frameValue(audioFrame, 'subBass'), frameValue(audioFrame, 'bass'));
+    if (raw && raw.length) {
+      var len = raw.length;
+      var stats = workshopAudioFrameStats(raw);
+      for (var i = 0; i < 512; i++) {
+        var idx = Math.min(len - 1, Math.floor(i * len / 512));
+        out[i] = shapeWorkshopAudioValue(rawBinValue(raw, idx), i, stats, beat, bassDrive) * inputGain;
+      }
+    } else {
+      var bands = [
+        frameValue(audioFrame, 'subBass') || frameValue(audioFrame, 'bass'),
+        frameValue(audioFrame, 'bass'),
+        frameValue(audioFrame, 'lowMid') || frameValue(audioFrame, 'mid'),
+        frameValue(audioFrame, 'mid'),
+        frameValue(audioFrame, 'highMid') || frameValue(audioFrame, 'treble'),
+        frameValue(audioFrame, 'presence') || frameValue(audioFrame, 'treble'),
+        frameValue(audioFrame, 'brilliance') || frameValue(audioFrame, 'treble'),
+        frameValue(audioFrame, 'air') || frameValue(audioFrame, 'treble')
+      ];
+      for (var j = 0; j < 512; j++) {
+        var bandPos = j / 511 * (bands.length - 1);
+        var bandIndex = Math.floor(bandPos);
+        var mix = bandPos - bandIndex;
+        var a = bands[bandIndex] || 0;
+        var b = bands[Math.min(bands.length - 1, bandIndex + 1)] || a;
+        var v = a + (b - a) * mix;
+        var fallbackLift = j < 36 ? beat * (1 - j / 36) * WORKSHOP_AUDIO_LOW_LIFT : 0;
+        out[j] = clamp(Math.pow(clamp01(v), 1.35) * 0.30 + fallbackLift, 0, WORKSHOP_AUDIO_TARGET_MAX_SAMPLE) * inputGain;
+      }
+    }
+    if (!(global.playing && global.audio && !global.audio.paused)) {
+      for (var k = 0; k < out.length; k++) out[k] = out[k] * WORKSHOP_AUDIO_PAUSED_GAIN;
+    }
+    state.samples = out;
+    return out;
+  }
+
+  function pushAudio(force, audioFrame) {
+    if (!state.iframe) return;
+    var now = nowMs();
+    if (!force && now - state.lastAudioAt < AUDIO_PUSH_INTERVAL_MS) return;
+    state.lastAudioAt = now;
+    postMessage('mineradio-sonic-workshop-audio', { samples: buildAudioSamples(audioFrame || {}) });
+  }
+
+  function update(dt, ctx) {
+    ctx = ctx || {};
+    var targetActive = isActive(ctx.fx || global.fx);
+    state.active = targetActive;
+    bodyClass(targetActive || state.opacity > 0.02);
+    if (targetActive) ensureLayer();
+    var targetOpacity = targetActive ? 1 : 0;
+    var rate = targetOpacity > state.opacity ? 7.5 : 5.0;
+    state.opacity += (targetOpacity - state.opacity) * clamp(1 - Math.exp(-rate * Math.max(0.001, dt || 1 / 60)), 0, 1);
+    if (state.layer) state.layer.style.opacity = state.opacity.toFixed(3);
+    if (targetActive) {
+      pushProperties(false);
+      pushMedia(false);
+      pushAudio(false, ctx.audio);
+    } else if (state.layer && state.opacity <= 0.01) {
+      removeLayer();
+      bodyClass(false);
+    }
+  }
+
+  function clear() {
+    state.active = false;
+    state.opacity = 0;
+    bodyClass(false);
+    removeLayer();
+  }
+
+  function onPresetChange(prev, next, opts) {
+    if (Number(next) === INDEX) {
+      ensureLayer();
+      state.opacity = Math.max(state.opacity, 0.001);
+      bodyClass(true);
+      pushProperties(true);
+      pushMedia(true);
+      pushAudio(true, opts && opts.audio);
+    } else if (Number(prev) === INDEX) {
+      state.active = false;
+      bodyClass(true);
+    }
+  }
+
+  global.addEventListener && global.addEventListener('message', function (event) {
+    var data = event && event.data || {};
+    if (data.type === 'mineradio-sonic-workshop-ready') {
+      state.ready = true;
+      pushProperties(true);
+      pushMedia(true);
+      pushAudio(true);
+    }
+  });
+
+  global.MineradioSonicWorkshop = {
+    INDEX: INDEX,
+    isActive: isActive,
+    update: update,
+    clear: clear,
+    pushProperties: function (force) { pushProperties(force === true); },
+    onPresetChange: onPresetChange
+  };
+})(window);
 ;
 
 // ==================== 03-beat/06-sonic-audio-monitor.js ====================
@@ -31176,4 +34769,4151 @@ function avatarSrc(url) {
 
 // ============================================================
 //  搜索
+;
+
+// ==================== 05-playback/07-audio-output-ui.js ====================
+// Ported from Mineradio 2.2.0, GPL-3.0, 05-playback/00-api-quality-output.js:335-992
+// （音频输出/音频路由 Patch Bay UI 段整段照抄；该文件其余网络层部分不移植）
+// 依赖补齐（08-account/01-login-modal-utils.js:2-54 原文照抄；仅这两函数被本段调用）
+function openGsapModal(mask) {
+  if (!mask) return;
+  var panel = mask.querySelector('.modal');
+  mask.classList.add('show');
+  if (window.gsap) {
+    window.gsap.killTweensOf(mask);
+    if (panel) window.gsap.killTweensOf(panel);
+    window.gsap.set(mask, { display: 'flex', visibility: 'visible' });
+    window.gsap.fromTo(mask,
+      { autoAlpha: 0 },
+      { autoAlpha: 1, duration: 0.38, ease: 'power2.out', overwrite: true }
+    );
+    if (panel) {
+      window.gsap.fromTo(panel,
+        { autoAlpha: 0, y: 26, scale: 0.965, filter: 'blur(12px)' },
+        { autoAlpha: 1, y: 0, scale: 1, filter: 'blur(0px)', duration: 0.68, ease: 'expo.out', overwrite: true }
+      );
+    }
+  } else {
+    mask.style.display = 'flex';
+    mask.style.visibility = 'visible';
+    mask.style.opacity = '1';
+  }
+}
+function closeGsapModal(mask, afterClose) {
+  if (!mask || !mask.classList.contains('show')) {
+    if (afterClose) afterClose();
+    return;
+  }
+  var panel = mask.querySelector('.modal');
+  function finish() {
+    mask.classList.remove('show');
+    if (window.gsap) {
+      window.gsap.set(mask, { clearProps: 'display,visibility,opacity' });
+      if (panel) window.gsap.set(panel, { clearProps: 'opacity,visibility,transform,filter' });
+    } else {
+      mask.style.display = '';
+      mask.style.visibility = '';
+      mask.style.opacity = '';
+    }
+    if (afterClose) afterClose();
+  }
+  if (window.gsap) {
+    window.gsap.killTweensOf(mask);
+    if (panel) {
+      window.gsap.killTweensOf(panel);
+      window.gsap.to(panel, { autoAlpha: 0, y: 18, scale: 0.976, filter: 'blur(8px)', duration: 0.28, ease: 'power2.in', overwrite: true });
+    }
+    window.gsap.to(mask, { autoAlpha: 0, duration: 0.34, ease: 'power2.inOut', overwrite: true, onComplete: finish });
+  } else {
+    finish();
+  }
+}
+var audioRouteWorkflowDrag = null;
+function audioRoutePointForPort(port, root) {
+  if (!port || !root) return null;
+  var portRect = port.getBoundingClientRect();
+  var rootRect = root.getBoundingClientRect();
+  return {
+    x: portRect.left + portRect.width / 2 - rootRect.left,
+    y: portRect.top + portRect.height / 2 - rootRect.top
+  };
+}
+function audioRoutePointFromEvent(e, root) {
+  if (!e || !root) return null;
+  var rootRect = root.getBoundingClientRect();
+  return { x: e.clientX - rootRect.left, y: e.clientY - rootRect.top };
+}
+function audioRouteBezierPath(a, b) {
+  var dx = Math.max(42, Math.abs(b.x - a.x) * 0.42);
+  return 'M ' + a.x.toFixed(1) + ' ' + a.y.toFixed(1) +
+    ' C ' + (a.x + dx).toFixed(1) + ' ' + a.y.toFixed(1) +
+    ', ' + (b.x - dx).toFixed(1) + ' ' + b.y.toFixed(1) +
+    ', ' + b.x.toFixed(1) + ' ' + b.y.toFixed(1);
+}
+function appendAudioRoutePath(svg, from, to, className) {
+  if (!svg || !from || !to) return;
+  var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', audioRouteBezierPath(from, to));
+  path.setAttribute('class', className || 'workflow-link');
+  svg.appendChild(path);
+}
+function audioRoutePortByAttr(root, attr, value) {
+  var ports = root ? root.querySelectorAll('.flow-port.in[' + attr + ']') : [];
+  value = String(value || '');
+  for (var i = 0; i < ports.length; i += 1) {
+    if (String(ports[i].getAttribute(attr) || '') === value) return ports[i];
+  }
+  return null;
+}
+function renderAudioRouteWorkflowEdgesForRoot(root, tempPoint) {
+  if (!root) return;
+  var svg = root.querySelector('#audio-route-workflow-svg');
+  if (!svg) return;
+  svg.setAttribute('viewBox', '0 0 ' + Math.max(1, root.clientWidth || 1) + ' ' + Math.max(1, root.clientHeight || 1));
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  var sourceOut = root.querySelector('[data-audio-route-source="player"]');
+  var sourcePoint = audioRoutePointForPort(sourceOut, root);
+  var primaryPort = audioRoutePortByAttr(root, 'data-output-primary-target', audioOutputDeviceId || '');
+  appendAudioRoutePath(svg, sourcePoint, audioRoutePointForPort(primaryPort, root), 'workflow-link active primary');
+  normalizeAudioOutputIdList(audioOutputMirrorDeviceIds).forEach(function (id) {
+    if (!id || id === (audioOutputDeviceId || '')) return;
+    appendAudioRoutePath(svg, sourcePoint, audioRoutePointForPort(audioRoutePortByAttr(root, 'data-output-mirror-target', id), root), audioOutputMirrorRouteClass(id));
+  });
+  if (audioInputBridgeState && audioInputBridgeState.enabled && audioInputBridgeState.deviceId) {
+    appendAudioRoutePath(svg, sourcePoint, audioRoutePointForPort(audioRoutePortByAttr(root, 'data-input-bridge-target', audioInputBridgeState.deviceId), root), 'workflow-link active bridge');
+  }
+  if (audioRouteWorkflowDrag && audioRouteWorkflowDrag.root === root && tempPoint) {
+    appendAudioRoutePath(svg, audioRoutePointForPort(audioRouteWorkflowDrag.port, root), tempPoint, 'workflow-link temp');
+  }
+}
+function renderAudioRouteWorkflowEdges(tempPoint) {
+  var roots = document.querySelectorAll('.audio-route-graph');
+  Array.prototype.forEach.call(roots, function (root) {
+    renderAudioRouteWorkflowEdgesForRoot(root, tempPoint);
+  });
+}
+function finishAudioRouteWorkflowDrag(e) {
+  if (!audioRouteWorkflowDrag) return;
+  var root = audioRouteWorkflowDrag.root;
+  var target = document.elementFromPoint(e.clientX, e.clientY);
+  var port = target && target.closest ? target.closest('.flow-port.in') : null;
+  if (root && port && root.contains(port)) {
+    if (port.hasAttribute('data-output-primary-target')) {
+      setAudioOutputDevice(port.getAttribute('data-output-primary-target') || '', true);
+    } else if (port.hasAttribute('data-output-mirror-target')) {
+      toggleAudioOutputMirrorDevice(port.getAttribute('data-output-mirror-target') || '');
+    } else if (port.hasAttribute('data-input-bridge-target')) {
+      setAudioInputBridgeDevice(port.getAttribute('data-input-bridge-target') || '', true);
+    }
+  }
+  if (root) root.classList.remove('dragging-line');
+  audioRouteWorkflowDrag = null;
+  try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) { }
+  requestAnimationFrame(renderAudioRouteWorkflowEdges);
+}
+function bindAudioRouteWorkflowPointerEvents(outputList) {
+  if (!outputList || outputList._routeWorkflowBound) return;
+  outputList._routeWorkflowBound = true;
+  outputList.addEventListener('pointerdown', function (e) {
+    var port = e.target && e.target.closest ? e.target.closest('.flow-port.out[data-audio-route-source]') : null;
+    if (!port || !outputList.contains(port)) return;
+    var root = port.closest('.audio-route-graph');
+    audioRouteWorkflowDrag = { root: root, port: port };
+    if (root) root.classList.add('dragging-line');
+    try { outputList.setPointerCapture(e.pointerId); } catch (_) { }
+    e.preventDefault();
+    e.stopPropagation();
+    renderAudioRouteWorkflowEdges(root ? audioRoutePointFromEvent(e, root) : null);
+  });
+  outputList.addEventListener('pointermove', function (e) {
+    if (!audioRouteWorkflowDrag || !audioRouteWorkflowDrag.root) return;
+    e.preventDefault();
+    renderAudioRouteWorkflowEdges(audioRoutePointFromEvent(e, audioRouteWorkflowDrag.root));
+  });
+  outputList.addEventListener('pointerup', finishAudioRouteWorkflowDrag);
+  outputList.addEventListener('pointercancel', function (e) {
+    if (audioRouteWorkflowDrag && audioRouteWorkflowDrag.root) audioRouteWorkflowDrag.root.classList.remove('dragging-line');
+    audioRouteWorkflowDrag = null;
+    try { outputList.releasePointerCapture(e.pointerId); } catch (_) { }
+    renderAudioRouteWorkflowEdges();
+  });
+  if (!bindAudioRouteWorkflowPointerEvents._resizeBound) {
+    bindAudioRouteWorkflowPointerEvents._resizeBound = true;
+    window.addEventListener('resize', function () { requestAnimationFrame(renderAudioRouteWorkflowEdges); });
+    window.addEventListener('orientationchange', function () { requestAnimationFrame(renderAudioRouteWorkflowEdges); });
+  }
+}
+function bindAudioRouteSelectionEvents(container) {
+  if (container && !container._audioRouteSelectBound) {
+    container._audioRouteSelectBound = true;
+    container.addEventListener('click', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('[data-output-primary],[data-output-mirror],[data-input-bridge]') : null;
+      if (!btn || !container.contains(btn)) return;
+      if (btn.hasAttribute('data-output-primary')) {
+        setAudioOutputDevice(btn.getAttribute('data-output-primary') || '', true);
+        return;
+      }
+      if (btn.hasAttribute('data-output-mirror')) {
+        toggleAudioOutputMirrorDevice(btn.getAttribute('data-output-mirror') || '');
+        return;
+      }
+      if (btn.hasAttribute('data-input-bridge')) {
+        setAudioInputBridgeDevice(btn.getAttribute('data-input-bridge') || '', true);
+      }
+    });
+  }
+}
+function bindAudioOutputControls() {
+  var outputList = document.getElementById('audio-output-list');
+  var workflowBody = document.getElementById('audio-output-workflow-body');
+  bindAudioRouteSelectionEvents(outputList);
+  bindAudioRouteSelectionEvents(workflowBody);
+  bindAudioRouteWorkflowPointerEvents(outputList);
+  bindAudioRouteWorkflowPointerEvents(workflowBody);
+  renderAudioOutputDeviceUi();
+  refreshAudioOutputDevices(false);
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener && !bindAudioOutputControls._deviceChangeBound) {
+    bindAudioOutputControls._deviceChangeBound = true;
+    navigator.mediaDevices.addEventListener('devicechange', function () { refreshAudioOutputDevices(false); });
+  }
+}
+function readAudioOutputDevicePreference() {
+  try { return localStorage.getItem(AUDIO_OUTPUT_DEVICE_STORE_KEY) || ''; } catch (e) { return ''; }
+}
+function saveAudioOutputDevicePreference() {
+  try { localStorage.setItem(AUDIO_OUTPUT_DEVICE_STORE_KEY, audioOutputDeviceId || ''); } catch (e) { }
+}
+function normalizeAudioOutputIdList(list) {
+  var seen = {};
+  return (Array.isArray(list) ? list : []).map(function (id) { return String(id || '').trim(); }).filter(function (id) {
+    if (!id || seen[id]) return false;
+    seen[id] = true;
+    return true;
+  }).slice(0, 4);
+}
+function readAudioOutputMirrorPreference() {
+  try {
+    return normalizeAudioOutputIdList(JSON.parse(localStorage.getItem(AUDIO_OUTPUT_MIRROR_STORE_KEY) || '[]'));
+  } catch (e) { return []; }
+}
+function saveAudioOutputMirrorPreference() {
+  try { localStorage.setItem(AUDIO_OUTPUT_MIRROR_STORE_KEY, JSON.stringify(normalizeAudioOutputIdList(audioOutputMirrorDeviceIds))); } catch (e) { }
+}
+function audioOutputMirrorSinkSupported() {
+  return typeof HTMLMediaElement !== 'undefined' && HTMLMediaElement.prototype && typeof HTMLMediaElement.prototype.setSinkId === 'function';
+}
+function audioOutputMirrorReadableError(e) {
+  var name = e && e.name ? String(e.name) : '';
+  if (name === 'NotAllowedError') return '没有输出权限';
+  if (name === 'NotFoundError') return '设备不可用';
+  if (name === 'AbortError') return '切换失败';
+  if (name === 'NotSupportedError') return '内核不支持';
+  return '播放失败';
+}
+function markAudioOutputMirrorRuntime(id, state, message) {
+  id = String(id || '');
+  if (!id) return;
+  if (!audioOutputMirrorRuntime) audioOutputMirrorRuntime = {};
+  var prev = audioOutputMirrorRuntime[id] || {};
+  message = String(message || '');
+  if (prev.state === state && prev.message === message) return;
+  audioOutputMirrorRuntime[id] = { state: state, message: message, at: Date.now() };
+  if (markAudioOutputMirrorRuntime.renderPending) return;
+  markAudioOutputMirrorRuntime.renderPending = true;
+  var schedule = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : function (fn) { return setTimeout(fn, 16); };
+  schedule(function () {
+    markAudioOutputMirrorRuntime.renderPending = false;
+    renderAudioOutputDeviceUi();
+    renderAudioRouteWorkflowEdges();
+  });
+}
+function audioOutputMirrorRuntimeFor(id) {
+  id = String(id || '');
+  return audioOutputMirrorRuntime && audioOutputMirrorRuntime[id] || null;
+}
+function audioOutputMirrorConfirmedCount(ids) {
+  return normalizeAudioOutputIdList(ids).filter(function (id) {
+    var rt = audioOutputMirrorRuntimeFor(id);
+    return rt && rt.state === 'playing';
+  }).length;
+}
+function audioOutputMirrorRouteClass(id) {
+  var rt = audioOutputMirrorRuntimeFor(id);
+  if (rt && rt.state === 'playing') return 'workflow-link active mirror';
+  return 'workflow-link pending mirror';
+}
+function audioOutputMirrorStatusText(id, active, disabled) {
+  if (disabled) return '已作为主输出，不能再镜像';
+  if (!active) return '实验：复制播放流，不是系统级路由';
+  if (!audioOutputMirrorSinkSupported()) return '当前内核不支持镜像监听';
+  var src = audio && (audio.currentSrc || audio.src || '');
+  if (!audio || !src) return '待播放时尝试镜像';
+  var rt = audioOutputMirrorRuntimeFor(id);
+  if (!rt) return '待确认镜像监听';
+  if (rt.state === 'playing') return '镜像监听已确认';
+  if (rt.state === 'paused') return '随主播放器暂停';
+  if (rt.state === 'sink-ready') return '设备已选，等待播放';
+  if (rt.state === 'sink-pending' || rt.state === 'play-pending') return '正在尝试镜像监听';
+  if (rt.state === 'waiting') return '待播放时尝试镜像';
+  if (rt.state === 'sink-error' || rt.state === 'play-error' || rt.state === 'unsupported') return '镜像失败：' + (rt.message || '请换接口');
+  return '待确认镜像监听';
+}
+function readAudioInputBridgePreference() {
+  try {
+    var parsed = JSON.parse(localStorage.getItem(AUDIO_INPUT_BRIDGE_STORE_KEY) || '{}');
+    return { enabled: !!parsed.enabled, deviceId: String(parsed.deviceId || '') };
+  } catch (e) {
+    return { enabled: false, deviceId: '' };
+  }
+}
+function saveAudioInputBridgePreference() {
+  try { localStorage.setItem(AUDIO_INPUT_BRIDGE_STORE_KEY, JSON.stringify(audioInputBridgeState || { enabled: false, deviceId: '' })); } catch (e) { }
+}
+function audioOutputDeviceById(deviceId) {
+  deviceId = String(deviceId || '');
+  return (audioOutputDevices || []).filter(function (device) { return device && device.deviceId === deviceId; })[0] || null;
+}
+function isVirtualMicOutputDevice(device) {
+  var label = String(device && device.label || '').toLowerCase();
+  return /cable input|vb-audio|voicemeeter|virtual|loopback|blackhole|sonar|stereo mix|立体声混音|虚拟|线缆/.test(label);
+}
+function recommendedAudioInputBridgeDeviceId() {
+  var selected = audioInputBridgeState && audioInputBridgeState.deviceId;
+  if (selected && audioOutputDeviceById(selected)) return selected;
+  var virtual = (audioOutputDevices || []).filter(isVirtualMicOutputDevice)[0];
+  return virtual && virtual.deviceId || '';
+}
+function audioInputDeviceLabel(device, index) {
+  if (!device || !device.deviceId) return '输入设备';
+  return device.label || ('输入设备 ' + (index + 1));
+}
+function audioOutputDeviceStatusText() {
+  if (audioInputBridgeState && audioInputBridgeState.enabled) {
+    var bridgeDevice = audioOutputDeviceById(audioInputBridgeState.deviceId);
+    return bridgeDevice ? ('已桥接到 ' + audioOutputDeviceLabel(bridgeDevice, 0)) : '输入桥接等待虚拟设备';
+  }
+  if (audioOutputDeviceId) {
+    var primary = audioOutputDeviceById(audioOutputDeviceId);
+    return primary ? ('当前输出 ' + audioOutputDeviceLabel(primary, 0)) : '当前输出设备待恢复';
+  }
+  return '当前输出系统默认';
+}
+function audioOutputDeviceLabel(device, index) {
+  if (!device || !device.deviceId) return '系统默认';
+  return device.label || ('输出设备 ' + (index + 1));
+}
+function renderAudioOutputDeviceUi() {
+  var list = document.getElementById('audio-output-list');
+  if (!list) return;
+  var outputs = [{ deviceId: '', label: '系统默认' }].concat(audioOutputDevices || []);
+  var bridgeId = recommendedAudioInputBridgeDeviceId();
+  var bridgeEnabled = !!(audioInputBridgeState && audioInputBridgeState.enabled);
+  var mirrorIds = normalizeAudioOutputIdList(audioOutputMirrorDeviceIds);
+  var outputItems = outputs.map(function (device, index) {
+    return {
+      device: device,
+      index: index,
+      id: device && device.deviceId ? String(device.deviceId) : '',
+      label: audioOutputDeviceLabel(device, index)
+    };
+  });
+  function sortedRouteItems(items, rank) {
+    return items.slice().sort(function (a, b) {
+      var ra = rank(a);
+      var rb = rank(b);
+      if (ra !== rb) return ra - rb;
+      return String(a.label || '').localeCompare(String(b.label || ''), 'zh-Hans-CN');
+    });
+  }
+  var primaryItems = sortedRouteItems(outputItems, function (item) {
+    if (item.id === (audioOutputDeviceId || '')) return 0;
+    if (!item.id) return 1;
+    return 2;
+  });
+  var mirrorItems = sortedRouteItems(outputItems.filter(function (item) { return !!item.id; }), function (item) {
+    if (mirrorIds.indexOf(item.id) >= 0 && item.id !== (audioOutputDeviceId || '')) return 0;
+    if (isVirtualMicOutputDevice(item.device)) return 1;
+    if (item.id === (audioOutputDeviceId || '')) return 3;
+    return 2;
+  });
+  var primaryHtml = primaryItems.map(function (item) {
+    var device = item.device;
+    var index = item.index;
+    var id = device && device.deviceId ? String(device.deviceId) : '';
+    var active = id === (audioOutputDeviceId || '');
+    var virtualClass = device && device.deviceId && isVirtualMicOutputDevice(device) ? ' virtual' : '';
+    return '<button class="audio-route-node output workflow-node' + virtualClass + (active ? ' active connected' : '') + '" type="button" data-output-primary="' + escHtml(id) + '" title="' + escHtml(audioOutputDeviceLabel(device, index)) + '">' +
+      '<span class="flow-port in" data-output-primary-target="' + escHtml(id) + '" title="连接为主输出"></span><span class="route-node-icon">' + (id ? 'OUT' : 'SYS') + '</span><span class="route-node-text"><b>' + escHtml(audioOutputDeviceLabel(device, index)) + '</b><small>' + (active ? '主输出已连接' : '拖线连接主输出') + '</small></span>' +
+      '<span class="route-node-pulse"></span></button>';
+  }).join('');
+  var mirrorHtml = mirrorItems.map(function (item) {
+    var device = item.device;
+    var index = item.index;
+    var id = String(device.deviceId || '');
+    var disabled = id === (audioOutputDeviceId || '');
+    var active = mirrorIds.indexOf(id) >= 0 && !disabled;
+    var rt = audioOutputMirrorRuntimeFor(id);
+    var pendingClass = active && (!rt || rt.state !== 'playing') ? ' pending' : '';
+    var warningClass = active && rt && (rt.state === 'sink-error' || rt.state === 'play-error' || rt.state === 'unsupported') ? ' warning' : '';
+    return '<button class="audio-route-node mirror workflow-node' + (active ? ' active connected' : '') + pendingClass + warningClass + (disabled ? ' disabled' : '') + '" type="button" data-output-mirror="' + escHtml(id) + '" title="' + escHtml(audioOutputDeviceLabel(device, index)) + '">' +
+      '<span class="flow-port in" data-output-mirror-target="' + escHtml(id) + '" title="连接为实验镜像监听"></span><span class="route-node-icon">MON</span><span class="route-node-text"><b>' + escHtml(audioOutputDeviceLabel(device, index)) + '</b><small>' + escHtml(audioOutputMirrorStatusText(id, active, disabled)) + '</small></span>' +
+      '<span class="route-node-pulse"></span></button>';
+  }).join('');
+  var bridgeDevice = bridgeId ? audioOutputDeviceById(bridgeId) : null;
+  var bridgeLabel = bridgeDevice ? audioOutputDeviceLabel(bridgeDevice, 0) : '未检测到 VB-CABLE / VoiceMeeter';
+  var inputHint = (audioInputDevices || []).slice(0, 2).map(function (device, index) { return audioInputDeviceLabel(device, index); }).join(' / ');
+  var activePrimary = audioOutputDeviceId ? audioOutputDeviceById(audioOutputDeviceId) : null;
+  var summaryText = audioOutputDeviceStatusText();
+  var mirrorCount = mirrorIds.filter(function (id) { return id && id !== (audioOutputDeviceId || ''); }).length;
+  var mirrorConfirmedCount = audioOutputMirrorConfirmedCount(mirrorIds);
+  var mirrorStateLabel = mirrorCount ? (mirrorConfirmedCount ? ('已确认 ' + mirrorConfirmedCount + '/' + mirrorCount) : ('待确认 ' + mirrorCount + ' 路')) : '关闭';
+  var workflowHtml =
+    '<div class="audio-route-graph' + (bridgeEnabled ? ' bridge-on' : '') + '">' +
+      '<svg id="audio-route-workflow-svg" class="workflow-link-layer audio-link-layer" aria-hidden="true"></svg>' +
+      '<div class="audio-flow-source workflow-node" data-audio-node="player">' +
+        '<span class="route-node-kicker">SOURCE</span><span class="route-node-icon">DSH</span><span class="route-node-text"><b>深空折韵 Player</b><small>' + escHtml(summaryText) + '</small></span><span class="audio-source-meter" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="flow-port out" data-audio-route-source="player" title="深空折韵 输出"></span>' +
+      '</div>' +
+      '<div class="audio-route-status"><span class="route-energy-dot"></span><b>Patch Bay</b><small>' + escHtml(audioOutputDeviceId ? '主监听已指定' : '主监听跟随系统默认') + '</small></div>' +
+      '<div class="audio-route-board">' +
+        '<div class="audio-route-board-head">' +
+          '<span class="route-board-title"><b>路由矩阵</b><small>Patch Bay</small></span>' +
+          '<span class="route-board-badges"><span class="audio-route-chip active">主监听 ' + escHtml(activePrimary ? audioOutputDeviceLabel(activePrimary, 0) : '系统默认') + '</span>' +
+          '<span class="audio-route-chip">镜像监听 ' + escHtml(mirrorStateLabel) + '</span>' +
+          '<span class="audio-route-chip' + (bridgeEnabled ? ' active' : '') + '">虚拟麦克风 ' + (bridgeEnabled ? '已接入' : '未接入') + '</span></span>' +
+        '</div>' +
+        '<div class="audio-route-lanes">' +
+          '<div class="route-lane primary"><div class="route-lane-head"><span class="route-lane-index">01</span><span><b>主监听</b><small>播放器默认输出端</small></span><em class="route-lane-state">' + escHtml(activePrimary ? '已指定' : '系统默认') + '</em></div><div class="route-node-grid">' + primaryHtml + '</div></div>' +
+          '<div class="route-lane mirror"><div class="route-lane-head"><span class="route-lane-index">02</span><span><b>镜像监听</b><small>实验功能：复制播放流到另一输出</small></span><em class="route-lane-state">' + escHtml(mirrorStateLabel) + '</em></div><div class="route-node-grid mirror-grid">' + (mirrorHtml || '<div class="audio-route-empty">没有可镜像的输出设备</div>') + '</div><div class="audio-route-note">镜像监听不是系统级多输出，可能有轻微延迟或因平台音源失效；直播/语音输入建议走虚拟声卡桥接。</div></div>' +
+          '<div class="route-lane bridge"><div class="route-lane-head"><span class="route-lane-index">03</span><span><b>虚拟麦克风</b><small>' + escHtml(inputHint || '游戏 / 语音软件从对应输入端接收') + '</small></span><em class="route-lane-state">' + escHtml(bridgeEnabled ? '已桥接' : '未接入') + '</em></div>' +
+            '<div class="route-node-grid bridge-grid"><button class="audio-route-node bridge workflow-node' + (bridgeEnabled ? ' active connected' : '') + (!bridgeId ? ' disabled' : '') + '" type="button" data-input-bridge="' + escHtml(bridgeId) + '">' +
+              '<span class="flow-port in" data-input-bridge-target="' + escHtml(bridgeId) + '" title="虚拟麦克风输入"></span><span class="route-node-icon">MIC</span><span class="route-node-text"><b>' + escHtml(bridgeLabel) + '</b><small>' + escHtml(bridgeEnabled ? '已送入虚拟输入链路' : (bridgeId ? '可接入虚拟输入链路' : '需要虚拟声卡线缆')) + '</small></span><span class="route-node-pulse"></span>' +
+            '</button></div>' +
+            '<div class="audio-route-note">' + escHtml(inputHint ? ('输入端: ' + inputHint) : '真实麦克风不能被直接写入；请在游戏或语音软件里选择虚拟声卡的输入端。') + '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  var workflowSubtitle = document.getElementById('audio-output-workflow-subtitle');
+  if (workflowSubtitle) workflowSubtitle.textContent = summaryText;
+  list.innerHTML =
+    '<button class="audio-output-summary-card" type="button" onclick="openAudioOutputWorkflowPanel()">' +
+      '<span class="route-node-icon">DSH</span>' +
+      '<span class="audio-output-summary-copy"><b>' + escHtml(summaryText) + '</b><small>' +
+        escHtml((activePrimary ? '主输出已指定' : '主输出使用系统默认') + ' / 镜像监听 ' + mirrorStateLabel + ' / 桥接 ' + (bridgeEnabled ? '开启' : '关闭')) +
+      '</small></span>' +
+      '<span class="audio-output-summary-action">路由</span>' +
+    '</button>';
+  var workflowBody = document.getElementById('audio-output-workflow-body');
+  if (workflowBody) workflowBody.innerHTML = workflowHtml;
+  requestAnimationFrame(function () { renderAudioRouteWorkflowEdges(); });
+}
+function openAudioOutputWorkflowPanel() {
+  var modal = document.getElementById('audio-output-workflow-modal');
+  if (!modal) return;
+  openGsapModal(modal);
+  bindAudioOutputControls();
+  renderAudioOutputDeviceUi();
+  requestAnimationFrame(function () {
+    renderAudioRouteWorkflowEdges();
+    setTimeout(renderAudioRouteWorkflowEdges, 80);
+  });
+  refreshAudioOutputDevices(false);
+}
+function closeAudioOutputWorkflowPanel() {
+  closeGsapModal(document.getElementById('audio-output-workflow-modal'));
+}
+async function refreshAudioOutputDevices(showNotice) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    audioOutputDevices = [];
+    audioInputDevices = [];
+    renderAudioOutputDeviceUi();
+    if (showNotice) showToast('当前环境不支持输出接口选择');
+    return;
+  }
+  try {
+    var devices = await navigator.mediaDevices.enumerateDevices();
+    audioOutputDevices = devices.filter(function (device) { return device && device.kind === 'audiooutput' && device.deviceId !== 'default'; });
+    audioInputDevices = devices.filter(function (device) { return device && device.kind === 'audioinput' && device.deviceId !== 'default'; });
+    if (audioInputBridgeState && audioInputBridgeState.enabled && audioInputBridgeState.deviceId && !audioOutputDeviceById(audioInputBridgeState.deviceId)) {
+      audioInputBridgeState.enabled = false;
+      saveAudioInputBridgePreference();
+    }
+    renderAudioOutputDeviceUi();
+    if (showNotice) showToast('输出接口已刷新');
+  } catch (e) {
+    audioOutputDevices = [];
+    audioInputDevices = [];
+    renderAudioOutputDeviceUi();
+    if (showNotice) showToast('输出接口读取失败');
+  }
+}
+function bindAudioOutputMirrorEvents(media) {
+  if (!media || media._mineradioAudioMirrorBound) return;
+  media._mineradioAudioMirrorBound = true;
+  ['play', 'playing', 'pause', 'ended', 'seeking', 'seeked', 'ratechange', 'volumechange', 'emptied'].forEach(function (name) {
+    media.addEventListener(name, function () { syncAudioOutputMirrors(name); });
+  });
+}
+function removeAudioOutputMirror(id) {
+  var mirror = audioOutputMirrorElements && audioOutputMirrorElements[id];
+  if (mirror) {
+    try { mirror.pause(); } catch (e) { }
+    try { mirror.removeAttribute('src'); mirror.load(); } catch (e) { }
+    delete audioOutputMirrorElements[id];
+  }
+  if (audioOutputMirrorRuntime && id) delete audioOutputMirrorRuntime[id];
+}
+function clearAudioOutputMirrors() {
+  Object.keys(audioOutputMirrorElements || {}).forEach(removeAudioOutputMirror);
+  if (audioOutputMirrorSyncTimer) {
+    clearInterval(audioOutputMirrorSyncTimer);
+    audioOutputMirrorSyncTimer = 0;
+  }
+}
+async function applyAudioOutputMirrorSink(mirror, sinkId) {
+  if (!mirror || typeof mirror.setSinkId !== 'function') {
+    markAudioOutputMirrorRuntime(sinkId, 'unsupported', '内核不支持');
+    return false;
+  }
+  try {
+    markAudioOutputMirrorRuntime(sinkId, 'sink-pending', '正在选择设备');
+    await mirror.setSinkId(sinkId);
+    markAudioOutputMirrorRuntime(sinkId, 'sink-ready', '设备已选');
+    return true;
+  } catch (e) {
+    markAudioOutputMirrorRuntime(sinkId, 'sink-error', audioOutputMirrorReadableError(e));
+    console.warn('[AudioOutputMirror]', e);
+    return false;
+  }
+}
+function syncAudioOutputMirrors(reason) {
+  var ids = normalizeAudioOutputIdList(audioOutputMirrorDeviceIds).filter(function (id) { return id && id !== (audioOutputDeviceId || ''); });
+  var src = audio && (audio.currentSrc || audio.src || '');
+  Object.keys(audioOutputMirrorRuntime || {}).forEach(function (id) {
+    if (ids.indexOf(id) < 0) delete audioOutputMirrorRuntime[id];
+  });
+  if (!ids.length) {
+    clearAudioOutputMirrors();
+    return;
+  }
+  if (!audioOutputMirrorSinkSupported()) {
+    clearAudioOutputMirrors();
+    ids.forEach(function (id) { markAudioOutputMirrorRuntime(id, 'unsupported', '内核不支持'); });
+    return;
+  }
+  if (!audio || !src) {
+    clearAudioOutputMirrors();
+    ids.forEach(function (id) { markAudioOutputMirrorRuntime(id, 'waiting', '待播放时尝试'); });
+    return;
+  }
+  Object.keys(audioOutputMirrorElements || {}).forEach(function (id) {
+    if (ids.indexOf(id) < 0) removeAudioOutputMirror(id);
+  });
+  ids.forEach(function (id) {
+    var mirror = audioOutputMirrorElements[id];
+    if (!mirror) {
+      mirror = new Audio();
+      mirror.crossOrigin = 'anonymous';
+      mirror.preload = 'auto';
+      mirror.muted = !!audio.muted;
+      mirror.volume = audio.volume;
+      mirror.playbackRate = audio.playbackRate || 1;
+      audioOutputMirrorElements[id] = mirror;
+    }
+    if (mirror._mineradioSinkId !== id || !mirror._mineradioSinkReady) {
+      mirror._mineradioSinkId = id;
+      if (!mirror._mineradioSinkBusy) {
+        mirror._mineradioSinkBusy = true;
+        Promise.resolve(applyAudioOutputMirrorSink(mirror, id)).then(function (ok) {
+          mirror._mineradioSinkBusy = false;
+          mirror._mineradioSinkReady = !!ok;
+          if (ok) syncAudioOutputMirrors('mirror-sink-ready');
+        });
+      }
+    }
+    if ((mirror.currentSrc || mirror.src || '') !== src) {
+      try { mirror.src = src; mirror.load(); } catch (e) { }
+    }
+    try { mirror.muted = !!audio.muted; mirror.volume = audio.volume; mirror.playbackRate = audio.playbackRate || 1; } catch (e) { }
+    try {
+      if (isFinite(audio.currentTime) && Math.abs((mirror.currentTime || 0) - audio.currentTime) > 0.22) {
+        mirror.currentTime = audio.currentTime;
+      }
+    } catch (e) { }
+    if (!mirror._mineradioSinkReady) return;
+    if (audio.paused || audio.ended) {
+      try { mirror.pause(); } catch (e) { }
+      markAudioOutputMirrorRuntime(id, 'paused', '随主播放器暂停');
+    } else {
+      var rt = audioOutputMirrorRuntimeFor(id);
+      if (!rt || rt.state !== 'playing') markAudioOutputMirrorRuntime(id, 'play-pending', '正在播放');
+      var p = mirror.play();
+      if (p && p.then) {
+        p.then(function () {
+          markAudioOutputMirrorRuntime(id, 'playing', '已确认');
+        }).catch(function (e) {
+          markAudioOutputMirrorRuntime(id, 'play-error', audioOutputMirrorReadableError(e));
+          console.warn('[AudioOutputMirror] play failed:', e);
+        });
+      } else {
+        markAudioOutputMirrorRuntime(id, 'playing', '已确认');
+      }
+    }
+  });
+  if (!audioOutputMirrorSyncTimer) {
+    audioOutputMirrorSyncTimer = setInterval(function () { syncAudioOutputMirrors('clock'); }, 2200);
+  }
+}
+async function applyAudioOutputDevice(media) {
+  var sinkId = audioOutputDeviceId || '';
+  var hasTarget = !!(media || audioCtx || uiSfxCtx);
+  var mediaResult = null;
+  var contextResult = null;
+  var sfxResult = null;
+  var errors = [];
+  async function applySink(target, label) {
+    if (!target) return null;
+    if (typeof target.setSinkId !== 'function') return false;
+    try {
+      await target.setSinkId(sinkId);
+      return true;
+    } catch (e) {
+      errors.push({ label: label, error: e });
+      return false;
+    }
+  }
+  bindAudioOutputMirrorEvents(media);
+  mediaResult = await applySink(media, 'audio');
+  contextResult = await applySink(audioCtx, 'audio-context');
+  sfxResult = await applySink(uiSfxCtx, 'ui-sfx');
+  var webAudioRouteActive = !!(audioReady && audioCtx && gainNode);
+  var ok = webAudioRouteActive ? contextResult === true : (mediaResult === true || contextResult === true);
+  if (sfxResult === true && !webAudioRouteActive && !media) ok = true;
+  syncAudioOutputMirrors('apply-device');
+  if (ok) {
+    renderAudioOutputDeviceUi();
+    return true;
+  }
+  if (!hasTarget) {
+    renderAudioOutputDeviceUi();
+    return null;
+  }
+  if (errors.length) {
+    console.warn('[AudioOutput]', errors);
+    if (errors.some(function (item) { return item.error && item.error.name === 'NotFoundError'; })) {
+      audioOutputDeviceId = '';
+      saveAudioOutputDevicePreference();
+    }
+  }
+  renderAudioOutputDeviceUi();
+  return false;
+}
+function setAudioOutputDevice(deviceId, showNotice) {
+  audioOutputDeviceId = String(deviceId || '');
+  var requestedDeviceId = audioOutputDeviceId;
+  if (!requestedDeviceId || requestedDeviceId !== (audioInputBridgeState && audioInputBridgeState.deviceId || '')) {
+    if (audioInputBridgeState && audioInputBridgeState.enabled) {
+      audioInputBridgeState.enabled = false;
+      saveAudioInputBridgePreference();
+    }
+  }
+  audioOutputMirrorDeviceIds = normalizeAudioOutputIdList(audioOutputMirrorDeviceIds).filter(function (id) { return id !== requestedDeviceId; });
+  saveAudioOutputMirrorPreference();
+  saveAudioOutputDevicePreference();
+  renderAudioOutputDeviceUi();
+  Promise.resolve(applyAudioOutputDevice(audio)).then(function (ok) {
+    if (!showNotice) return;
+    if (!requestedDeviceId) showToast('已切回系统默认输出');
+    else if (ok === true) showToast('输出接口已切换');
+    else if (ok === null) showToast('输出接口已保存，播放时自动启用');
+    else if (audioReady && audioCtx && typeof audioCtx.setSinkId !== 'function') showToast('当前内核不支持频谱输出实时切换，已保存选择');
+    else showToast('当前输出接口暂不可用，已保存选择');
+  });
+}
+function toggleAudioOutputMirrorDevice(deviceId) {
+  deviceId = String(deviceId || '');
+  if (!deviceId) return;
+  if (!audioOutputMirrorSinkSupported()) {
+    markAudioOutputMirrorRuntime(deviceId, 'unsupported', '内核不支持');
+    showToast('当前内核不支持实验镜像监听');
+    return;
+  }
+  if (deviceId === (audioOutputDeviceId || '')) {
+    showToast('这个接口已经是主输出');
+    return;
+  }
+  var ids = normalizeAudioOutputIdList(audioOutputMirrorDeviceIds);
+  var pos = ids.indexOf(deviceId);
+  if (pos >= 0) {
+    ids.splice(pos, 1);
+    removeAudioOutputMirror(deviceId);
+    showToast('已关闭实验镜像监听');
+  } else {
+    ids.push(deviceId);
+    markAudioOutputMirrorRuntime(deviceId, audio && (audio.currentSrc || audio.src || '') ? 'sink-pending' : 'waiting', audio && (audio.currentSrc || audio.src || '') ? '正在尝试' : '待播放时尝试');
+    showToast(audio && (audio.currentSrc || audio.src || '') ? '正在尝试实验镜像监听' : '已保存实验镜像监听，播放时尝试启用');
+  }
+  audioOutputMirrorDeviceIds = normalizeAudioOutputIdList(ids);
+  saveAudioOutputMirrorPreference();
+  renderAudioOutputDeviceUi();
+  syncAudioOutputMirrors('mirror-toggle');
+}
+function setAudioInputBridgeDevice(deviceId, showNotice) {
+  deviceId = String(deviceId || '');
+  if (!deviceId) {
+    if (showNotice) showToast('未检测到虚拟麦克风线缆输出端');
+    renderAudioOutputDeviceUi();
+    return;
+  }
+  var wasEnabled = !!(audioInputBridgeState && audioInputBridgeState.enabled && audioInputBridgeState.deviceId === deviceId);
+  audioInputBridgeState = { enabled: !wasEnabled, deviceId: deviceId };
+  saveAudioInputBridgePreference();
+  if (audioInputBridgeState.enabled) {
+    audioOutputDeviceId = deviceId;
+    audioOutputMirrorDeviceIds = normalizeAudioOutputIdList(audioOutputMirrorDeviceIds).filter(function (id) { return id !== deviceId; });
+    saveAudioOutputMirrorPreference();
+    saveAudioOutputDevicePreference();
+    Promise.resolve(applyAudioOutputDevice(audio)).then(function () {
+      if (showNotice) showToast('已连接到虚拟麦克风桥接');
+    });
+  } else {
+    if (audioOutputDeviceId === deviceId) {
+      audioOutputDeviceId = '';
+      saveAudioOutputDevicePreference();
+      Promise.resolve(applyAudioOutputDevice(audio));
+    }
+    if (showNotice) showToast('已关闭虚拟麦克风桥接');
+  }
+  renderAudioOutputDeviceUi();
+}
+;
+
+// ==================== 05-playback/15-control-glass-animations.js ====================
+// Ported from Mineradio 2.2.0, GPL-3.0, js/modules/05-playback/15-control-glass-animations.js 全文（无改动）。
+// DSH 宿主差异：#bottom-bar/#search-box/#user-btn 等 MR 底栏 DOM 不存在——本文件内部引用全部有
+// if(el) 守卫（v1.4.2 接力侦察已读源码核实），缺失即静默降级不抛；色差滑条作用于
+// #mineradio-control-glass-filter 的 feOffset（applyControlGlassChromaticOffsetToFilter），
+// filter DOM 由适配层 mount 时注入（injectControlGlassSvg），initControlGlassSurface 由适配层
+// bundle onload 后调用（MR 原调用点在未 vendor 的 10-shell/05-startup-bindings.js:7）。
+var controlGlassState = {
+  key: '',
+  searchBoxKey: '',
+  searchPillKey: '',
+  accountPillKey: '',
+  dwmGeometryKey: '',
+  dwmGeometryLastAt: 0,
+  dwmGeometryTimer: 0,
+  dwmGeometryAnimationToken: 0
+};
+var CONTROL_GLASS_BASE_SHIFT_X = -90;
+var CONTROL_GLASS_CHROMA_MAX_SPREAD = 22;
+function normalizeControlGlassChromaticOffset(value) {
+  var n = Number(value);
+  if (!isFinite(n)) n = fxDefaults.controlGlassChromaticOffset;
+  return clampRange(n, 30, 140);
+}
+function formatGlassFilterNumber(value) {
+  var n = Math.round((Number(value) || 0) * 100) / 100;
+  if (Math.abs(n) < 0.005) n = 0;
+  return String(n);
+}
+function setControlGlassChannelOffset(filter, result, dx, dy) {
+  var node = filter && filter.querySelector ? filter.querySelector('feOffset[result="' + result + '"]') : null;
+  if (!node) return;
+  node.setAttribute('dx', formatGlassFilterNumber(dx));
+  node.setAttribute('dy', formatGlassFilterNumber(dy));
+}
+function applyControlGlassChromaticOffsetToFilter(filter, baseShiftX, maxSpread, verticalFactor) {
+  if (!filter || !fx) return;
+  var chroma = fx.controlGlassChromaticOffset / 140;
+  var spread = maxSpread * chroma;
+  var verticalSpread = spread * (verticalFactor == null ? 0.08 : verticalFactor);
+  setControlGlassChannelOffset(filter, 'dispRedShifted', baseShiftX - spread, -verticalSpread);
+  setControlGlassChannelOffset(filter, 'dispGreenShifted', baseShiftX, 0);
+  setControlGlassChannelOffset(filter, 'dispBlueShifted', baseShiftX + spread, verticalSpread);
+}
+function applyControlGlassChromaticOffset() {
+  if (!fx) return;
+  fx.controlGlassChromaticOffset = normalizeControlGlassChromaticOffset(fx.controlGlassChromaticOffset);
+  applyControlGlassChromaticOffsetToFilter(
+    document.getElementById('mineradio-control-glass-filter'),
+    CONTROL_GLASS_BASE_SHIFT_X,
+    CONTROL_GLASS_CHROMA_MAX_SPREAD,
+    0.08
+  );
+}
+function supportsControlGlassSvgFilter() {
+  try {
+    var ua = navigator.userAgent || '';
+    if ((/Safari/.test(ua) && !/Chrome/.test(ua)) || /Firefox/.test(ua)) return false;
+    var div = document.createElement('div');
+    div.style.backdropFilter = 'url(#mineradio-control-glass-filter)';
+    return div.style.backdropFilter !== '';
+  } catch (e) {
+    return false;
+  }
+}
+function generateControlGlassDisplacementMap(width, height, radius) {
+  width = Math.max(240, Math.round(width || 400));
+  height = Math.max(48, Math.round(height || 92));
+  radius = Math.max(12, Math.round(radius || 50));
+  var borderWidth = 0.07;
+  var edge = Math.min(width, height) * (borderWidth * 0.5);
+  var innerW = Math.max(1, width - edge * 2);
+  var innerH = Math.max(1, height - edge * 2);
+  var svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" xmlns="http://www.w3.org/2000/svg">' +
+    '<defs>' +
+    '<linearGradient id="glass-red" x1="100%" y1="0%" x2="0%" y2="0%"><stop offset="0%" stop-color="#0000"/><stop offset="100%" stop-color="red"/></linearGradient>' +
+    '<linearGradient id="glass-blue" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#0000"/><stop offset="100%" stop-color="blue"/></linearGradient>' +
+    '</defs>' +
+    '<rect x="0" y="0" width="' + width + '" height="' + height + '" fill="black"/>' +
+    '<rect x="0" y="0" width="' + width + '" height="' + height + '" rx="' + radius + '" fill="url(#glass-red)"/>' +
+    '<rect x="0" y="0" width="' + width + '" height="' + height + '" rx="' + radius + '" fill="url(#glass-blue)" style="mix-blend-mode:difference"/>' +
+    '<rect x="' + edge.toFixed(2) + '" y="' + edge.toFixed(2) + '" width="' + innerW.toFixed(2) + '" height="' + innerH.toFixed(2) + '" rx="' + radius + '" fill="hsl(0 0% 50% / 1)" style="filter:blur(11px)"/>' +
+    '</svg>';
+  return 'data:image/svg+xml,' + encodeURIComponent(svg);
+}
+function generateAccountPillGlassDisplacementMap(width, height, radius, minWidth, minHeight) {
+  minWidth = Math.max(1, Math.round(minWidth || 180));
+  minHeight = Math.max(1, Math.round(minHeight || 44));
+  width = Math.max(minWidth, Math.round(width || 220));
+  height = Math.max(minHeight, Math.round(height || 44));
+  radius = Math.max(20, Math.round(radius || height / 2));
+  var edge = Math.min(width, height) * 0.09;
+  var innerW = Math.max(1, width - edge * 2);
+  var innerH = Math.max(1, height - edge * 2);
+  var svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" xmlns="http://www.w3.org/2000/svg">' +
+    '<defs>' +
+    '<linearGradient id="account-x" x1="0%" y1="0%" x2="100%" y2="0%">' +
+    '<stop offset="0%" stop-color="rgb(112,128,128)"/>' +
+    '<stop offset="13%" stop-color="rgb(150,128,128)"/>' +
+    '<stop offset="42%" stop-color="rgb(128,128,128)"/>' +
+    '<stop offset="72%" stop-color="rgb(120,128,128)"/>' +
+    '<stop offset="100%" stop-color="rgb(144,128,128)"/>' +
+    '</linearGradient>' +
+    '<filter id="account-soft" x="-10%" y="-30%" width="120%" height="160%"><feGaussianBlur stdDeviation="5"/></filter>' +
+    '</defs>' +
+    '<rect x="0" y="0" width="' + width + '" height="' + height + '" fill="rgb(128,128,128)"/>' +
+    '<rect x="0" y="0" width="' + width + '" height="' + height + '" rx="' + radius + '" fill="url(#account-x)" filter="url(#account-soft)" opacity=".82"/>' +
+    '<rect x="' + edge.toFixed(2) + '" y="' + edge.toFixed(2) + '" width="' + innerW.toFixed(2) + '" height="' + innerH.toFixed(2) + '" rx="' + Math.max(1, radius - edge).toFixed(2) + '" fill="rgb(128,128,128)" opacity=".36"/>' +
+    '</svg>';
+  return 'data:image/svg+xml,' + encodeURIComponent(svg);
+}
+function generateSearchBoxGlassDisplacementMap(width, height, radius) {
+  return generateControlGlassDisplacementMap(width, height, radius);
+}
+function generateSearchPillGlassDisplacementMap(width, height, radius) {
+  return generateControlGlassDisplacementMap(width, height, radius);
+}
+function glassImageHasHref(img) {
+  if (!img) return false;
+  var href = img.getAttribute('href') || '';
+  try { href = href || img.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || ''; } catch (e) { }
+  return !!href;
+}
+function setSearchGlassReady(ready) {
+  var on = !!ready;
+  document.documentElement.classList.toggle('search-glass-ready', on);
+  if (on) document.documentElement.classList.remove('search-glass-priming', 'search-glass-fallback');
+  var area = document.getElementById('search-area');
+  if (area) {
+    area.classList.toggle('search-glass-ready', on);
+    if (on) area.classList.remove('search-glass-priming', 'search-glass-fallback');
+  }
+}
+function setSearchGlassPriming(priming) {
+  var on = !!priming;
+  document.documentElement.classList.toggle('search-glass-priming', on);
+  var area = document.getElementById('search-area');
+  if (area) area.classList.toggle('search-glass-priming', on);
+}
+function setSearchGlassFallback(fallback) {
+  var on = !!fallback;
+  document.documentElement.classList.toggle('search-glass-fallback', on);
+  var area = document.getElementById('search-area');
+  if (area) area.classList.toggle('search-glass-fallback', on);
+}
+function queueSearchGlassReadyAfterPaint(force) {
+  if (!glassImageHasHref(document.getElementById('search-box-glass-map'))) {
+    controlGlassState.searchReadyToken = (controlGlassState.searchReadyToken || 0) + 1;
+    setSearchGlassReady(false);
+    setSearchGlassPriming(false);
+    return false;
+  }
+  if (!force && document.documentElement.classList.contains('search-glass-ready')) return true;
+  if (document.documentElement.classList.contains('search-glass-priming')) return false;
+  var token = (controlGlassState.searchReadyToken || 0) + 1;
+  controlGlassState.searchReadyToken = token;
+  setSearchGlassFallback(false);
+  setSearchGlassReady(false);
+  setSearchGlassPriming(true);
+  var frames = 3;
+  function waitFrame() {
+    if (controlGlassState.searchReadyToken !== token) return;
+    if (!glassImageHasHref(document.getElementById('search-box-glass-map'))) {
+      setSearchGlassReady(false);
+      setSearchGlassPriming(false);
+      return;
+    }
+    frames -= 1;
+    if (frames <= 0) {
+      setSearchGlassReady(true);
+      return;
+    }
+    requestAnimationFrame(waitFrame);
+  }
+  requestAnimationFrame(waitFrame);
+  return false;
+}
+function syncSearchGlassReadyState(waitForPaint, forcePaint) {
+  var ready = glassImageHasHref(document.getElementById('search-box-glass-map'));
+  if (ready && waitForPaint) return queueSearchGlassReadyAfterPaint(forcePaint);
+  if (!ready) setSearchGlassPriming(false);
+  setSearchGlassReady(ready);
+  return ready;
+}
+function updateGlassDisplacementMapForElement(el, img, stateKey, generator) {
+  if (!el || !img) return false;
+  var rect = el.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return false;
+  var radius = parseFloat(getComputedStyle(el).borderRadius) || 24;
+  var key = Math.round(rect.width) + 'x' + Math.round(rect.height) + ':' + Math.round(radius);
+  if (key === controlGlassState[stateKey] && glassImageHasHref(img)) return true;
+  controlGlassState[stateKey] = key;
+  var href = (generator || generateControlGlassDisplacementMap)(rect.width, rect.height, radius);
+  img.setAttribute('href', href);
+  try { img.setAttributeNS('http://www.w3.org/1999/xlink', 'href', href); } catch (e) { }
+  return true;
+}
+function updateControlGlassDisplacementMap() {
+  return updateGlassDisplacementMapForElement(
+    document.getElementById('bottom-bar'),
+    document.getElementById('control-glass-map'),
+    'key'
+  );
+}
+
+function syncWallpaperEngineGlassSamplerGeometry(rect, radius, visible, active) {
+  var sampler = document.getElementById('wallpaper-engine-glass-sampler');
+  if (!sampler || !rect) return false;
+  var valid = active === true && rect.width >= 2 && rect.height >= 2;
+  sampler.classList.toggle('bar-visible', valid && visible === true);
+  if (!valid) return false;
+  sampler.style.left = rect.left.toFixed(3) + 'px';
+  sampler.style.top = rect.top.toFixed(3) + 'px';
+  sampler.style.width = rect.width.toFixed(3) + 'px';
+  sampler.style.height = rect.height.toFixed(3) + 'px';
+  sampler.style.setProperty('--wallpaper-engine-glass-radius', Math.max(0, radius).toFixed(3) + 'px');
+  var video = document.getElementById('wallpaper-engine-glass-sampler-video');
+  if (video) {
+    video.style.left = (-rect.left).toFixed(3) + 'px';
+    video.style.top = (-rect.top).toFixed(3) + 'px';
+    video.style.width = Math.max(2, window.innerWidth).toFixed(3) + 'px';
+    video.style.height = Math.max(2, window.innerHeight).toFixed(3) + 'px';
+  }
+  return true;
+}
+
+function syncWallpaperEngineControlGlassSurface(force) {
+  var api = window.desktopWindow;
+  var bar = document.getElementById('bottom-bar');
+  var sessionId = typeof wallpaperEngineNativeSessionId !== 'undefined'
+    ? String(wallpaperEngineNativeSessionId || '') : '';
+  if (!bar || !api || typeof api.updateWallpaperEngineGlassSurface !== 'function'
+    || !/^[a-f0-9]{24}$/i.test(sessionId)) return false;
+  var now = performance.now();
+  if (!force && now - controlGlassState.dwmGeometryLastAt < 30) {
+    if (!controlGlassState.dwmGeometryTimer) {
+      controlGlassState.dwmGeometryTimer = setTimeout(function () {
+        controlGlassState.dwmGeometryTimer = 0;
+        syncWallpaperEngineControlGlassSurface(true);
+      }, 32);
+    }
+    return false;
+  }
+  var rect = bar.getBoundingClientRect();
+  var style = getComputedStyle(bar);
+  var dwmMode = document.body.classList.contains('wallpaper-engine-dwm-active');
+  var visible = dwmMode
+    && bar.classList.contains('visible')
+    && !bar.classList.contains('soft-hidden')
+    && !document.body.classList.contains('home-controls-locked')
+    && style.display !== 'none'
+    && style.visibility !== 'hidden'
+    && Number(style.opacity || 0) > 0.01
+    && rect.right > 0 && rect.bottom > 0
+    && rect.left < window.innerWidth && rect.top < window.innerHeight;
+  var radius = parseFloat(style.borderRadius) || Math.min(rect.height / 2, 50);
+  var surfaceActive = dwmMode
+    && style.display !== 'none'
+    && rect.width >= 2 && rect.height >= 2
+    && rect.right > 0 && rect.bottom > 0
+    && rect.left < window.innerWidth && rect.top < window.innerHeight;
+  syncWallpaperEngineGlassSamplerGeometry(rect, radius, visible, surfaceActive);
+  var geometryKey = [
+    sessionId,
+    surfaceActive ? 1 : 0,
+    Math.round(rect.left * 10),
+    Math.round(rect.top * 10),
+    Math.round(rect.width * 10),
+    Math.round(rect.height * 10),
+    Math.round(radius * 10),
+    Math.round(window.innerWidth * 10),
+    Math.round(window.innerHeight * 10)
+  ].join(':');
+  if (!force && geometryKey === controlGlassState.dwmGeometryKey) return true;
+  controlGlassState.dwmGeometryKey = geometryKey;
+  controlGlassState.dwmGeometryLastAt = now;
+  api.updateWallpaperEngineGlassSurface({
+    sessionId: sessionId,
+    active: surfaceActive,
+    left: rect.left,
+    top: rect.top,
+    width: rect.width,
+    height: rect.height,
+    radius: radius,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight
+  });
+  return true;
+}
+
+function animateWallpaperEngineControlGlassSurface(duration) {
+  var token = ++controlGlassState.dwmGeometryAnimationToken;
+  var deadline = performance.now() + Math.max(0, Number(duration) || 0);
+  function tick() {
+    if (token !== controlGlassState.dwmGeometryAnimationToken) return;
+    syncWallpaperEngineControlGlassSurface(false);
+    if (performance.now() < deadline) requestAnimationFrame(tick);
+    else syncWallpaperEngineControlGlassSurface(true);
+  }
+  requestAnimationFrame(tick);
+}
+function updateSearchBoxGlassDisplacementMap() {
+  var img = document.getElementById('search-box-glass-map');
+  var previousKey = controlGlassState.searchBoxKey;
+  var hadHref = glassImageHasHref(img);
+  var ready = updateGlassDisplacementMapForElement(
+    document.getElementById('search-box'),
+    img,
+    'searchBoxKey',
+    generateSearchBoxGlassDisplacementMap
+  );
+  var changed = ready && (controlGlassState.searchBoxKey !== previousKey || !hadHref);
+  if (ready && document.documentElement.classList.contains('search-glass-priming')) return ready;
+  syncSearchGlassReadyState(changed, changed);
+  return ready;
+}
+function updateSearchPillGlassDisplacementMap() {
+  var img = document.getElementById('search-pill-glass-map');
+  if (!img) return false;
+  var nodes = Array.prototype.slice.call(document.querySelectorAll('.search-mode-tabs button,.search-history-chip'));
+  var maxW = 0, maxH = 0, maxRadius = 14;
+  nodes.forEach(function (el) {
+    if (!el) return;
+    var rect = el.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return;
+    maxW = Math.max(maxW, rect.width);
+    maxH = Math.max(maxH, rect.height);
+    maxRadius = Math.max(maxRadius, parseFloat(getComputedStyle(el).borderRadius) || Math.round(rect.height / 2) || 14);
+  });
+  if (maxW < 2 || maxH < 2) {
+    maxW = 96;
+    maxH = 32;
+    maxRadius = 14;
+  }
+  var width = Math.max(96, Math.round(maxW));
+  var height = Math.max(32, Math.round(maxH));
+  var radius = Math.max(12, Math.min(Math.round(maxRadius), Math.round(height / 2) + 10));
+  var key = width + 'x' + height + ':' + radius;
+  if (key === controlGlassState.searchPillKey && glassImageHasHref(img)) return true;
+  controlGlassState.searchPillKey = key;
+  var href = generateSearchPillGlassDisplacementMap(width, height, radius);
+  img.setAttribute('href', href);
+  try { img.setAttributeNS('http://www.w3.org/1999/xlink', 'href', href); } catch (e) { }
+  return true;
+}
+function updateAccountPillGlassDisplacementMap() {
+  var img = document.getElementById('account-pill-glass-map');
+  if (!img) return;
+  var nodes = Array.prototype.slice.call(document.querySelectorAll('.top-account-pill'));
+  if (!nodes.length) return;
+  var maxW = 0, maxH = 0, maxRadius = 24;
+  nodes.forEach(function (el) {
+    if (!el || el.offsetParent === null) return;
+    var rect = el.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return;
+    maxW = Math.max(maxW, rect.width);
+    maxH = Math.max(maxH, rect.height);
+    maxRadius = Math.max(maxRadius, parseFloat(getComputedStyle(el).borderRadius) || Math.round(rect.height / 2) || 24);
+  });
+  if (maxW < 2 || maxH < 2) return;
+  var width = Math.max(180, Math.round(maxW));
+  var height = Math.max(44, Math.round(maxH));
+  var radius = Math.max(20, Math.min(Math.round(maxRadius), Math.round(height / 2) + 8));
+  var key = width + 'x' + height + ':' + radius;
+  if (key === controlGlassState.accountPillKey) return;
+  controlGlassState.accountPillKey = key;
+  var href = generateAccountPillGlassDisplacementMap(width, height, radius);
+  img.setAttribute('href', href);
+  try { img.setAttributeNS('http://www.w3.org/1999/xlink', 'href', href); } catch (e) { }
+}
+function prepareSearchGlassBeforePeek() {
+  if (!document.documentElement.classList.contains('control-glass-svg-ok')) return true;
+  setSearchGlassFallback(false);
+  var ready = updateSearchBoxGlassDisplacementMap();
+  updateSearchPillGlassDisplacementMap();
+  if (!ready || !glassImageHasHref(document.getElementById('search-box-glass-map'))) {
+    setSearchGlassPriming(false);
+    setSearchGlassFallback(true);
+    return true;
+  }
+  if (document.documentElement.classList.contains('search-glass-ready')) return true;
+  return syncSearchGlassReadyState(true, false);
+}
+function initControlGlassSurface() {
+  if (supportsControlGlassSvgFilter()) document.documentElement.classList.add('control-glass-svg-ok');
+  applyControlGlassChromaticOffset();
+  updateControlGlassDisplacementMap();
+  prepareSearchGlassBeforePeek();
+  requestAnimationFrame(prepareSearchGlassBeforePeek);
+  setTimeout(prepareSearchGlassBeforePeek, 140);
+  updateAccountPillGlassDisplacementMap();
+  var bar = document.getElementById('bottom-bar');
+  var searchBox = document.getElementById('search-box');
+  var searchTabs = document.getElementById('search-mode-tabs');
+  var searchResults = document.getElementById('search-results');
+  var userBtn = document.getElementById('user-btn');
+  if (window.ResizeObserver && (bar || searchBox || searchTabs || searchResults || userBtn)) {
+    var ro = new ResizeObserver(function () {
+      requestAnimationFrame(updateControlGlassDisplacementMap);
+      requestAnimationFrame(syncWallpaperEngineControlGlassSurface);
+      requestAnimationFrame(updateSearchBoxGlassDisplacementMap);
+      requestAnimationFrame(updateSearchPillGlassDisplacementMap);
+      requestAnimationFrame(updateAccountPillGlassDisplacementMap);
+    });
+    if (bar) ro.observe(bar);
+    if (searchBox) ro.observe(searchBox);
+    if (searchTabs) ro.observe(searchTabs);
+    if (searchResults) ro.observe(searchResults);
+    if (userBtn) ro.observe(userBtn);
+  }
+  if (window.MutationObserver && bar) {
+    var barObserver = new MutationObserver(function () {
+      animateWallpaperEngineControlGlassSurface(520);
+    });
+    barObserver.observe(bar, { attributes: true, attributeFilter: ['class', 'style'] });
+  }
+  if (window.MutationObserver && (searchTabs || searchResults || userBtn)) {
+    var mo = new MutationObserver(function () {
+      requestAnimationFrame(updateSearchPillGlassDisplacementMap);
+      requestAnimationFrame(updateAccountPillGlassDisplacementMap);
+    });
+    if (searchTabs) mo.observe(searchTabs, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+    if (searchResults) mo.observe(searchResults, { childList: true, subtree: true });
+    if (userBtn) mo.observe(userBtn, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+  }
+  window.addEventListener('resize', function () {
+    requestAnimationFrame(updateControlGlassDisplacementMap);
+    animateWallpaperEngineControlGlassSurface(520);
+    requestAnimationFrame(updateSearchBoxGlassDisplacementMap);
+    requestAnimationFrame(updateSearchPillGlassDisplacementMap);
+    requestAnimationFrame(updateAccountPillGlassDisplacementMap);
+  });
+  if (bar) {
+    bar.addEventListener('transitionrun', function () {
+      animateWallpaperEngineControlGlassSurface(520);
+    });
+    bar.addEventListener('transitionend', function () {
+      syncWallpaperEngineControlGlassSurface(true);
+    });
+  }
+}
+
+function bindPlayerControlAnimations() {
+  if (!window.gsap) return;
+  document.querySelectorAll('#bottom-bar .ctrl-btn').forEach(function (btn) {
+    if (!btn || btn.dataset.controlAnimBound === '1') return;
+    btn.dataset.controlAnimBound = '1';
+    var isPlay = btn.id === 'play-btn';
+    var iconTarget = btn.querySelector('svg,.lyrics-word-icon,#quality-btn-label');
+    function canAnimate() {
+      return !btn.disabled && !btn.classList.contains('busy');
+    }
+    function hoverIn(e) {
+      if (!canAnimate() || (e && e.pointerType === 'touch')) return;
+      window.gsap.to(btn, { y: -2, scale: isPlay ? 1.07 : 1.08, duration: 0.20, ease: 'power2.out', overwrite: 'auto' });
+      if (iconTarget) window.gsap.to(iconTarget, { scale: isPlay ? 1.08 : 1.10, duration: 0.22, ease: 'power2.out', overwrite: 'auto' });
+    }
+    function hoverOut() {
+      window.gsap.to(btn, { y: 0, scale: 1, rotate: 0, duration: 0.26, ease: 'power2.out', overwrite: 'auto' });
+      if (iconTarget) window.gsap.to(iconTarget, { scale: 1, rotate: 0, duration: 0.22, ease: 'power2.out', overwrite: 'auto' });
+    }
+    function pressDown() {
+      if (!canAnimate()) return;
+      window.gsap.to(btn, { y: 0, scale: isPlay ? 0.91 : 0.90, duration: 0.10, ease: 'power2.out', overwrite: 'auto' });
+      if (iconTarget) window.gsap.to(iconTarget, { scale: 0.88, duration: 0.10, ease: 'power2.out', overwrite: 'auto' });
+    }
+    function release(e) {
+      if (!canAnimate()) return;
+      var hovered = e && e.pointerType !== 'touch' && btn.matches(':hover');
+      window.gsap.to(btn, { y: hovered ? -2 : 0, scale: hovered ? (isPlay ? 1.07 : 1.08) : 1, duration: 0.24, ease: 'back.out(1.9)', overwrite: 'auto' });
+      if (iconTarget) window.gsap.to(iconTarget, { scale: hovered ? 1.06 : 1, duration: 0.22, ease: 'back.out(1.8)', overwrite: 'auto' });
+    }
+    function clickPulse() {
+      if (!canAnimate() || btn.id === 'play-mode-btn') return;
+      var pulseSize = isPlay ? 18 : 10;
+      var pulseColor = isPlay ? 'rgba(255,63,85,.34)' : 'rgba(255,255,255,.22)';
+      window.gsap.killTweensOf(btn, 'boxShadow');
+      window.gsap.fromTo(btn,
+        { boxShadow: '0 0 0 0 ' + pulseColor },
+        { boxShadow: '0 0 0 ' + pulseSize + 'px rgba(255,63,85,0)', duration: isPlay ? 0.58 : 0.42, ease: 'sine.out', overwrite: false, onComplete: function () { window.gsap.set(btn, { clearProps: 'boxShadow' }); } }
+      );
+      if (iconTarget) window.gsap.fromTo(iconTarget, { rotate: isPlay ? 0 : -5 }, { rotate: 0, duration: 0.34, ease: 'elastic.out(1,0.55)', overwrite: 'auto' });
+    }
+    btn.addEventListener('pointerenter', hoverIn);
+    btn.addEventListener('pointerleave', hoverOut);
+    btn.addEventListener('pointercancel', hoverOut);
+    btn.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    btn.addEventListener('pointerdown', pressDown);
+    btn.addEventListener('pointerup', release);
+    btn.addEventListener('click', clickPulse);
+    btn.addEventListener('focus', function () { hoverIn(); });
+    btn.addEventListener('blur', hoverOut);
+  });
+}
+
+function clearPlayerControlFocusState(reason) {
+  try {
+    document.querySelectorAll('#bottom-bar .ctrl-btn').forEach(function (btn) {
+      if (!btn) return;
+      if (document.activeElement === btn) btn.blur();
+      btn.classList.remove('focus-visible');
+      if (window.gsap) {
+        window.gsap.killTweensOf(btn);
+        window.gsap.set(btn, { y: 0, scale: 1, rotate: 0, clearProps: 'boxShadow' });
+        var iconTarget = btn.querySelector('svg,.lyrics-word-icon,#quality-btn-label');
+        if (iconTarget) {
+          window.gsap.killTweensOf(iconTarget);
+          window.gsap.set(iconTarget, { scale: 1, rotate: 0 });
+        }
+      } else {
+        btn.style.transform = '';
+        btn.style.boxShadow = '';
+      }
+    });
+  } catch (e) {
+    console.warn('[ControlFocusClear]', reason || 'unknown', e);
+  }
+}
+
+// ============================================================
+//  歌词
+;
+
+// ==================== 06-lyrics/06-lyric-timing-offset.js ====================
+var LYRIC_TIMING_OFFSET_STORE_KEY = 'mineradio-lyric-timing-offsets-v1';
+var LYRIC_TIMING_OFFSET_LIMIT = 500;
+var lyricTimingOffsetMap = readLyricTimingOffsetMap();
+var lyricTimingPopoverCloseTimer = null;
+
+function normalizeLyricTimingOffsetSeconds(value) {
+  var raw = Number(value);
+  if (!isFinite(raw)) raw = 0;
+  return Math.round(clampRange(raw, -5, 5) * 10) / 10;
+}
+
+function lyricTimingOffsetEntryValue(entry) {
+  if (entry && typeof entry === 'object') return normalizeLyricTimingOffsetSeconds(entry.offset);
+  return normalizeLyricTimingOffsetSeconds(entry);
+}
+
+function readLyricTimingOffsetMap() {
+  try {
+    var raw = JSON.parse(localStorage.getItem(LYRIC_TIMING_OFFSET_STORE_KEY) || '{}');
+    var items = raw && raw.version === 1 && raw.items ? raw.items : raw;
+    var out = {};
+    Object.keys(items || {}).forEach(function (key) {
+      var entry = items[key];
+      var offset = lyricTimingOffsetEntryValue(entry);
+      if (offset) {
+        out[key] = {
+          offset: offset,
+          updatedAt: Number(entry && entry.updatedAt) || 0,
+          title: String(entry && entry.title || '').slice(0, 80),
+          artist: String(entry && entry.artist || '').slice(0, 80)
+        };
+      }
+    });
+    return out;
+  } catch (e) {
+    return {};
+  }
+}
+
+function writeLyricTimingOffsetMap() {
+  try {
+    var keys = Object.keys(lyricTimingOffsetMap || {}).sort(function (a, b) {
+      return (Number(lyricTimingOffsetMap[b] && lyricTimingOffsetMap[b].updatedAt) || 0) - (Number(lyricTimingOffsetMap[a] && lyricTimingOffsetMap[a].updatedAt) || 0);
+    }).slice(0, LYRIC_TIMING_OFFSET_LIMIT);
+    var items = {};
+    keys.forEach(function (key) { items[key] = lyricTimingOffsetMap[key]; });
+    lyricTimingOffsetMap = items;
+    if (!keys.length) {
+      localStorage.removeItem(LYRIC_TIMING_OFFSET_STORE_KEY);
+      return;
+    }
+    localStorage.setItem(LYRIC_TIMING_OFFSET_STORE_KEY, JSON.stringify({ version: 1, savedAt: Date.now(), items: items }));
+  } catch (e) { }
+}
+
+function lyricTimingCurrentSong() {
+  if (typeof currentCoverSong === 'function') return currentCoverSong();
+  if (currentIdx >= 0 && playQueue && playQueue[currentIdx]) return playQueue[currentIdx];
+  return currentLocalSong || null;
+}
+
+function lyricTimingSongKey(song) {
+  song = song || lyricTimingCurrentSong();
+  if (!song) return '';
+  if (typeof queueItemKey === 'function') return queueItemKey(song);
+  if (typeof songCustomCoverKey === 'function') return songCustomCoverKey(song);
+  if (song.provider === 'spotify' || song.source === 'spotify' || song.type === 'spotify' || song.spotifyId || song.spotifyUri) return 'spotify:' + (song.spotifyId || song.id || song.spotifyUri || song.uri || (song.name + '|' + song.artist));
+  if (song.provider === 'qq' || song.source === 'qq' || song.type === 'qq') return 'qq:' + (song.mid || song.songmid || song.id || (song.name + '|' + song.artist));
+  if (song.type === 'podcast' && song.programId) return 'podcast:' + song.programId;
+  if (song.localKey) return 'local:' + song.localKey;
+  if (song.id != null && song.id !== '') return 'song:' + song.id;
+  return String(song.name || '') + '|' + String(song.artist || '');
+}
+
+function getLyricTimingOffsetForSong(song) {
+  var key = lyricTimingSongKey(song);
+  return key && lyricTimingOffsetMap && lyricTimingOffsetMap[key] ? lyricTimingOffsetEntryValue(lyricTimingOffsetMap[key]) : 0;
+}
+
+function getActiveLyricTimingOffsetSeconds() {
+  return getLyricTimingOffsetForSong(lyricTimingCurrentSong());
+}
+
+function getAdjustedLyricPlaybackTime(rawTime) {
+  var t = Number(rawTime);
+  if (!isFinite(t)) t = 0;
+  return Math.max(0, t + getActiveLyricTimingOffsetSeconds());
+}
+
+function formatLyricTimingOffset(offset) {
+  offset = normalizeLyricTimingOffsetSeconds(offset);
+  if (!offset) return '0.0s';
+  return (offset > 0 ? '+' : '-') + Math.abs(offset).toFixed(1) + 's';
+}
+
+function lyricTimingToastText(offset) {
+  offset = normalizeLyricTimingOffsetSeconds(offset);
+  if (!offset) return '歌词校准已重置';
+  return offset > 0 ? ('歌词提前 ' + Math.abs(offset).toFixed(1) + 's') : ('歌词延后 ' + Math.abs(offset).toFixed(1) + 's');
+}
+
+function releaseLyricTimingPopoverFocus(root) {
+  root = root || document.getElementById('lyric-timing-control');
+  var active = document.activeElement;
+  if (!root || !active || !root.contains(active) || typeof active.blur !== 'function') return;
+  try { active.blur(); } catch (e) { }
+}
+
+function clearLyricTimingPopoverClose() {
+  if (lyricTimingPopoverCloseTimer) {
+    clearTimeout(lyricTimingPopoverCloseTimer);
+    lyricTimingPopoverCloseTimer = null;
+  }
+  var root = document.getElementById('lyric-timing-control');
+  if (root) root.classList.remove('closing');
+}
+
+function suppressLyricTimingSiblingPanels(suppressed) {
+  if (typeof setVolumePanelSiblingSuppressed === 'function') setVolumePanelSiblingSuppressed(!!suppressed);
+}
+
+function lyricTimingControlIsActive(root) {
+  root = root || document.getElementById('lyric-timing-control');
+  if (!root) return false;
+  var active = document.activeElement;
+  return !!((root.matches && root.matches(':hover')) || (active && root.contains(active)));
+}
+
+function releaseLyricTimingSiblingPanelsSoon(root) {
+  setTimeout(function () {
+    if (!lyricTimingControlIsActive(root)) suppressLyricTimingSiblingPanels(false);
+  }, 70);
+}
+
+function closeLyricTimingPopover(force) {
+  var root = document.getElementById('lyric-timing-control');
+  if (!root) return;
+  if (lyricTimingPopoverCloseTimer) {
+    clearTimeout(lyricTimingPopoverCloseTimer);
+    lyricTimingPopoverCloseTimer = null;
+  }
+  releaseLyricTimingPopoverFocus(root);
+  root.classList.add('closing');
+  lyricTimingPopoverCloseTimer = setTimeout(function () {
+    lyricTimingPopoverCloseTimer = null;
+    root.classList.remove('closing');
+  }, force ? 220 : 160);
+  suppressLyricTimingSiblingPanels(false);
+}
+
+function updateLyricTimingOffsetUi(songOverride) {
+  var song = songOverride || lyricTimingCurrentSong();
+  var key = lyricTimingSongKey(song);
+  var offset = getLyricTimingOffsetForSong(song);
+  var root = document.getElementById('lyric-timing-control');
+  var value = document.getElementById('lyric-timing-value');
+  var songEl = document.getElementById('lyric-timing-song');
+  if (root) root.classList.toggle('has-offset', !!offset);
+  if (value) value.textContent = formatLyricTimingOffset(offset);
+  if (songEl) songEl.textContent = song ? (song.name || song.title || '当前歌曲') : '未选择歌曲';
+  document.querySelectorAll('[data-lyric-offset-step],[data-lyric-offset-reset]').forEach(function (btn) {
+    btn.disabled = !key;
+  });
+}
+
+function refreshLyricTimingAfterOffsetChange() {
+  if (stageLyrics) {
+    stageLyrics.currentIdx = -999;
+    stageLyrics.currentDisplayKey = '';
+  }
+  if (typeof pushDesktopLyricsState === 'function') pushDesktopLyricsState(true);
+}
+
+function setCurrentLyricTimingOffset(offset, opts) {
+  opts = opts || {};
+  var song = lyricTimingCurrentSong();
+  var key = lyricTimingSongKey(song);
+  if (!key || !song) {
+    updateLyricTimingOffsetUi(song);
+    if (!opts.silent) showToast('请先播放歌曲');
+    return 0;
+  }
+  offset = normalizeLyricTimingOffsetSeconds(offset);
+  var previous = key && lyricTimingOffsetMap && lyricTimingOffsetMap[key] ? lyricTimingOffsetEntryValue(lyricTimingOffsetMap[key]) : 0;
+  var hadEntry = !!(key && lyricTimingOffsetMap && lyricTimingOffsetMap[key]);
+  if (!offset && !hadEntry) {
+    updateLyricTimingOffsetUi(song);
+    refreshLyricTimingAfterOffsetChange();
+    if (!opts.silent) showToast(lyricTimingToastText(0));
+    return 0;
+  }
+  if (offset && hadEntry && previous === offset) {
+    updateLyricTimingOffsetUi(song);
+    if (!opts.silent) showToast(lyricTimingToastText(offset));
+    return offset;
+  }
+  if (offset) {
+    lyricTimingOffsetMap[key] = {
+      offset: offset,
+      updatedAt: Date.now(),
+      title: String(song.name || song.title || '').slice(0, 80),
+      artist: String(song.artist || '').slice(0, 80)
+    };
+  } else if (lyricTimingOffsetMap && lyricTimingOffsetMap[key]) {
+    delete lyricTimingOffsetMap[key];
+  }
+  writeLyricTimingOffsetMap();
+  updateLyricTimingOffsetUi(song);
+  refreshLyricTimingAfterOffsetChange();
+  if (!opts.silent) showToast(lyricTimingToastText(offset));
+  return offset;
+}
+
+function adjustCurrentLyricTimingOffset(delta) {
+  var next = getActiveLyricTimingOffsetSeconds() + (Number(delta) || 0);
+  return setCurrentLyricTimingOffset(next);
+}
+
+function handleLyricTimingOffsetClick(e) {
+  if (e && e._mineradioLyricTimingHandled) return;
+  var stepBtn = e && e.target && e.target.closest ? e.target.closest('[data-lyric-offset-step]') : null;
+  var resetBtn = e && e.target && e.target.closest ? e.target.closest('[data-lyric-offset-reset]') : null;
+  if (!stepBtn && !resetBtn) return;
+  if (e) {
+    e._mineradioLyricTimingHandled = true;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  if (resetBtn) setCurrentLyricTimingOffset(0);
+  else adjustCurrentLyricTimingOffset(Number(stepBtn.getAttribute('data-lyric-offset-step')) || 0);
+  releaseLyricTimingPopoverFocus(document.getElementById('lyric-timing-control'));
+}
+
+function bindLyricTimingOffsetControls() {
+  var root = document.getElementById('lyric-timing-control');
+  if (!root || root._mineradioLyricTimingBound) return;
+  root._mineradioLyricTimingBound = true;
+  root.addEventListener('mouseenter', function () {
+    suppressLyricTimingSiblingPanels(true);
+    clearLyricTimingPopoverClose();
+    updateLyricTimingOffsetUi();
+  });
+  root.addEventListener('focusin', function () {
+    suppressLyricTimingSiblingPanels(true);
+    clearLyricTimingPopoverClose();
+    updateLyricTimingOffsetUi();
+  });
+  root.addEventListener('mouseleave', function () { releaseLyricTimingSiblingPanelsSoon(root); });
+  root.addEventListener('focusout', function () { releaseLyricTimingSiblingPanelsSoon(root); });
+  root.addEventListener('click', handleLyricTimingOffsetClick);
+  root.querySelectorAll('[data-lyric-offset-step],[data-lyric-offset-reset]').forEach(function (btn) {
+    btn.addEventListener('click', handleLyricTimingOffsetClick);
+  });
+  document.addEventListener('pointerdown', function (e) {
+    if (!root.contains(e.target)) closeLyricTimingPopover(false);
+  }, true);
+  updateLyricTimingOffsetUi();
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindLyricTimingOffsetControls);
+else bindLyricTimingOffsetControls();
+;
+
+// ==================== 06-lyrics/07-lyric-render-helpers.js ====================
+// 07-lyric-render-helpers.js —— 歌词解析/兜底纯函数（盘点 A2：歌词源切换链缺失件）
+// 来源：Mineradio 2.2.0 public/js/modules/06-lyrics/00-lyrics-fetch-parse.js（GPL-3.0）。
+// 逐函数原文照抄，未改动任何逻辑；每函数头部标注 ref 文件行号。
+//
+// 抽取清单（ref 00-lyrics-fetch-parse.js 行号 → 本文件函数）：
+//   :1-5      hasUsableLyricLines
+//   :267-272  withLyricFallbackForSong
+//   :373-375  withLyricFallback（薄包装，一并抽）
+//   :376-379  lyricsAreFallbackTitleOnly
+//   :380-384  lyricTagTimeToSeconds
+//   :385-395  finalizeLyricLineDurations
+//   :396-426  parseLyricText
+//
+// 外部依赖核对（bundle 已有全局 / 适配层已有，均就位）：
+//   isNoLyricText            → renderer/mr-adapter.js:256（原 00:365-372 原文）
+//   lyricFallbackTextForSong → renderer/mr-adapter.js:554（原 00:258-266 DSH 适配版，读 #pTitle/#pArtist）
+//   currentLyricSong         → mr-bundle.js:32610
+// 其余依赖（Array/Number/Math/parseInt/isFinite/String）为语言内建。无缺失依赖，无需缓抽。
+//
+// 未抽取（状态函数，不在本文件；由协调者在适配层桥接）：
+//   renderLyrics（00:634-661）、toggleLyricsPanel（00:662-677）、
+//   applyOriginalLyricsState / applyCustomLyricState（mr-bundle.js 已有：32723 / 32746）。
+//
+// 装载：与 06-lyric-timing-offset.js 同路——由协调者把 '06-lyrics/07-lyric-render-helpers.js'
+//   加入 scripts/build-mr-bundle.js 的 FILES 后重建 mr-bundle.js（本文件无顶层副作用，
+//   在清单中的位置不影响运行：全部为 function 声明，跨文件提升后由 bundle 调用点解析）。
+
+// 00-lyrics-fetch-parse.js:1-5 原文
+function hasUsableLyricLines(lines) {
+  return (Array.isArray(lines) ? lines : []).some(function (line) {
+    return line && !line.fallback && !isNoLyricText(line.text);
+  });
+}
+
+// 00-lyrics-fetch-parse.js:267-272 原文
+function withLyricFallbackForSong(song, lines) {
+  lines = Array.isArray(lines) ? lines.filter(function (line) { return line && String(line.text || '').trim(); }) : [];
+  if (lines.length && !lines.every(function (line) { return isNoLyricText(line.text); })) return lines;
+  var text = lyricFallbackTextForSong(song);
+  return text ? [{ t: 0, text: text, duration: 9999, charCount: Math.max(1, text.length), fallback: true }] : [];
+}
+
+// 00-lyrics-fetch-parse.js:373-375 原文
+function withLyricFallback(lines) {
+  return withLyricFallbackForSong(currentLyricSong(), lines);
+}
+
+// 00-lyrics-fetch-parse.js:376-379 原文
+function lyricsAreFallbackTitleOnly(lines) {
+  lines = Array.isArray(lines) ? lines.filter(function (line) { return line && String(line.text || '').trim(); }) : [];
+  return lines.length === 1 && !!lines[0].fallback;
+}
+
+// 00-lyrics-fetch-parse.js:380-384 原文
+function lyricTagTimeToSeconds(min, sec, frac) {
+  var t = (parseInt(min, 10) || 0) * 60 + (parseInt(sec, 10) || 0);
+  if (frac) t += (parseInt(frac, 10) || 0) / Math.pow(10, Math.min(3, frac.length));
+  return t;
+}
+
+// 00-lyrics-fetch-parse.js:385-395 原文
+function finalizeLyricLineDurations(lines) {
+  lines.sort(function (a, b) { return a.t - b.t; });
+  for (var i = 0; i < lines.length; i++) {
+    var next = lines[i + 1];
+    var inferred = next && next.t > lines[i].t ? next.t - lines[i].t : 4.8;
+    if (!isFinite(lines[i].duration) || lines[i].duration <= 0) lines[i].duration = inferred;
+    lines[i].duration = Math.max(0.45, Math.min(12, lines[i].duration));
+    lines[i].charCount = Math.max(1, lines[i].charCount || String(lines[i].text || '').length);
+  }
+  return lines;
+}
+
+// 00-lyrics-fetch-parse.js:396-426 原文
+function parseLyricText(text) {
+  var lines = [], reg = /\[(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?\]/g;
+  text.split(/\r?\n/).forEach(function (line) {
+    var tags = [], times = [], m;
+    reg.lastIndex = 0;
+    while ((m = reg.exec(line))) {
+      var t = lyricTagTimeToSeconds(m[1], m[2], m[3]);
+      times.push(t);
+      tags.push({ t: t, index: m.index, end: reg.lastIndex });
+    }
+    if (!times.length) return;
+    var hasInterleavedText = false;
+    for (var i = 0; i < tags.length - 1; i++) {
+      if (line.slice(tags[i].end, tags[i + 1].index).trim()) {
+        hasInterleavedText = true;
+        break;
+      }
+    }
+    if (hasInterleavedText) {
+      for (var si = 0; si < tags.length; si++) {
+        var segment = line.slice(tags[si].end, si + 1 < tags.length ? tags[si + 1].index : line.length).trim();
+        if (segment) lines.push({ t: tags[si].t, text: segment, source: 'lrc' });
+      }
+      return;
+    }
+    var txt = line.replace(reg, '').trim();
+    if (!txt) return;
+    times.forEach(function (t) { lines.push({ t: t, text: txt, source: 'lrc' }); });
+  });
+  return finalizeLyricLineDurations(lines);
+}
+;
+
+// ==================== 10-shell/00-gesture-control.js ====================
+// ============================================================
+// 00-gesture-control.js —— Ported from Mineradio 2.2.0
+//   （public/js/modules/10-shell/00-gesture-control.js，GPL-3.0，804 行原文照抄）
+//   移植日期：2026-09-19；除下列标注「本地化适配」的行与文末 DSH 适配段外与 MR 原文逐字节一致。
+//   本地化适配点（行号均为 MR 原文行号）：
+//     ① :428-429 loadScriptOnce 两条 CDN URL → 本地 renderer/mr/vendor/mediapipe/ 相对路径；
+//     ② :435 locateFile CDN → dsh-mediapipe://assets/（自定义特权协议，main.js 提供，wasm/tflite
+//        等 fetch 二进制在 file:// 页面无法经 fetch 加载，须走特权协议；.js 脚本 tag 不受限）；
+//     ③ :253 手势音量基准优先取 DSH 实际音量（MR 原文仅 targetVolume；bundle 内同名变量指向
+//        MR 旧 localStorage 键 apex-player-volume，与 DSH 实际音量脱钩）。
+//   文末「DSH 本地化适配段」：播放动作桥（MR 裸调的 togglePlay/nextTrack/prevTrack/setVolume
+//   经 window.__mp 等价桥接）+ 手势 HUD/手骨架样式注入（MR index.css 16628-16812，DSH style.css
+//   未含，且 CSP style-src 'self' 禁内联 → 经 CSSOM 注入）。非 MR 原文，已注明。
+// ============================================================
+function startHeadTracking() { }     // stub: 兼容旧调用
+function stopHeadTracking() { }      // stub
+
+var gestureVideo = null, gestureCamera = null, gestureHands = null;
+var gestureActive = false;
+// 21 个关键点的平滑缓存 (EMA): [{x,y}, ...]
+var handLmSmooth = null;
+var handLmLastSeen = 0;
+// 捏合状态
+var pinchState = { active: false, lastX: 0, lastY: 0, lastT: 0 };
+// 物理旋转: 给 particles 一个角速度, 每帧衰减
+var particleSpin = { vx: 0, vy: 0, damping: 0.90 };
+// 手势驱动的总旋转 (累计角度), 输出到 particles
+var gestureRotation = { x: 0, y: 0 };
+var gestureGrip = { value: 0, target: 0, openness: 1, lastState: 'open', pulse: 0 };
+var gestureActionState = {
+  candidate: '',
+  since: 0,
+  fired: false,
+  cooldownUntil: 0,
+  swipeAnchor: null,
+  volumeArmed: false,
+  volumeBaseY: 0,
+  volumeBaseValue: 0,
+  volumeLastApply: 0,
+  lastAction: ''
+};
+var gestureStartEpoch = 0;
+var gestureStartPromise = null;
+var gestureInferenceBusy = false;
+var gestureLastInferenceAt = 0;
+var gestureLastInferenceErrorAt = 0;
+var gestureInferenceErrorCount = 0;
+var gestureLifecycleState = 'off';
+var gestureHostResumeTimer = 0;
+var gestureLastHudSignature = '';
+var gestureLastHudAt = 0;
+var PARTICLE_POINTER_SPIN_X = 0.0032;
+var PARTICLE_POINTER_SPIN_Y = 0.0034;
+var PARTICLE_HAND_SPIN_X = 4.15;
+var PARTICLE_HAND_SPIN_Y = 4.30;
+var PARTICLE_SPIN_MAX = 6.2;
+
+function clampParticleSpinVelocity(v) {
+  if (!isFinite(v)) return 0;
+  return Math.max(-PARTICLE_SPIN_MAX, Math.min(PARTICLE_SPIN_MAX, v));
+}
+
+function applyParticleSpinDrag(dx, dy, dt) {
+  var rx = dy * PARTICLE_POINTER_SPIN_X;
+  var ry = dx * PARTICLE_POINTER_SPIN_Y;
+  gestureRotation.x += rx;
+  gestureRotation.y += ry;
+  if (dt > 0) {
+    particleSpin.vx = clampParticleSpinVelocity(rx / dt * 0.46);
+    particleSpin.vy = clampParticleSpinVelocity(ry / dt * 0.46);
+  }
+}
+
+function resetParticleRotationTarget(syncVisual) {
+  gestureRotation.x = 0;
+  gestureRotation.y = 0;
+  particleSpin.vx = 0;
+  particleSpin.vy = 0;
+  if (syncVisual && particles) {
+    particles.rotation.set(0, 0, 0);
+    if (bloomParticles) bloomParticles.rotation.set(0, 0, 0);
+    if (floatGroup) floatGroup.rotation.set(0, 0, 0);
+    if (backCoverGroup) backCoverGroup.rotation.set(0, 0, 0);
+  }
+}
+
+function rebaseParticleRotationAxis(axis) {
+  var limit = Math.PI * 10;
+  if (Math.abs(gestureRotation[axis]) < limit) return;
+  var offset = Math.round(gestureRotation[axis] / (Math.PI * 2)) * Math.PI * 2;
+  gestureRotation[axis] -= offset;
+  if (particles) particles.rotation[axis] -= offset;
+  if (bloomParticles) bloomParticles.rotation[axis] -= offset;
+  if (floatGroup) floatGroup.rotation[axis] -= offset;
+  if (backCoverGroup) backCoverGroup.rotation[axis] -= offset;
+  if (skullParticleGroup) skullParticleGroup.rotation[axis] -= offset;
+  if (stageLyrics.group) stageLyrics.group.rotation[axis] -= offset;
+}
+
+function rebaseParticleRotationIfNeeded() {
+  rebaseParticleRotationAxis('x');
+  rebaseParticleRotationAxis('y');
+}
+// 手骨架 canvas
+var handCanvas = null, handCanvasCtx = null;
+// 平滑系数 (越小越平滑, 但反应越慢)
+var HAND_SMOOTH_ALPHA = 0.35;
+
+function normalizeGestureSensitivity(value) {
+  value = String(value || '').trim().toLowerCase();
+  return /^(steady|balanced|quick)$/.test(value) ? value : 'balanced';
+}
+
+function gestureSensitivityProfile() {
+  var mode = normalizeGestureSensitivity(fx && fx.gestureSensitivity);
+  if (mode === 'steady') return { hold: 820, volumeHold: 620, swipeDistance: 0.245, swipeWindow: 620, cooldown: 1320 };
+  if (mode === 'quick') return { hold: 470, volumeHold: 350, swipeDistance: 0.165, swipeWindow: 520, cooldown: 860 };
+  return { hold: 640, volumeHold: 470, swipeDistance: 0.205, swipeWindow: 570, cooldown: 1080 };
+}
+
+function gestureLandmarkDistance(a, b) {
+  if (!a || !b) return 0;
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function gestureFingerExtended(lm, tipIndex, pipIndex, mcpIndex, palm) {
+  var span = Math.max(0.045, gestureLandmarkDistance(lm[5], lm[17]));
+  var tipPalm = gestureLandmarkDistance(lm[tipIndex], palm);
+  var pipPalm = gestureLandmarkDistance(lm[pipIndex], palm);
+  var tipMcp = gestureLandmarkDistance(lm[tipIndex], lm[mcpIndex]);
+  var pipMcp = gestureLandmarkDistance(lm[pipIndex], lm[mcpIndex]);
+  return tipPalm > pipPalm + span * 0.13 && tipMcp > pipMcp * 1.18;
+}
+
+function classifyGesturePlayerPose(lm, palm, pinchDist) {
+  var span = Math.max(0.045, gestureLandmarkDistance(lm[5], lm[17]));
+  var index = gestureFingerExtended(lm, 8, 6, 5, palm);
+  var middle = gestureFingerExtended(lm, 12, 10, 9, palm);
+  var ring = gestureFingerExtended(lm, 16, 14, 13, palm);
+  var pinky = gestureFingerExtended(lm, 20, 18, 17, palm);
+  var thumbReach = gestureLandmarkDistance(lm[4], palm);
+  var thumbUp = thumbReach > span * 0.78 && lm[4].y < palm.y - span * 0.52;
+  if (thumbUp && !index && !middle && !ring && !pinky) return 'like';
+  if (index && middle && !ring && !pinky && gestureLandmarkDistance(lm[8], lm[12]) > span * 0.26) return 'play';
+  if (index && middle && ring && !pinky) return 'lyrics';
+  if (index && !middle && !ring && !pinky && pinchDist > span * 0.30) return 'volume';
+  return '';
+}
+
+function resetGesturePlayerActionState(keepCooldown) {
+  gestureActionState.candidate = '';
+  gestureActionState.since = 0;
+  gestureActionState.fired = false;
+  gestureActionState.swipeAnchor = null;
+  gestureActionState.volumeArmed = false;
+  gestureActionState.volumeLastApply = 0;
+  if (!keepCooldown) gestureActionState.cooldownUntil = 0;
+}
+
+function gesturePlayerActionsAllowed() {
+  if (!gestureActive || !fx || fx.gesturePlayerActions === false) return false;
+  if (!gestureHostVisible()) return false;
+  if (document.body && document.body.classList.contains('desktop-software-locked')) return false;
+  if (typeof progressDragState !== 'undefined' && progressDragState && progressDragState.active) return false;
+  if (document.querySelector('.modal-mask.show,.modal.show,.login-easter-overlay.show,.login-easter-overlay.active')) return false;
+  var active = document.activeElement;
+  if (active && (/^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName) || active.isContentEditable)) return false;
+  return true;
+}
+
+function setGestureCandidate(candidate, now, holdMs, label, detail) {
+  if (gestureActionState.candidate !== candidate) {
+    gestureActionState.candidate = candidate;
+    gestureActionState.since = now;
+    gestureActionState.fired = false;
+  }
+  var progress = Math.max(0, Math.min(1, (now - gestureActionState.since) / Math.max(1, holdMs)));
+  showGestureHUD(label, progress, gestureActionState.fired ? '已执行，松手后可再次触发' : detail);
+  return progress;
+}
+
+function executeGesturePlayerAction(action, now, cooldownMs) {
+  if (gestureActionState.fired || now < gestureActionState.cooldownUntil) return false;
+  gestureActionState.fired = true;
+  gestureActionState.lastAction = action;
+  gestureActionState.cooldownUntil = now + cooldownMs;
+  try {
+    if (action === 'play') {
+      Promise.resolve(togglePlay()).catch(function () { });
+      showToast('手势: 播放 / 暂停');
+    } else if (action === 'like') {
+      if (typeof toggleLikeCurrent === 'function') toggleLikeCurrent();
+      showToast('手势: 喜欢当前歌曲');
+    } else if (action === 'lyrics') {
+      if (typeof setParticleLyricsSilently === 'function') {
+        setParticleLyricsSilently(!fx.particleLyrics);
+        saveLyricLayout({ user: true, reason: 'gesture-lyrics' });
+        showToast(fx.particleLyrics ? '手势: 已显示歌词' : '手势: 已隐藏歌词');
+      }
+    } else if (action === 'next') {
+      nextTrack(true);
+      showToast('手势: 下一首');
+    } else if (action === 'previous') {
+      prevTrack(true);
+      showToast('手势: 上一首');
+    }
+    return true;
+  } catch (e) {
+    console.warn('[GestureAction]', action, e);
+    return false;
+  }
+}
+
+function updateGestureSwipeAction(palm, openness, now, profile) {
+  if (openness < 0.72) {
+    gestureActionState.swipeAnchor = null;
+    return false;
+  }
+  var anchor = gestureActionState.swipeAnchor;
+  if (!anchor || now - anchor.time > profile.swipeWindow) {
+    gestureActionState.swipeAnchor = { x: palm.x, y: palm.y, time: now };
+    return false;
+  }
+  var dx = palm.x - anchor.x;
+  var dy = palm.y - anchor.y;
+  if (Math.abs(dy) > 0.16 || Math.abs(dx) < profile.swipeDistance || Math.abs(dx) < Math.abs(dy) * 1.65 || now < gestureActionState.cooldownUntil) return false;
+  var action = dx < 0 ? 'next' : 'previous';
+  gestureActionState.candidate = action;
+  gestureActionState.since = now;
+  gestureActionState.fired = false;
+  gestureActionState.swipeAnchor = null;
+  executeGesturePlayerAction(action, now, profile.cooldown);
+  showGestureHUD(dx < 0 ? '左滑 · 下一首' : '右滑 · 上一首', 1, '已执行，回到中央后可继续');
+  return true;
+}
+
+function updateGesturePlayerActions(lm, palm, openness, pinchDist, isPinch, isFist, now) {
+  if (!gesturePlayerActionsAllowed()) {
+    resetGesturePlayerActionState(true);
+    return false;
+  }
+  var profile = gestureSensitivityProfile();
+  if (!isPinch && !isFist && updateGestureSwipeAction(palm, openness, now, profile)) return true;
+  if (isPinch || isFist || openness > 0.72) {
+    if (openness <= 0.72) gestureActionState.swipeAnchor = null;
+    gestureActionState.candidate = '';
+    gestureActionState.since = 0;
+    gestureActionState.fired = false;
+    gestureActionState.volumeArmed = false;
+    return false;
+  }
+
+  var pose = classifyGesturePlayerPose(lm, palm, pinchDist);
+  if (!pose) {
+    gestureActionState.candidate = '';
+    gestureActionState.since = 0;
+    gestureActionState.fired = false;
+    gestureActionState.volumeArmed = false;
+    return false;
+  }
+  if (pose === 'volume') {
+    var volumeProgress = setGestureCandidate('volume', now, profile.volumeHold, '食指音量', '保持后上下移动调节音量');
+    if (volumeProgress >= 1 && !gestureActionState.volumeArmed) {
+      gestureActionState.volumeArmed = true;
+      gestureActionState.volumeBaseY = palm.y;
+      gestureActionState.volumeBaseValue = (typeof window !== 'undefined' && window.__mp && window.__mp.state && typeof window.__mp.state.volume === 'number') ? window.__mp.state.volume : (typeof targetVolume === 'number' ? targetVolume : 0.7); // 本地化适配（原文:253 仅 targetVolume；bundle 同名变量指向 MR 旧 localStorage 键）
+      gestureActionState.volumeLastApply = 0;
+    }
+    if (gestureActionState.volumeArmed) {
+      var nextVolume = Math.max(0, Math.min(1, gestureActionState.volumeBaseValue + (gestureActionState.volumeBaseY - palm.y) * 1.85));
+      if (now - gestureActionState.volumeLastApply >= 80) {
+        gestureActionState.volumeLastApply = now;
+        if (typeof setVolume === 'function') setVolume(nextVolume, true);
+      }
+      showGestureHUD('音量 ' + Math.round(nextVolume * 100) + '%', nextVolume, '食指向上增加 · 向下降低');
+    }
+    return true;
+  }
+
+  var labels = {
+    play: ['V 手势 · 播放', '保持以播放 / 暂停'],
+    like: ['拇指向上 · 喜欢', '保持以收藏 / 取消收藏'],
+    lyrics: ['三指 · 歌词', '保持以显示 / 隐藏歌词']
+  };
+  var progress = setGestureCandidate(pose, now, profile.hold, labels[pose][0], labels[pose][1]);
+  if (progress >= 1) executeGesturePlayerAction(pose, now, profile.cooldown);
+  return true;
+}
+
+function applyGestureSettingsUi() {
+  if (!fx) return;
+  var actions = document.getElementById('t-gesturePlayerActions');
+  if (actions) actions.classList.toggle('on', fx.gesturePlayerActions !== false);
+  var overlay = document.getElementById('t-gestureHandOverlay');
+  if (overlay) overlay.classList.toggle('on', fx.gestureHandOverlay !== false);
+  var mode = normalizeGestureSensitivity(fx.gestureSensitivity);
+  document.querySelectorAll('#gesture-sensitivity-seg button').forEach(function (button) {
+    button.classList.toggle('active', button.dataset.gestureSensitivity === mode);
+  });
+  if (handCanvas) handCanvas.classList.toggle('show', gestureActive && fx.gestureHandOverlay !== false);
+}
+
+function toggleGesturePlayerActions() {
+  fx.gesturePlayerActions = fx.gesturePlayerActions === false;
+  resetGesturePlayerActionState(true);
+  applyGestureSettingsUi();
+  saveLyricLayout({ user: true, reason: 'gesturePlayerActions' });
+  showToast(fx.gesturePlayerActions ? '播放器手势已开启' : '仅保留粒子视觉手势');
+}
+
+function toggleGestureHandOverlay() {
+  fx.gestureHandOverlay = fx.gestureHandOverlay === false;
+  applyGestureSettingsUi();
+  if (!fx.gestureHandOverlay && handCanvasCtx) handCanvasCtx.clearRect(0, 0, handCanvas.width, handCanvas.height);
+  saveLyricLayout({ user: true, reason: 'gestureHandOverlay' });
+  showToast(fx.gestureHandOverlay ? '手部光迹已显示' : '手部光迹已隐藏，识别继续运行');
+}
+
+function setGestureSensitivity(mode) {
+  fx.gestureSensitivity = normalizeGestureSensitivity(mode);
+  resetGesturePlayerActionState(true);
+  applyGestureSettingsUi();
+  saveLyricLayout({ user: true, reason: 'gestureSensitivity' });
+}
+
+function gestureInferenceIntervalMs() {
+  var quality = fx && String(fx.performanceQuality || 'eco');
+  if (quality === 'high' || quality === 'ultra') return 42;
+  if (quality === 'balanced') return 55;
+  return 72;
+}
+
+function gestureModelComplexity() {
+  // 手势是显式开启的交互能力，识别可靠性优先于模型降档。
+  // 帧率仍按性能档限流，低配机不会因此把推理频率拉高。
+  return 1;
+}
+
+function gestureHostVisible() {
+  if (typeof desktopRuntimeState === 'object' && desktopRuntimeState && desktopRuntimeState.desktop) {
+    // 完整桌面模式会把同一个 Mineradio HWND 嵌入桌面；此时 Electron
+    // 的 isVisible/isMinimized 可能不代表用户肉眼看到的桌面宿主。
+    if (desktopRuntimeState.embedded === true || desktopRuntimeState.interactive === true) return true;
+    return desktopRuntimeState.minimized !== true && desktopRuntimeState.visible !== false;
+  }
+  return !document.hidden;
+}
+
+function syncGestureCameraUi() {
+  if (!fx) return;
+  var wantsGesture = fx.cam === 'gesture';
+  var starting = wantsGesture && gestureLifecycleState === 'starting';
+  var running = wantsGesture && gestureActive && gestureLifecycleState === 'active';
+  document.querySelectorAll('#cam-seg button').forEach(function (button) {
+    var mode = button.dataset.cam;
+    button.classList.toggle('active', mode === 'gesture' ? (running || starting) : !wantsGesture);
+    button.classList.toggle('pending', mode === 'gesture' && starting);
+    button.setAttribute('aria-busy', mode === 'gesture' && starting ? 'true' : 'false');
+    button.setAttribute('aria-pressed', mode === 'gesture' ? String(running) : String(!wantsGesture));
+  });
+}
+
+function setGestureLifecycleState(state) {
+  gestureLifecycleState = String(state || 'off');
+  syncGestureCameraUi();
+}
+
+function persistGestureCameraDisabled(reason) {
+  fx.cam = 'off';
+  syncGestureCameraUi();
+  try { saveLyricLayout({ user: true, reason: 'cam', syncDisk: true }); } catch (e) { }
+  if (reason) console.warn('[GestureCamera] disabled:', reason);
+}
+
+function resumeSavedGestureControl(reason) {
+  if (!fx || fx.cam !== 'gesture') {
+    syncGestureCameraUi();
+    return Promise.resolve(false);
+  }
+  if ((document.body && document.body.classList.contains('splash-active')) || !gestureHostVisible()) {
+    setGestureLifecycleState('suspended');
+    return Promise.resolve(false);
+  }
+  return Promise.resolve(startGestureControl()).then(function (started) {
+    syncGestureCameraUi();
+    return started === true;
+  });
+}
+
+function syncGestureControlHostVisibility(reason) {
+  if (gestureHostResumeTimer) {
+    clearTimeout(gestureHostResumeTimer);
+    gestureHostResumeTimer = 0;
+  }
+  if (!fx || fx.cam !== 'gesture') {
+    if (gestureActive || gestureStartPromise || gestureVideo || gestureCamera || gestureHands) stopGestureControl();
+    else syncGestureCameraUi();
+    return;
+  }
+  if (!gestureHostVisible()) {
+    gestureStartEpoch++;
+    gestureStartPromise = null;
+    if (gestureActive || gestureVideo || gestureCamera || gestureHands) cleanupGestureControlRuntime('suspended');
+    else setGestureLifecycleState('suspended');
+    return;
+  }
+  if (document.body && document.body.classList.contains('splash-active')) return;
+  gestureHostResumeTimer = setTimeout(function () {
+    gestureHostResumeTimer = 0;
+    resumeSavedGestureControl(reason || 'host-visible');
+  }, 120);
+}
+
+async function startGestureControl() {
+  if (gestureActive) return true;
+  if (gestureStartPromise) return gestureStartPromise;
+  var epoch = ++gestureStartEpoch;
+  setGestureLifecycleState('starting');
+  gestureStartPromise = startGestureControlInternal(epoch);
+  try { return await gestureStartPromise; }
+  finally {
+    if (epoch === gestureStartEpoch) {
+      gestureStartPromise = null;
+      if (!gestureActive && gestureLifecycleState === 'starting') {
+        setGestureLifecycleState(fx && fx.cam === 'gesture' ? 'suspended' : 'off');
+      }
+    }
+  }
+}
+
+async function startGestureControlInternal(epoch) {
+  showToast('正在加载手势识别…');
+  try {
+    var desktopApi = typeof getDesktopWindowApi === 'function' ? getDesktopWindowApi() : window.desktopWindow;
+    if (desktopApi && typeof desktopApi.requestGestureCameraPermission === 'function') {
+      var permissionGrant = await desktopApi.requestGestureCameraPermission();
+      if (!permissionGrant || permissionGrant.ok !== true) {
+        throw new Error(permissionGrant && permissionGrant.error || 'GESTURE_CAMERA_PERMISSION_GRANT_FAILED');
+      }
+    }
+    await loadScriptOnce('mr/vendor/mediapipe/camera_utils.js'); // 本地化适配（原文:428 jsDelivr CDN）
+    await loadScriptOnce('mr/vendor/mediapipe/hands.js'); // 本地化适配（原文:429 jsDelivr CDN）
+    if (epoch !== gestureStartEpoch || fx.cam !== 'gesture') return false;
+    gestureVideo = document.createElement('video');
+    gestureVideo.playsInline = true; gestureVideo.muted = true;
+    gestureVideo.style.display = 'none';
+    document.body.appendChild(gestureVideo);
+    gestureHands = new Hands({ locateFile: function (f) { return 'dsh-mediapipe://assets/' + f; } }); // 本地化适配（原文:435 jsDelivr CDN；特权协议见 main.js）
+    // modelComplexity:1 比 0 更稳定, 但仍流畅. 提高 confidence 减少误检
+    gestureHands.setOptions({ maxNumHands: 1, modelComplexity: gestureModelComplexity(), minDetectionConfidence: 0.58, minTrackingConfidence: 0.55 });
+    gestureHands.onResults(function (res) {
+      if (!gestureActive) return;
+      var lm = res.multiHandLandmarks && res.multiHandLandmarks[0];
+      if (!lm) { onHandLost(); return; }
+      processHandFrame(lm);
+    });
+    gestureCamera = new Camera(gestureVideo, { onFrame: async function () {
+      if (!gestureHands || gestureInferenceBusy || !gestureHostVisible()) return;
+      var now = performance.now();
+      if (now - gestureLastInferenceAt < gestureInferenceIntervalMs()) return;
+      gestureLastInferenceAt = now;
+      gestureInferenceBusy = true;
+      try {
+        await gestureHands.send({ image: gestureVideo });
+      } catch (error) {
+        // camera_utils 只会在 onFrame Promise resolve 后排下一帧；这里若把
+        // 单帧错误继续抛出，整条摄像头 RAF 会永久停止。
+        gestureInferenceErrorCount++;
+        if (now - gestureLastInferenceErrorAt > 5000) {
+          gestureLastInferenceErrorAt = now;
+          console.warn('[GestureCamera] inference frame recovered:', error && (error.message || error.name) || error);
+        }
+        onHandLost();
+      }
+      finally { gestureInferenceBusy = false; }
+    }, width: 480, height: 360 });
+    await gestureCamera.start();
+    if (epoch !== gestureStartEpoch || fx.cam !== 'gesture') {
+      cleanupGestureControlRuntime();
+      return false;
+    }
+    gestureActive = true;
+    setGestureLifecycleState('active');
+    // 准备 hand canvas
+    handCanvas = document.getElementById('hand-canvas');
+    handCanvasCtx = handCanvas.getContext('2d');
+    resizeHandCanvas();
+    handCanvas.classList.toggle('show', fx.gestureHandOverlay !== false);
+    applyGestureSettingsUi();
+    showToast('手势已开启: 粒子交互 + 播放控制');
+    showGestureHUD('待命', 0, '把手放进视野');
+    return true;
+  } catch (e) {
+    if (epoch !== gestureStartEpoch || !fx || fx.cam !== 'gesture') {
+      cleanupGestureControlRuntime(fx && fx.cam === 'gesture' ? 'suspended' : 'off');
+      return false;
+    }
+    console.warn('Gesture failed:', e);
+    cleanupGestureControlRuntime('error');
+    var denied = /NotAllowed|Permission|permission|GESTURE_CAMERA/i.test(String(e && (e.name + ' ' + e.message) || e || ''));
+    showToast(denied ? '摄像头权限未开启，请在 Windows 隐私设置中允许桌面应用访问摄像头' : '手势启动失败，请检查摄像头是否被其他程序占用');
+    persistGestureCameraDisabled(e && (e.message || e.name) || e || 'startup-failed');
+    return false;
+  }
+}
+
+function cleanupGestureControlRuntime(nextState) {
+  try { if (gestureCamera && gestureCamera.stop) gestureCamera.stop(); } catch (e) { }
+  try { if (gestureVideo && gestureVideo.srcObject) gestureVideo.srcObject.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { }
+  try { if (gestureHands && gestureHands.close) gestureHands.close(); } catch (e) { }
+  try { if (gestureVideo) gestureVideo.remove(); } catch (e) { }
+  gestureVideo = null; gestureHands = null; gestureCamera = null;
+  gestureActive = false;
+  gestureInferenceBusy = false;
+  gestureLastInferenceAt = 0;
+  gestureLastInferenceErrorAt = 0;
+  gestureInferenceErrorCount = 0;
+  pinchState.active = false;
+  handLmSmooth = null;
+  uniforms.uHandActive.value = 0;
+  if (uniforms.uGestureGrip) uniforms.uGestureGrip.value = 0;
+  gestureGrip.value = 0;
+  gestureGrip.target = 0;
+  gestureGrip.openness = 1;
+  resetGesturePlayerActionState(false);
+  document.getElementById('gesture-hud').classList.remove('show');
+  if (handCanvas) {
+    handCanvas.classList.remove('show');
+    if (handCanvasCtx) handCanvasCtx.clearRect(0, 0, handCanvas.width, handCanvas.height);
+  }
+  setGestureLifecycleState(nextState || 'off');
+}
+
+function stopGestureControl() {
+  gestureStartEpoch++;
+  gestureStartPromise = null;
+  if (!gestureActive && !gestureVideo && !gestureCamera && !gestureHands) return;
+  cleanupGestureControlRuntime('off');
+}
+
+function resizeHandCanvas() {
+  if (!handCanvas) return;
+  var eco = fx && fx.performanceQuality === 'eco';
+  var dpr = eco ? 1 : Math.min(devicePixelRatio || 1, 2);
+  handCanvas.width = innerWidth * dpr;
+  handCanvas.height = innerHeight * dpr;
+  handCanvas.style.width = innerWidth + 'px';
+  handCanvas.style.height = innerHeight + 'px';
+  handCanvasCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resizeHandCanvas);
+
+function onHandLost() {
+  // 平滑淡出, 不立即清零 — 给一点缓冲
+  if (pinchState.active) pinchState.active = false;
+  gestureGrip.target = 0;
+  resetGesturePlayerActionState(true);
+  uniforms.uHandActive.value *= 0.9;
+  if (uniforms.uHandActive.value < 0.02) uniforms.uHandActive.value = 0;
+  if (performance.now() - handLmLastSeen > 600) {
+    handLmSmooth = null;
+    if (handCanvasCtx) handCanvasCtx.clearRect(0, 0, innerWidth, innerHeight);
+    showGestureHUD('待命', 0, '把手放进视野');
+  }
+}
+
+// 把单帧 21 个 landmark 平滑到 handLmSmooth, 镜像 X (摄像头是反的)
+function smoothLandmarks(lm) {
+  if (!handLmSmooth) {
+    handLmSmooth = lm.map(function (p) { return { x: 1 - p.x, y: p.y, z: p.z || 0 }; });
+    return handLmSmooth;
+  }
+  var a = HAND_SMOOTH_ALPHA;
+  for (var i = 0; i < 21; i++) {
+    var srcX = 1 - lm[i].x;
+    handLmSmooth[i].x += (srcX - handLmSmooth[i].x) * a;
+    handLmSmooth[i].y += (lm[i].y - handLmSmooth[i].y) * a;
+    handLmSmooth[i].z += ((lm[i].z || 0) - handLmSmooth[i].z) * a;
+  }
+  return handLmSmooth;
+}
+
+// 手掌中心 ≈ wrist(0) 和 mcp 平均 (5,9,13,17 是各指根)
+function palmCenter(lm) {
+  var px = (lm[0].x + lm[5].x + lm[9].x + lm[13].x + lm[17].x) / 5;
+  var py = (lm[0].y + lm[5].y + lm[9].y + lm[13].y + lm[17].y) / 5;
+  return { x: px, y: py };
+}
+
+function handOpenness(lm, palm) {
+  var span = Math.hypot(lm[5].x - lm[17].x, lm[5].y - lm[17].y);
+  span = Math.max(0.055, span);
+  var tips = [8, 12, 16, 20];
+  var avg = 0;
+  for (var i = 0; i < tips.length; i++) avg += Math.hypot(lm[tips[i]].x - palm.x, lm[tips[i]].y - palm.y);
+  avg /= tips.length;
+  return clampRange((avg / span - 0.62) / 0.78, 0, 1);
+}
+
+function processHandFrame(rawLm) {
+  handLmLastSeen = performance.now();
+  var lm = smoothLandmarks(rawLm);
+
+  // 推开粒子位置: 手掌中心 (而非单一食指)
+  var palm = palmCenter(lm);
+  var openness = handOpenness(lm, palm);
+  gestureGrip.openness += (openness - gestureGrip.openness) * 0.28;
+  var gripTarget = clampRange(1 - openness, 0, 1);
+  gestureGrip.target = gripTarget > 0.55 ? gripTarget : 0;
+  var ndcX = palm.x * 2 - 1;
+  var ndcY = -(palm.y * 2 - 1);
+  var handLocalX = ndcX * PLANE_SIZE * 0.62;
+  var handLocalY = ndcY * PLANE_SIZE * 0.62;
+  if (particleLocalPointFromNdc(ndcX, ndcY, particlePointerLocalHit)) {
+    // 平滑推动 (避免 uHandXY 跳变)
+    handLocalX = particlePointerLocalHit.x;
+    handLocalY = particlePointerLocalHit.y;
+  }
+  var cur = uniforms.uHandXY.value;
+  cur.x += (handLocalX - cur.x) * 0.48;
+  cur.y += (handLocalY - cur.y) * 0.48;
+  var tgtActive = 0.44 + openness * 0.56;
+  uniforms.uHandActive.value += (tgtActive - uniforms.uHandActive.value) * 0.26;
+
+  // 捏合检测 (拇指 4 与食指 8)
+  var pinchDist = Math.hypot(lm[8].x - lm[4].x, lm[8].y - lm[4].y);
+  var isPinch = pinchDist < 0.075 && openness > 0.28;
+  var isFist = !isPinch && gripTarget > 0.68;
+  var playerActionVisible = updateGesturePlayerActions(lm, palm, openness, pinchDist, isPinch, isFist, performance.now());
+
+  if (isPinch && !pinchState.active) {
+    unlockCenteredView();
+    pinchState.active = true;
+    pinchState.lastX = palm.x;
+    pinchState.lastY = palm.y;
+    pinchState.lastT = performance.now();
+    particleSpin.vx = particleSpin.vy = 0;
+    gestureGrip.target = Math.min(0.34, gestureGrip.target);
+    if (!playerActionVisible) showGestureHUD('捏合拖动', 1, '移动手掌 -> 旋转封面');
+  } else if (isPinch && pinchState.active) {
+    unlockCenteredView();
+    var dx = palm.x - pinchState.lastX;
+    var dy = palm.y - pinchState.lastY;
+    var nowPinch = performance.now();
+    var pinchDt = Math.max(1 / 120, Math.min(0.08, (nowPinch - pinchState.lastT) / 1000 || 1 / 60));
+    // v8: 方向修正 - 上下手与封面旋转同向
+    var spinY = dx * PARTICLE_HAND_SPIN_Y;
+    var spinX = dy * PARTICLE_HAND_SPIN_X;
+    gestureRotation.y += spinY;
+    gestureRotation.x += spinX;
+    particleSpin.vy = clampParticleSpinVelocity(spinY / pinchDt * 0.48);
+    particleSpin.vx = clampParticleSpinVelocity(spinX / pinchDt * 0.48);
+    pinchState.lastX = palm.x;
+    pinchState.lastY = palm.y;
+    pinchState.lastT = nowPinch;
+    gestureGrip.target = Math.min(0.34, gestureGrip.target);
+    if (!playerActionVisible) showGestureHUD('拖动中', 1, '松手后保留惯性');
+  } else if (!isPinch && pinchState.active) {
+    pinchState.active = false;
+    if (!playerActionVisible) showGestureHUD('松开', 0.4, '可继续触碰或捏合');
+  } else if (isFist) {
+    if (gestureGrip.lastState !== 'fist') {
+      gestureGrip.pulse = 1;
+      uniforms.uBurstAmt.value = Math.max(uniforms.uBurstAmt.value, 0.26);
+    }
+    gestureGrip.lastState = 'fist';
+    if (!playerActionVisible) showGestureHUD('握拳收束', Math.max(0.55, gripTarget), '粒子向中心收缩');
+  } else {
+    if (gestureGrip.lastState === 'fist' && openness > 0.58) {
+      uniforms.uBurstAmt.value = Math.max(uniforms.uBurstAmt.value, 0.18);
+    }
+    gestureGrip.lastState = openness > 0.62 ? 'open' : 'hover';
+    if (!playerActionVisible) showGestureHUD(openness > 0.62 ? '张开恢复' : '悬停', 0.30 + openness * 0.34, openness > 0.72 ? '快速左右滑动可切歌' : '手掌推开粒子 / 捏合旋转 / 握拳收束');
+  }
+
+  if (fx.gestureHandOverlay !== false) drawHandSkeleton(lm, isPinch, openness, isFist);
+  else if (handCanvasCtx) handCanvasCtx.clearRect(0, 0, innerWidth, innerHeight);
+}
+
+// 画手掌骨架: 连线 + 关节圆点
+//   骨架连接表 (MediaPipe 标准)
+var HAND_BONES = [
+  [0, 1], [1, 2], [2, 3], [3, 4],        // 拇指
+  [0, 5], [5, 6], [6, 7], [7, 8],        // 食指
+  [0, 9], [9, 10], [10, 11], [11, 12],   // 中指
+  [0, 13], [13, 14], [14, 15], [15, 16], // 无名指
+  [0, 17], [17, 18], [18, 19], [19, 20], // 小指
+  [5, 9], [9, 13], [13, 17],           // 掌横连
+];
+function drawHandSkeleton(lm, isPinch, openness, isFist) {
+  if (!handCanvasCtx) return;
+  var ctx = handCanvasCtx;
+  ctx.clearRect(0, 0, innerWidth, innerHeight);
+  var W = innerWidth, H = innerHeight;
+  openness = clampRange(openness == null ? 1 : openness, 0, 1);
+  var palm = palmCenter(lm);
+  var px = palm.x * W, py = palm.y * H;
+  var primary = isFist ? 'rgba(244,210,138,0.92)' : (isPinch ? 'rgba(156,255,223,0.95)' : 'rgba(226,247,255,0.92)');
+  var soft = isFist ? 'rgba(244,210,138,0.18)' : (isPinch ? 'rgba(156,255,223,0.20)' : 'rgba(143,233,255,0.18)');
+  var coreR = 26 + openness * 34;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  var aura = ctx.createRadialGradient(px, py, 0, px, py, coreR * 2.15);
+  aura.addColorStop(0, isFist ? 'rgba(244,210,138,0.26)' : 'rgba(255,255,255,0.22)');
+  aura.addColorStop(0.28, soft);
+  aura.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = aura;
+  ctx.beginPath();
+  ctx.arc(px, py, coreR * 2.15, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  var ringR = 34 + openness * 48;
+  for (var r = 0; r < 3; r++) {
+    var alpha = (0.18 - r * 0.045) + (isFist ? 0.08 : 0);
+    ctx.strokeStyle = primary.replace(/0\.\d+\)/, alpha.toFixed(3) + ')');
+    ctx.lineWidth = 1.2 + r * 0.55;
+    ctx.beginPath();
+    ctx.arc(px, py, ringR + r * 13 + Math.sin(uniforms.uTime.value * 1.5 + r) * 2, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  var tips = [4, 8, 12, 16, 20];
+  for (var i = 0; i < tips.length; i++) {
+    var p = lm[tips[i]];
+    var tx = p.x * W, ty = p.y * H;
+    var dx = tx - px, dy = ty - py;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    var beamAlpha = clampRange(0.26 - dist / 720, 0.045, 0.18) * (0.55 + openness * 0.45);
+    var grad = ctx.createLinearGradient(px, py, tx, ty);
+    grad.addColorStop(0, 'rgba(255,255,255,' + (beamAlpha * 0.20).toFixed(3) + ')');
+    grad.addColorStop(0.65, 'rgba(255,255,255,' + (beamAlpha * 0.42).toFixed(3) + ')');
+    grad.addColorStop(1, primary.replace(/0\.\d+\)/, Math.min(0.72, beamAlpha + 0.14).toFixed(3) + ')'));
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = tips[i] === 8 || tips[i] === 4 ? 1.7 : 1.05;
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.quadraticCurveTo(px + dx * 0.42 - dy * 0.05, py + dy * 0.42 + dx * 0.05, tx, ty);
+    ctx.stroke();
+    var dotR = (tips[i] === 8 || tips[i] === 4 ? 4.2 : 3.0) + (isFist ? 0.8 : 0);
+    var dot = ctx.createRadialGradient(tx, ty, 0, tx, ty, dotR * 4.2);
+    dot.addColorStop(0, 'rgba(255,255,255,0.92)');
+    dot.addColorStop(0.32, primary);
+    dot.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = dot;
+    ctx.beginPath();
+    ctx.arc(tx, ty, dotR * 4.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.beginPath();
+  ctx.arc(px, py, isFist ? 7.2 : 5.4, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,' + (isFist ? 0.82 : 0.62).toFixed(3) + ')';
+  ctx.fill();
+
+  if (isPinch) {
+    var t1 = lm[4], t2 = lm[8];
+    ctx.strokeStyle = 'rgba(220,255,241,0.88)';
+    ctx.lineWidth = 2.0;
+    ctx.shadowColor = 'rgba(126,226,168,0.82)';
+    ctx.shadowBlur = 20;
+    ctx.beginPath();
+    ctx.moveTo(t1.x * W, t1.y * H);
+    ctx.lineTo(t2.x * W, t2.y * H);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// 每帧调用 — 应用惯性旋转 + handActive 衰减
+function tickGestureRotation(dt) {
+  if (Math.abs(particleSpin.vx) > 0.0001 || Math.abs(particleSpin.vy) > 0.0001) {
+    var rx = particleSpin.vx * dt;
+    var ry = particleSpin.vy * dt;
+    gestureRotation.x += rx;
+    gestureRotation.y += ry;
+    rebaseParticleRotationIfNeeded();
+  }
+  particleSpin.vx *= Math.pow(particleSpin.damping, dt * 60);
+  particleSpin.vy *= Math.pow(particleSpin.damping, dt * 60);
+  if (Math.abs(particleSpin.vx) < 0.01) particleSpin.vx = 0;
+  if (Math.abs(particleSpin.vy) < 0.01) particleSpin.vy = 0;
+  gestureGrip.value += (gestureGrip.target - gestureGrip.value) * (gestureGrip.target > gestureGrip.value ? 0.18 : 0.10);
+  gestureGrip.pulse *= Math.pow(0.84, dt * 60);
+  if (uniforms.uGestureGrip) uniforms.uGestureGrip.value = clampRange(gestureGrip.value + gestureGrip.pulse * 0.16, 0, 1);
+  // hand active 自然衰减 (无手时)
+  if (gestureActive && handLmSmooth && performance.now() - handLmLastSeen > 200) {
+    uniforms.uHandActive.value *= 0.94;
+    gestureGrip.target *= 0.92;
+    if (uniforms.uHandActive.value < 0.02) uniforms.uHandActive.value = 0;
+  }
+}
+
+function showGestureHUD(label, progress, detail) {
+  var hud = document.getElementById('gesture-hud');
+  if (!hud) return;
+  var safeLabel = label || '待命';
+  var safeDetail = detail || '将手放进摄像头视野';
+  var safeProgress = Math.max(0, Math.min(100, (progress || 0) * 100));
+  var signature = safeLabel + '|' + safeDetail + '|' + Math.round(safeProgress / 2);
+  var now = performance.now();
+  if (signature === gestureLastHudSignature && now - gestureLastHudAt < 100) return;
+  gestureLastHudSignature = signature;
+  gestureLastHudAt = now;
+  document.getElementById('gesture-label').textContent = safeLabel;
+  document.getElementById('gesture-confirm').textContent = safeDetail;
+  var fill = document.getElementById('gesture-fill');
+  if (fill) fill.style.width = safeProgress + '%';
+  hud.classList.add('show');
+}
+function showGestureCursor() { }  // stub: 兼容旧调用
+function hideGestureCursor() { }  // stub: 兼容旧调用
+
+
+// ============================================================
+//  Resize / 快捷键
+
+
+// ============================================================
+// 以下为深空折韵（DSH）本地化适配段 —— 非 MR 原文（移植日期 2026-09-19）。
+//   ① 播放动作桥：MR 原文裸调 togglePlay()/nextTrack(true)/prevTrack(true)/setVolume(v,true)，
+//      这些全局在 DSH 不存在（播放器封装于 app.js 闭包；window.__mp 为 app.js 顶部
+//      「调试钩子（CDP 自动化验证用，可安全保留）」的既定桥入口，index.html 内联脚本同款用法）。
+//      经 typeof 守卫仅补缺：若日后 vendor 了 MR 自带播放控制模块（其函数声明会覆盖本桥），桥自动让位。
+//   ② 手势 HUD / 手骨架样式：MR index.css 16628-16812 的 .gesture-hud…/#hand-canvas 规则，
+//      DSH style.css 未搬入（其注释明确「#hand-canvas 未搬入故不取」）；DSH CSP style-src 'self'
+//      禁止 <style> 注入与 style="" 属性 → 按 mr-adapter.js 既定纪律走 CSSOM 注入。
+//      var(--champagne) 已由 DSH style.css:2821 定义（#f4d28a，与 MR 值一致）。
+// ============================================================
+(function dshGestureActionBridge() {
+  if (typeof window === 'undefined') return;
+  if (typeof togglePlay !== 'function' && window.__mp && typeof window.__mp.togglePlay === 'function') {
+    window.togglePlay = function () { return window.__mp.togglePlay(); };
+  }
+  // MR 原文 nextTrack(true)/prevTrack(true) 为用户主动切歌语义；__mp.playNext/playPrev 同语义，形参不同（桥忽略入参）
+  if (typeof nextTrack !== 'function' && window.__mp && typeof window.__mp.playNext === 'function') {
+    window.nextTrack = function () { return window.__mp.playNext(); };
+  }
+  if (typeof prevTrack !== 'function' && window.__mp && typeof window.__mp.playPrev === 'function') {
+    window.prevTrack = function () { return window.__mp.playPrev(); };
+  }
+  if (typeof setVolume !== 'function') {
+    window.setVolume = function (value) {
+      var v = Math.max(0, Math.min(1, Number(value) || 0));
+      var slider = document.getElementById('pVol');
+      if (slider) {
+        // 走 DSH 自己的 #pVol input 处理器（app.js）：同步 state.volume / audio.volume 并节流持久化
+        slider.value = String(Math.round(v * 100));
+        slider.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
+      var mp = window.__mp; // 兜底：无滑杆时直写 audio（不持久化）
+      if (mp && mp.audio) mp.audio.volume = v;
+    };
+  }
+})();
+
+(function injectGestureOverlayCss() {
+  try {
+    var css = [
+      '.gesture-hud{position:fixed;left:50%;bottom:110px;z-index:21;width:min(440px,calc(100vw - 44px));padding:12px 16px;border-radius:16px;background:rgba(10,10,16,.42);border:1px solid rgba(255,255,255,.10);backdrop-filter:blur(28px) saturate(1.4);-webkit-backdrop-filter:blur(28px) saturate(1.4);font-size:12px;color:rgba(255,255,255,.80);opacity:0;transform:translate(-50%,8px);transition:all .2s;pointer-events:none;box-shadow:0 18px 60px rgba(0,0,0,.4)}',
+      '.gesture-hud.show{opacity:1;transform:translate(-50%,0)}',
+      '.gesture-hud b{color:var(--champagne);font-weight:600}',
+      '.gesture-confirm{font-size:10.5px;color:rgba(255,255,255,.52);margin-top:5px}',
+      '.gesture-meter{height:3px;background:rgba(255,255,255,.10);border-radius:4px;overflow:hidden;margin-top:8px}',
+      '.gesture-meter span{display:block;height:100%;width:0%;background:var(--champagne);border-radius:4px;transition:width .08s linear}',
+      '.gesture-legend{font-size:10px;color:rgba(255,255,255,.4);margin-top:6px;line-height:1.5}',
+      '#hand-canvas{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:22;opacity:0;transition:opacity .35s}',
+      '#hand-canvas.show{opacity:1}'
+    ].join('\n');
+    if (typeof CSSStyleSheet === 'function' && CSSStyleSheet.prototype && typeof CSSStyleSheet.prototype.replaceSync === 'function' && document.adoptedStyleSheets) {
+      var sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      document.adoptedStyleSheets = document.adoptedStyleSheets.concat([sheet]);
+    } else {
+      var target = document.styleSheets[document.styleSheets.length - 1];
+      if (!target) return;
+      var rules = css.split('}');
+      for (var i = 0; i < rules.length; i++) {
+        var rule = rules[i].trim();
+        if (rule) target.insertRule(rule + '}', target.cssRules.length);
+      }
+    }
+  } catch (e) {
+    console.warn('[GestureCamera] overlay css inject failed:', e && (e.message || e.name) || e);
+  }
+})();
+// —— DSH 本地化适配段结束 ——
+;
+
+// ==================== 10-shell/04-desktop-overlay-fullscreen.js ====================
+var desktopOverlayPushState = {
+  lyricsAt: 0,
+  wallpaperAt: 0,
+  lastLyricsKey: '',
+  lastLyricsBeatKey: '',
+  lastLyricsCustomFontId: '',
+  lastWallpaperKey: ''
+};
+var desktopWallpaperRuntimeState = {
+  supported: true,
+  active: false,
+  enabled: false,
+  attaching: false,
+  generation: -1,
+  lastError: ''
+};
+var desktopWallpaperStatusGeneration = -1;
+var desktopWallpaperStatusUnsubscribe = null;
+var desktopWallpaperRendererOperation = 0;
+var desktopWallpaperUiActivationState = false;
+var desktopWallpaperHudPrimeTimer = 0;
+var desktopIconVisibilityOperation = 0;
+var desktopIconVisibilityPending = false;
+var desktopSoftwareLockOperation = 0;
+var desktopSoftwareLockPending = false;
+var desktopModeControlDockState = {
+  open: false,
+  hideTimer: 0,
+  peek: false,
+  peekTimer: 0
+};
+var desktopPointerRouteReporter = {
+  timer: 0,
+  x: 0,
+  y: 0,
+  hasPointer: false,
+  lastKey: '',
+  forcePending: false,
+  overControls: false
+};
+var desktopIconShieldReporter = {
+  timer: 0,
+  forceEmptyPending: false,
+  lastKey: '',
+  mutationObserver: null,
+  resizeObserver: null,
+  shelfTimer: 0,
+  observedElements: []
+};
+var DESKTOP_ICON_SHIELD_TARGETS = [
+  { selector: '#bottom-bar', kind: 'player-control' },
+  { selector: '#search-area', kind: 'search' },
+  { selector: '#top-right', kind: 'account-actions' },
+  { selector: '#desktop-mode-control-handle', kind: 'desktop-controls' },
+  { selector: '#desktop-mode-control-panel', kind: 'desktop-controls' },
+  { selector: '#fx-panel', kind: 'fx-panel' },
+  { selector: '#fx-fab', kind: 'fx-launcher' },
+  { selector: '#fx-fab-hide-btn', kind: 'fx-launcher-toggle' },
+  { selector: '#playlist-panel', kind: 'playlist-panel' },
+  { selector: '#empty-home', kind: 'home' },
+  { selector: '#desktop-titlebar', kind: 'window-controls' },
+  { selector: '#fullscreen-diy-zone', kind: 'fullscreen-tools', ignoreAriaHidden: true },
+  { selector: '#upload-panel', kind: 'upload-panel' },
+  { selector: '#upload-tip', kind: 'upload-tip' },
+  { selector: '#bottom-handle', kind: 'player-handle' },
+  { selector: '#mini-queue-popover', kind: 'mini-queue' },
+  { selector: '#thumb-wrap', kind: 'cover-control' },
+  { selector: '#trial-banner', kind: 'trial-banner' },
+  { selector: '#source-fallback-notice', kind: 'source-notice' },
+  { selector: '#ai-depth-chip', kind: 'depth-chip' },
+  { selector: '#beat-chip', kind: 'beat-chip' },
+  { selector: '#cover-color-pop', kind: 'cover-color' },
+  { selector: '#color-lab-pop', kind: 'color-lab' },
+  { selector: '.quality-popover', kind: 'quality-popover' },
+  { selector: '.volume-popover', kind: 'volume-popover' },
+  { selector: '#lyric-timing-popover', kind: 'lyric-timing-popover' },
+  { selector: '#control-source-switcher', kind: 'source-switcher' },
+  { selector: '#cuefield-feedback', kind: 'cuefield-feedback' },
+  { selector: '#cookie-export-prompt', kind: 'cookie-export' },
+  { selector: '.modal-mask', kind: 'modal', visual: true },
+  { selector: '#toast', kind: 'toast', visual: true },
+  { selector: '#visual-guide', kind: 'guide', visual: true },
+  { selector: '#drop-overlay', kind: 'drop', visual: true },
+  { selector: '#splash', kind: 'splash', visual: true }
+];
+var DESKTOP_ICON_SHIELD_SELECTOR = DESKTOP_ICON_SHIELD_TARGETS.map(function (target) {
+  return target.selector;
+}).join(',');
+function getDesktopWindowApi() {
+  return window.desktopWindow && window.desktopWindow.isDesktop ? window.desktopWindow : null;
+}
+
+function desktopIconShieldModeState() {
+  var status = desktopWallpaperRuntimeState || {};
+  var windowState = desktopWindowState || {};
+  var body = document.body;
+  var hasWindowEnabled = typeof windowState.isDesktopEmbedded === 'boolean';
+  var hasWindowInteractive = typeof windowState.isDesktopInteractive === 'boolean';
+  var hasStatusEnabled = typeof status.enabled === 'boolean' || typeof status.active === 'boolean';
+  var hasStatusInteractive = typeof status.interactive === 'boolean';
+  var enabled = hasWindowEnabled
+    ? windowState.isDesktopEmbedded === true
+    : (hasStatusEnabled
+      ? (status.enabled === true || status.active === true)
+      : !!(body && body.classList.contains('desktop-wallpaper-mode')));
+  var interactive = hasWindowInteractive
+    ? windowState.isDesktopInteractive === true
+    : (hasStatusInteractive
+      ? status.interactive === true
+      : !!(body && body.classList.contains('desktop-wallpaper-interactive')));
+  var visible = document.visibilityState !== 'hidden'
+    && windowState.isVisible !== false
+    && windowState.isMinimized !== true;
+  return {
+    enabled: !!enabled,
+    interactive: !!interactive,
+    active: !!(enabled && interactive && visible)
+  };
+}
+
+function desktopIconShieldElementVisible(element, target) {
+  if (!element || element.nodeType !== 1 || element.hidden) return false;
+  if ((!target || target.ignoreAriaHidden !== true)
+    && String(element.getAttribute('aria-hidden') || '').toLowerCase() === 'true') return false;
+  var style;
+  try {
+    style = window.getComputedStyle ? window.getComputedStyle(element) : element.currentStyle;
+  } catch (_) {
+    style = null;
+  }
+  if (style) {
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    if (style.contentVisibility === 'hidden') return false;
+    var opacity = parseFloat(style.opacity);
+    if (isFinite(opacity) && opacity <= 0.01) return false;
+    if ((!target || target.visual !== true) && style.pointerEvents === 'none') return false;
+  }
+  if (!element.getClientRects || element.getClientRects().length < 1) return false;
+  return true;
+}
+
+function desktopIconShieldClippedRect(rect, viewportWidth, viewportHeight, kind) {
+  if (!rect) return null;
+  var left = Math.max(0, Math.floor(Number(rect.left) || 0));
+  var top = Math.max(0, Math.floor(Number(rect.top) || 0));
+  var right = Math.min(viewportWidth, Math.ceil(Number(rect.right)));
+  var bottom = Math.min(viewportHeight, Math.ceil(Number(rect.bottom)));
+  if (!isFinite(right) || !isFinite(bottom) || right <= left || bottom <= top) return null;
+  return {
+    x: left,
+    y: top,
+    width: right - left,
+    height: bottom - top,
+    kind: kind || 'ui'
+  };
+}
+
+function desktopIconShieldMeshRect(mesh, viewportWidth, viewportHeight, kind, pad) {
+  if (!mesh || !mesh.geometry || typeof THREE === 'undefined' || typeof camera === 'undefined' || !camera) return null;
+  var current = mesh;
+  while (current) {
+    if (current.visible === false) return null;
+    current = current.parent;
+  }
+  var params = mesh.geometry.parameters || {};
+  var halfWidth = Math.max(0.02, Number(params.width) || 0) / 2;
+  var halfHeight = Math.max(0.02, Number(params.height) || 0) / 2;
+  if (!isFinite(halfWidth) || !isFinite(halfHeight)) return null;
+  var points = [
+    new THREE.Vector3(-halfWidth, -halfHeight, 0),
+    new THREE.Vector3(halfWidth, -halfHeight, 0),
+    new THREE.Vector3(halfWidth, halfHeight, 0),
+    new THREE.Vector3(-halfWidth, halfHeight, 0)
+  ];
+  var minX = Infinity;
+  var minY = Infinity;
+  var maxX = -Infinity;
+  var maxY = -Infinity;
+  try {
+    mesh.updateMatrixWorld(true);
+    for (var i = 0; i < points.length; i++) {
+      points[i].applyMatrix4(mesh.matrixWorld).project(camera);
+      var x = (points[i].x + 1) * viewportWidth / 2;
+      var y = (1 - points[i].y) * viewportHeight / 2;
+      if (!isFinite(x) || !isFinite(y)) return null;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  } catch (_) {
+    return null;
+  }
+  var safePad = Math.max(12, Math.min(96, Number(pad) || 32));
+  return desktopIconShieldClippedRect({
+    left: minX - safePad,
+    top: minY - safePad,
+    right: maxX + safePad,
+    bottom: maxY + safePad
+  }, viewportWidth, viewportHeight, kind);
+}
+
+function desktopIconShieldUnionRects(rects, viewportWidth, viewportHeight, kind) {
+  if (!rects || !rects.length) return null;
+  var left = viewportWidth;
+  var top = viewportHeight;
+  var right = 0;
+  var bottom = 0;
+  for (var i = 0; i < rects.length; i++) {
+    var rect = rects[i];
+    left = Math.min(left, rect.x);
+    top = Math.min(top, rect.y);
+    right = Math.max(right, rect.x + rect.width);
+    bottom = Math.max(bottom, rect.y + rect.height);
+  }
+  return desktopIconShieldClippedRect({ left: left, top: top, right: right, bottom: bottom }, viewportWidth, viewportHeight, kind);
+}
+
+function desktopIconShieldShelfRects(viewportWidth, viewportHeight) {
+  var pinned = typeof shelfPinnedOpen !== 'undefined' && shelfPinnedOpen === true;
+  var contentOpen = false;
+  var mode = 'off';
+  var canInteract = false;
+  var alwaysVisible = false;
+  var previewVisible = false;
+  try {
+    contentOpen = !!(typeof shelfManager !== 'undefined' && shelfManager
+      && shelfManager.hasOpenContent && shelfManager.hasOpenContent());
+    mode = String(shelfManager && shelfManager.getMode && shelfManager.getMode() || 'off');
+    canInteract = !!(shelfManager && shelfManager.canInteract && shelfManager.canInteract());
+    alwaysVisible = typeof shelfAlwaysVisible === 'function' && shelfAlwaysVisible();
+    previewVisible = typeof shelfPreviewIsVisible === 'function' && shelfPreviewIsVisible();
+  } catch (_) {
+    contentOpen = false;
+  }
+  var sideActive = mode === 'side' && canInteract && (pinned || contentOpen || alwaysVisible || previewVisible);
+  var stageActive = mode === 'stage' && canInteract;
+  if (!sideActive && !stageActive && !contentOpen) return [];
+
+  var projected = [];
+  try {
+    var cards = shelfManager && shelfManager.getCards ? shelfManager.getCards() : [];
+    for (var i = 0; i < cards.length && projected.length < 28; i++) {
+      var cardRect = desktopIconShieldMeshRect(cards[i] && cards[i].mesh, viewportWidth, viewportHeight, 'shelf-card', 42);
+      if (cardRect) projected.push(cardRect);
+    }
+    var content = shelfManager && shelfManager.getContentList ? shelfManager.getContentList() : null;
+    var rows = contentOpen && content && content.getRows ? content.getRows() : [];
+    for (var j = 0; j < rows.length && projected.length < 52; j++) {
+      var rowRect = desktopIconShieldMeshRect(rows[j] && rows[j].mesh, viewportWidth, viewportHeight, 'shelf-detail-row', 28);
+      if (rowRect) projected.push(rowRect);
+    }
+  } catch (_) {
+    projected = [];
+  }
+  var union = desktopIconShieldUnionRects(projected, viewportWidth, viewportHeight,
+    contentOpen ? 'shelf-detail' : (mode === 'stage' ? 'shelf-stage' : 'shelf-side'));
+  if (union) return [union];
+
+  if (mode === 'stage') {
+    return [desktopIconShieldClippedRect({
+      left: 0,
+      top: Math.round(viewportHeight * 0.46),
+      right: viewportWidth,
+      bottom: viewportHeight
+    }, viewportWidth, viewportHeight, 'shelf-stage-fallback')].filter(Boolean);
+  }
+  var width = contentOpen
+    ? Math.min(viewportWidth, Math.max(560, Math.round(viewportWidth * 0.68)))
+    : Math.min(viewportWidth, Math.max(390, Math.round(viewportWidth * 0.42)));
+  return [desktopIconShieldClippedRect({
+    left: viewportWidth - width,
+    top: Math.max(56, Math.round(viewportHeight * 0.04)),
+    right: viewportWidth,
+    bottom: viewportHeight - Math.max(84, Math.round(viewportHeight * 0.08))
+  }, viewportWidth, viewportHeight, contentOpen ? 'shelf-detail-fallback' : 'shelf-side-fallback')].filter(Boolean);
+}
+
+function desktopIconShieldShelfNeedsGeometryTracking() {
+  try {
+    if (typeof shelfManager === 'undefined' || !shelfManager || !shelfManager.getMode
+      || !shelfManager.canInteract || !shelfManager.canInteract()) return false;
+    var mode = String(shelfManager.getMode() || 'off');
+    if (mode === 'stage') return true;
+    if (mode !== 'side') return false;
+    return (typeof shelfPinnedOpen !== 'undefined' && shelfPinnedOpen === true)
+      || !!(shelfManager.hasOpenContent && shelfManager.hasOpenContent())
+      || (typeof shelfAlwaysVisible === 'function' && shelfAlwaysVisible())
+      || (typeof shelfPreviewIsVisible === 'function' && shelfPreviewIsVisible());
+  } catch (_) {
+    return false;
+  }
+}
+
+function collectDesktopIconShieldRects() {
+  var viewportWidth = Math.max(0, Math.round(window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || 0));
+  var viewportHeight = Math.max(0, Math.round(window.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 0));
+  var rects = [];
+  if (!viewportWidth || !viewportHeight) return { width: viewportWidth, height: viewportHeight, rects: rects };
+  for (var i = 0; i < DESKTOP_ICON_SHIELD_TARGETS.length && rects.length < 64; i++) {
+    var target = DESKTOP_ICON_SHIELD_TARGETS[i];
+    var elements;
+    try {
+      elements = document.querySelectorAll(target.selector);
+    } catch (_) {
+      elements = [];
+    }
+    for (var j = 0; j < elements.length && rects.length < 64; j++) {
+      var element = elements[j];
+      if (!desktopIconShieldElementVisible(element, target)) continue;
+      var clientRects = element.getClientRects ? element.getClientRects() : [];
+      for (var k = 0; k < clientRects.length && rects.length < 64; k++) {
+        var clipped = desktopIconShieldClippedRect(clientRects[k], viewportWidth, viewportHeight, target.kind);
+        if (clipped) rects.push(clipped);
+      }
+    }
+  }
+  if (rects.length < 64) {
+    var shelfRects = desktopIconShieldShelfRects(viewportWidth, viewportHeight);
+    for (var shelfIndex = 0; shelfIndex < shelfRects.length && rects.length < 64; shelfIndex++) {
+      if (shelfRects[shelfIndex]) rects.push(shelfRects[shelfIndex]);
+    }
+  }
+  return { width: viewportWidth, height: viewportHeight, rects: rects };
+}
+
+function desktopIconsAreVisible(status) {
+  status = status || desktopWallpaperRuntimeState || {};
+  return !Object.prototype.hasOwnProperty.call(status, 'desktopIconsVisible')
+    || status.desktopIconsVisible !== false;
+}
+
+function desktopUsesLayeredExplorerColorkey(status) {
+  return !!(status && status.iconLayerMode === 'explorer-layered-colorkey');
+}
+
+function clearDesktopIconRevealMask() {
+  var shell = document.getElementById('desktop-window-shell');
+  if (!shell) return;
+  shell.style.removeProperty('-webkit-mask-image');
+  shell.style.removeProperty('-webkit-mask-repeat');
+  shell.style.removeProperty('-webkit-mask-position');
+  shell.style.removeProperty('-webkit-mask-size');
+  shell.style.removeProperty('mask-image');
+  shell.style.removeProperty('mask-repeat');
+  shell.style.removeProperty('mask-position');
+  shell.style.removeProperty('mask-size');
+}
+
+function applyDesktopIconRevealMask(shieldRects) {
+  document.body.classList.remove('desktop-icons-locked');
+  clearDesktopIconRevealMask();
+}
+
+function updateDesktopModeControl(status) {
+  status = status || desktopWallpaperRuntimeState || {};
+  var api = getDesktopWindowApi();
+  var active = desktopIconShieldModeState().active;
+  var softwareLocked = status.softwareInteractionLocked === true;
+  var softwareLockButton = document.getElementById('desktop-software-lock-toggle');
+  var softwareLockState = document.getElementById('desktop-software-lock-state');
+  var iconsVisible = desktopIconsAreVisible(status);
+  var iconsButton = document.getElementById('desktop-icons-visible-toggle');
+  var iconsState = document.getElementById('desktop-icons-visible-state');
+  if (softwareLockButton) {
+    var softwareLockSupported = !!(api && typeof api.setDesktopSoftwareLocked === 'function');
+    softwareLockButton.setAttribute('aria-checked', softwareLocked ? 'true' : 'false');
+    softwareLockButton.setAttribute('aria-busy', desktopSoftwareLockPending ? 'true' : 'false');
+    softwareLockButton.disabled = desktopSoftwareLockPending || !active || !softwareLockSupported;
+    softwareLockButton.title = softwareLocked ? '恢复 Mineradio 操作' : '暂时把操作交给 Windows 桌面';
+  }
+  if (softwareLockState) softwareLockState.textContent = softwareLocked ? '软件操作已锁定，可在此解锁' : '软件可正常操作';
+  if (document.body) document.body.classList.toggle('desktop-software-locked', active && softwareLocked);
+  if (iconsButton) {
+    var iconsSupported = !!(api && typeof api.setDesktopIconsVisible === 'function');
+    iconsButton.setAttribute('aria-checked', iconsVisible ? 'true' : 'false');
+    iconsButton.setAttribute('aria-busy', desktopIconVisibilityPending ? 'true' : 'false');
+    iconsButton.disabled = desktopIconVisibilityPending || !active || !iconsSupported;
+    iconsButton.title = iconsVisible ? '隐藏 Windows 桌面图标' : '显示 Windows 桌面图标';
+  }
+  if (iconsState) iconsState.textContent = iconsVisible ? '图标已显示' : '图标已隐藏';
+}
+
+function updateDesktopIconLockControl(status) {
+  updateDesktopModeControl(status);
+}
+
+function consumeDesktopModeControlEvent(event) {
+  if (!event) return;
+  if (typeof event.preventDefault === 'function') event.preventDefault();
+  if (typeof event.stopPropagation === 'function') event.stopPropagation();
+}
+
+function setDesktopIconsVisibility(desired, event) {
+  consumeDesktopModeControlEvent(event);
+  var api = getDesktopWindowApi();
+  var mode = desktopIconShieldModeState();
+  if (!api || typeof api.setDesktopIconsVisible !== 'function' || !mode.active) {
+    if (typeof showToast === 'function') showToast('当前桌面图标显示控制不可用');
+    return Promise.resolve({ ok: false, error: 'DESKTOP_ICON_VISIBILITY_INACTIVE' });
+  }
+  if (desktopIconVisibilityPending) return Promise.resolve({ ok: false, error: 'DESKTOP_ICON_VISIBILITY_BUSY' });
+  desired = desired !== false;
+  var operation = ++desktopIconVisibilityOperation;
+  desktopIconVisibilityPending = true;
+  updateDesktopModeControl(desktopWallpaperRuntimeState);
+  return Promise.resolve(api.setDesktopIconsVisible(desired)).then(function (result) {
+    if (operation !== desktopIconVisibilityOperation) return result;
+    result = result && typeof result === 'object' ? result : { ok: false, error: 'DESKTOP_ICON_VISIBILITY_RESULT_INVALID' };
+    if (result.status) {
+      applyDesktopWallpaperRuntimeStatus(result.status);
+    } else if (result.ok === true) {
+      desktopWallpaperRuntimeState.desktopIconsVisible = desired;
+      updateDesktopModeControl(desktopWallpaperRuntimeState);
+    }
+    if (typeof showToast === 'function') {
+      showToast(result.ok === true
+        ? (desired ? '桌面图标已显示' : '桌面图标已隐藏')
+        : (desired ? '桌面图标显示失败' : '桌面图标隐藏失败'));
+    }
+    return result;
+  }).catch(function (error) {
+    if (operation !== desktopIconVisibilityOperation) return { ok: false, error: String(error && error.message || error) };
+    if (typeof showToast === 'function') showToast(desired ? '桌面图标显示失败' : '桌面图标隐藏失败');
+    return { ok: false, error: String(error && error.message || error) };
+  }).then(function (result) {
+    if (operation === desktopIconVisibilityOperation) {
+      desktopIconVisibilityPending = false;
+      updateDesktopModeControl(desktopWallpaperRuntimeState);
+      scheduleDesktopIconShieldReport(false);
+    }
+    return result;
+  });
+}
+
+function toggleDesktopIconsVisibility(event) {
+  return setDesktopIconsVisibility(!desktopIconsAreVisible(desktopWallpaperRuntimeState), event);
+}
+
+function requestDesktopKeyboardFocus(reason) {
+  var api = getDesktopWindowApi();
+  var mode = desktopIconShieldModeState();
+  if (!api || typeof api.requestDesktopKeyboardFocus !== 'function'
+    || !mode.active
+    || desktopWallpaperRuntimeState.softwareInteractionLocked === true) return false;
+  try {
+    Promise.resolve(api.requestDesktopKeyboardFocus(reason || 'renderer-pointerdown')).catch(function () {});
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function setDesktopSoftwareInteractionLocked(desired, event) {
+  var restoreKeyboardFocus = desired !== true && !!(event && event.isTrusted);
+  consumeDesktopModeControlEvent(event);
+  var api = getDesktopWindowApi();
+  var mode = desktopIconShieldModeState();
+  if (!api || typeof api.setDesktopSoftwareLocked !== 'function' || !mode.active) {
+    if (typeof showToast === 'function') showToast('当前软件操作锁定不可用');
+    return Promise.resolve({ ok: false, error: 'DESKTOP_SOFTWARE_LOCK_INACTIVE' });
+  }
+  if (desktopSoftwareLockPending) return Promise.resolve({ ok: false, error: 'DESKTOP_SOFTWARE_LOCK_BUSY' });
+  desired = desired === true;
+  var operation = ++desktopSoftwareLockOperation;
+  desktopSoftwareLockPending = true;
+  updateDesktopModeControl(desktopWallpaperRuntimeState);
+  return Promise.resolve(api.setDesktopSoftwareLocked(desired)).then(function (result) {
+    if (operation !== desktopSoftwareLockOperation) return result;
+    result = result && typeof result === 'object' ? result : { ok: false, error: 'DESKTOP_SOFTWARE_LOCK_RESULT_INVALID' };
+    if (result.status) {
+      applyDesktopWallpaperRuntimeStatus(result.status);
+    } else if (result.ok === true) {
+      desktopWallpaperRuntimeState.softwareInteractionLocked = desired;
+      updateDesktopModeControl(desktopWallpaperRuntimeState);
+    }
+    if (typeof showToast === 'function') {
+      showToast(result.ok === true
+        ? (desired ? '软件操作已锁定；移到右上角可随时解锁' : '软件操作已恢复')
+        : (desired ? '软件操作锁定失败' : '软件操作解锁失败'));
+    }
+    if (result.ok === true && restoreKeyboardFocus) {
+      requestDesktopKeyboardFocus('software-unlocked');
+    }
+    return result;
+  }).catch(function (error) {
+    if (operation !== desktopSoftwareLockOperation) return { ok: false, error: String(error && error.message || error) };
+    if (typeof showToast === 'function') showToast(desired ? '软件操作锁定失败' : '软件操作解锁失败');
+    return { ok: false, error: String(error && error.message || error) };
+  }).then(function (result) {
+    if (operation === desktopSoftwareLockOperation) {
+      desktopSoftwareLockPending = false;
+      updateDesktopModeControl(desktopWallpaperRuntimeState);
+      scheduleDesktopPointerRouteReport(null, true);
+    }
+    return result;
+  });
+}
+
+function toggleDesktopSoftwareInteractionLocked(event) {
+  return setDesktopSoftwareInteractionLocked(!(desktopWallpaperRuntimeState
+    && desktopWallpaperRuntimeState.softwareInteractionLocked === true), event);
+}
+
+function cancelDesktopModeControlHide() {
+  if (!desktopModeControlDockState.hideTimer) return;
+  clearTimeout(desktopModeControlDockState.hideTimer);
+  desktopModeControlDockState.hideTimer = 0;
+}
+
+function cancelDesktopModeControlPeekHide() {
+  if (!desktopModeControlDockState.peekTimer) return;
+  clearTimeout(desktopModeControlDockState.peekTimer);
+  desktopModeControlDockState.peekTimer = 0;
+}
+
+function setDesktopModeControlPeek(peek) {
+  peek = peek === true && desktopIconShieldModeState().active;
+  if (peek) cancelDesktopModeControlPeekHide();
+  if (desktopModeControlDockState.peek === peek) return;
+  desktopModeControlDockState.peek = peek;
+  if (document.body) document.body.classList.toggle('desktop-mode-control-peek', peek);
+  scheduleDesktopIconShieldReport(false);
+}
+
+function scheduleDesktopModeControlPeekHide(delay) {
+  cancelDesktopModeControlPeekHide();
+  desktopModeControlDockState.peekTimer = setTimeout(function () {
+    desktopModeControlDockState.peekTimer = 0;
+    var dock = document.getElementById('desktop-mode-control-dock');
+    if (desktopModeControlDockState.open
+      || (dock && (dock.matches(':hover') || dock.contains(document.activeElement)))) return;
+    setDesktopModeControlPeek(false);
+  }, Math.max(180, Number(delay) || 980));
+}
+
+function setDesktopModeControlsOpen(open) {
+  open = open === true && desktopIconShieldModeState().active;
+  cancelDesktopModeControlHide();
+  if (open) setDesktopModeControlPeek(true);
+  if (desktopModeControlDockState.open === open) return;
+  desktopModeControlDockState.open = open;
+  var dock = document.getElementById('desktop-mode-control-dock');
+  var handle = document.getElementById('desktop-mode-control-handle');
+  var panel = document.getElementById('desktop-mode-control-panel');
+  if (dock) dock.classList.toggle('is-open', open);
+  if (handle) handle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (panel) {
+    panel.setAttribute('aria-hidden', open ? 'false' : 'true');
+    if (open) panel.removeAttribute('inert');
+    else panel.setAttribute('inert', '');
+    panel.querySelectorAll('button').forEach(function (button) {
+      button.tabIndex = open ? 0 : -1;
+    });
+  }
+  document.body.classList.toggle('desktop-mode-controls-open', open);
+  if (!open) scheduleDesktopModeControlPeekHide(900);
+  scheduleDesktopIconShieldReport(false);
+  scheduleDesktopPointerRouteReport(null, true);
+}
+
+function scheduleDesktopModeControlHide(delay) {
+  cancelDesktopModeControlHide();
+  desktopModeControlDockState.hideTimer = setTimeout(function () {
+    desktopModeControlDockState.hideTimer = 0;
+    var dock = document.getElementById('desktop-mode-control-dock');
+    if (dock && (dock.matches(':hover') || dock.contains(document.activeElement))) return;
+    setDesktopModeControlsOpen(false);
+  }, Math.max(120, Number(delay) || 680));
+}
+
+function desktopPointInClientRect(x, y, rect) {
+  return !!rect && x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+}
+
+function desktopControlPointState(x, y) {
+  var handle = document.getElementById('desktop-mode-control-handle');
+  var panel = document.getElementById('desktop-mode-control-panel');
+  var rootStyle = null;
+  try { rootStyle = window.getComputedStyle(document.documentElement); } catch (_) { }
+  var safeTop = rootStyle ? parseFloat(rootStyle.getPropertyValue('--desktop-safe-top')) || 0 : 0;
+  var safeRight = rootStyle ? parseFloat(rootStyle.getPropertyValue('--desktop-safe-right')) || 0 : 0;
+  var overRevealEdge = x >= Math.max(0, window.innerWidth - safeRight - 92)
+    && x < Math.max(0, window.innerWidth - safeRight)
+    && y >= safeTop && y < safeTop + 104;
+  var overHotspot = !!(handle && desktopIconShieldElementVisible(handle, { ignoreAriaHidden: true })
+    && desktopPointInClientRect(x, y, handle.getBoundingClientRect()));
+  var overPanel = !!(desktopModeControlDockState.open && panel
+    && desktopIconShieldElementVisible(panel, { ignoreAriaHidden: true })
+    && desktopPointInClientRect(x, y, panel.getBoundingClientRect()));
+  return {
+    overRevealEdge: overRevealEdge,
+    overHotspot: overHotspot,
+    overPanel: overPanel,
+    overControls: overRevealEdge || overHotspot || overPanel
+  };
+}
+
+function desktopPointerOverSoftwareUi(x, y) {
+  var collected = collectDesktopIconShieldRects();
+  for (var i = 0; i < collected.rects.length; i++) {
+    var rect = collected.rects[i];
+    if (!rect || rect.kind === 'desktop-controls') continue;
+    if (x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height) return true;
+  }
+  return false;
+}
+
+function flushDesktopPointerRouteReport(force) {
+  if (desktopPointerRouteReporter.timer) {
+    clearTimeout(desktopPointerRouteReporter.timer);
+    desktopPointerRouteReporter.timer = 0;
+  }
+  var api = getDesktopWindowApi();
+  if (!api || typeof api.updateDesktopPointerRoute !== 'function') return;
+  var mode = desktopIconShieldModeState();
+  var overSoftwareUi = false;
+  var overDesktopControls = false;
+  if (mode.active && desktopPointerRouteReporter.hasPointer) {
+    var pointState = desktopControlPointState(desktopPointerRouteReporter.x, desktopPointerRouteReporter.y);
+    overDesktopControls = pointState.overControls;
+    if (overDesktopControls) {
+      setDesktopModeControlPeek(true);
+      cancelDesktopModeControlHide();
+      cancelDesktopModeControlPeekHide();
+    }
+    else if (desktopModeControlDockState.open) {
+      scheduleDesktopModeControlHide(desktopWallpaperRuntimeState
+        && desktopWallpaperRuntimeState.softwareInteractionLocked === true ? 120 : 680);
+    }
+    else scheduleDesktopModeControlPeekHide(980);
+    overSoftwareUi = desktopPointerOverSoftwareUi(desktopPointerRouteReporter.x, desktopPointerRouteReporter.y);
+  }
+  var key = (overSoftwareUi ? '1' : '0') + '|' + (overDesktopControls ? '1' : '0');
+  if (!force && key === desktopPointerRouteReporter.lastKey) return;
+  desktopPointerRouteReporter.lastKey = key;
+  try {
+    api.updateDesktopPointerRoute({
+      overSoftwareUi: overSoftwareUi,
+      overDesktopControls: overDesktopControls
+    });
+  } catch (_) { }
+}
+
+function scheduleDesktopPointerRouteReport(event, force) {
+  if (event && isFinite(event.clientX) && isFinite(event.clientY)) {
+    desktopPointerRouteReporter.x = Number(event.clientX);
+    desktopPointerRouteReporter.y = Number(event.clientY);
+    desktopPointerRouteReporter.hasPointer = true;
+    var mode = desktopIconShieldModeState();
+    var nextOverControls = mode.active
+      && desktopControlPointState(desktopPointerRouteReporter.x, desktopPointerRouteReporter.y).overControls;
+    if (nextOverControls !== desktopPointerRouteReporter.overControls) force = true;
+    desktopPointerRouteReporter.overControls = nextOverControls;
+  }
+  if (force === true) desktopPointerRouteReporter.forcePending = true;
+  if (desktopPointerRouteReporter.timer) {
+    if (force !== true) return;
+    clearTimeout(desktopPointerRouteReporter.timer);
+    desktopPointerRouteReporter.timer = 0;
+  }
+  desktopPointerRouteReporter.timer = setTimeout(function () {
+    var forcePending = desktopPointerRouteReporter.forcePending;
+    desktopPointerRouteReporter.forcePending = false;
+    flushDesktopPointerRouteReport(forcePending);
+  }, force === true ? 0 : 48);
+}
+
+function initDesktopModeControls(api) {
+  var dock = document.getElementById('desktop-mode-control-dock');
+  var handle = document.getElementById('desktop-mode-control-handle');
+  var panel = document.getElementById('desktop-mode-control-panel');
+  var softwareLockButton = document.getElementById('desktop-software-lock-toggle');
+  var iconsButton = document.getElementById('desktop-icons-visible-toggle');
+  if (!dock || !handle || !panel) return;
+  setDesktopModeControlsOpen(false);
+  handle.addEventListener('click', function (event) {
+    consumeDesktopModeControlEvent(event);
+    setDesktopModeControlsOpen(!desktopModeControlDockState.open);
+  });
+  handle.addEventListener('keydown', function (event) {
+    if (event.key === 'ArrowDown') {
+      consumeDesktopModeControlEvent(event);
+      setDesktopModeControlsOpen(true);
+      if (softwareLockButton) softwareLockButton.focus();
+      else if (iconsButton) iconsButton.focus();
+    }
+  });
+  dock.addEventListener('mouseenter', function () {
+    setDesktopModeControlPeek(true);
+    cancelDesktopModeControlHide();
+    cancelDesktopModeControlPeekHide();
+  });
+  dock.addEventListener('mouseleave', function () {
+    scheduleDesktopModeControlHide(680);
+    scheduleDesktopModeControlPeekHide(980);
+  });
+  dock.addEventListener('focusin', function () {
+    setDesktopModeControlPeek(true);
+    cancelDesktopModeControlHide();
+    cancelDesktopModeControlPeekHide();
+  });
+  dock.addEventListener('focusout', function () {
+    scheduleDesktopModeControlHide(680);
+    scheduleDesktopModeControlPeekHide(980);
+  });
+  dock.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape') return;
+    consumeDesktopModeControlEvent(event);
+    setDesktopModeControlsOpen(false);
+    handle.focus();
+  });
+  if (softwareLockButton) softwareLockButton.addEventListener('click', toggleDesktopSoftwareInteractionLocked);
+  if (iconsButton) iconsButton.addEventListener('click', toggleDesktopIconsVisibility);
+  document.addEventListener('pointerdown', function (event) {
+    if (event && event.isTrusted) requestDesktopKeyboardFocus('pointerdown');
+    if (!desktopModeControlDockState.open || dock.contains(event.target)) return;
+    var focused = document.activeElement;
+    if (focused && panel.contains(focused) && typeof focused.blur === 'function') focused.blur();
+    setDesktopModeControlsOpen(false);
+  }, true);
+  document.addEventListener('mousemove', function (event) {
+    scheduleDesktopPointerRouteReport(event, false);
+  }, { passive: true });
+  window.addEventListener('blur', function () {
+    setDesktopModeControlsOpen(false);
+    scheduleDesktopModeControlPeekHide(360);
+  });
+  window.addEventListener('pagehide', function () {
+    cancelDesktopModeControlHide();
+    cancelDesktopModeControlPeekHide();
+    desktopPointerRouteReporter.hasPointer = false;
+    desktopPointerRouteReporter.overControls = false;
+    flushDesktopPointerRouteReport(true);
+  }, { once: true });
+  updateDesktopModeControl(desktopWallpaperRuntimeState);
+  setDesktopModeControlPeek(false);
+  scheduleDesktopPointerRouteReport(null, true);
+}
+
+function desktopIconShieldPayloadKey(payload) {
+  var rectKey = [];
+  var rects = payload.rects || [];
+  for (var i = 0; i < rects.length; i++) {
+    var rect = rects[i];
+    rectKey.push([rect.x, rect.y, rect.width, rect.height, rect.kind || ''].join(','));
+  }
+  return [
+    payload.enabled ? 1 : 0,
+    payload.interactive ? 1 : 0,
+    payload.viewport.width,
+    payload.viewport.height,
+    payload.viewport.scaleFactor,
+    payload.runtimeGeneration,
+    rectKey.join(';')
+  ].join('|');
+}
+
+function flushDesktopIconShieldReport(forceEmpty) {
+  if (desktopIconShieldReporter.timer) {
+    clearTimeout(desktopIconShieldReporter.timer);
+    desktopIconShieldReporter.timer = 0;
+  }
+  var api = getDesktopWindowApi();
+  if (!api || typeof api.updateDesktopIconShields !== 'function') return;
+  var mode = desktopIconShieldModeState();
+  var collected = mode.active && !forceEmpty
+    ? collectDesktopIconShieldRects()
+    : {
+      width: Math.max(0, Math.round(window.innerWidth || 0)),
+      height: Math.max(0, Math.round(window.innerHeight || 0)),
+      rects: []
+    };
+  applyDesktopIconRevealMask(forceEmpty ? [] : collected.rects);
+  var payload = {
+    enabled: mode.enabled,
+    interactive: mode.interactive,
+    viewport: {
+      width: collected.width,
+      height: collected.height,
+      scaleFactor: Math.max(0.25, Number(window.devicePixelRatio) || 1)
+    },
+    runtimeGeneration: Math.max(-1, Number(desktopWallpaperRuntimeState && desktopWallpaperRuntimeState.generation) || 0),
+    rects: forceEmpty ? [] : collected.rects.slice(0, 64)
+  };
+  var key = desktopIconShieldPayloadKey(payload);
+  if (key === desktopIconShieldReporter.lastKey) return;
+  desktopIconShieldReporter.lastKey = key;
+  try {
+    api.updateDesktopIconShields(payload);
+  } catch (_) { }
+}
+
+function scheduleDesktopIconShieldReport(forceEmpty) {
+  desktopIconShieldReporter.forceEmptyPending = forceEmpty === true;
+  if (desktopIconShieldReporter.timer) return;
+  desktopIconShieldReporter.timer = setTimeout(function () {
+    var pendingForceEmpty = desktopIconShieldReporter.forceEmptyPending;
+    desktopIconShieldReporter.forceEmptyPending = false;
+    flushDesktopIconShieldReport(pendingForceEmpty);
+  }, 100);
+}
+
+function desktopIconShieldMutationRelevant(mutation) {
+  if (!mutation) return false;
+  var target = mutation.target && mutation.target.nodeType === 1 ? mutation.target : null;
+  if (target === document.documentElement || target === document.body) return true;
+  try {
+    if (target && (target.matches(DESKTOP_ICON_SHIELD_SELECTOR) || target.closest(DESKTOP_ICON_SHIELD_SELECTOR))) return true;
+  } catch (_) { }
+  if (mutation.type !== 'childList') return false;
+  var nodes = [];
+  if (mutation.addedNodes) nodes = nodes.concat(Array.prototype.slice.call(mutation.addedNodes));
+  if (mutation.removedNodes) nodes = nodes.concat(Array.prototype.slice.call(mutation.removedNodes));
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i];
+    if (!node || node.nodeType !== 1) continue;
+    try {
+      if (node.matches(DESKTOP_ICON_SHIELD_SELECTOR) || node.querySelector(DESKTOP_ICON_SHIELD_SELECTOR)) return true;
+    } catch (_) { }
+  }
+  return false;
+}
+
+function refreshDesktopIconShieldResizeTargets() {
+  var observer = desktopIconShieldReporter.resizeObserver;
+  if (!observer) return;
+  var next = [];
+  for (var i = 0; i < DESKTOP_ICON_SHIELD_TARGETS.length; i++) {
+    var elements;
+    try {
+      elements = document.querySelectorAll(DESKTOP_ICON_SHIELD_TARGETS[i].selector);
+    } catch (_) {
+      elements = [];
+    }
+    for (var j = 0; j < elements.length; j++) {
+      if (next.indexOf(elements[j]) < 0) next.push(elements[j]);
+    }
+  }
+  var previous = desktopIconShieldReporter.observedElements;
+  for (var p = 0; p < previous.length; p++) {
+    if (next.indexOf(previous[p]) < 0 && observer.unobserve) {
+      try { observer.unobserve(previous[p]); } catch (_) { }
+    }
+  }
+  for (var n = 0; n < next.length; n++) {
+    if (previous.indexOf(next[n]) < 0) {
+      try { observer.observe(next[n]); } catch (_) { }
+    }
+  }
+  desktopIconShieldReporter.observedElements = next;
+}
+
+function initDesktopIconShieldReporter(api) {
+  if (!api || typeof api.updateDesktopIconShields !== 'function') return;
+  if (typeof window.ResizeObserver === 'function') {
+    desktopIconShieldReporter.resizeObserver = new ResizeObserver(function () {
+      scheduleDesktopIconShieldReport(false);
+    });
+    refreshDesktopIconShieldResizeTargets();
+  }
+  if (typeof window.MutationObserver === 'function') {
+    desktopIconShieldReporter.mutationObserver = new MutationObserver(function (mutations) {
+      var relevant = false;
+      var refreshTargets = false;
+      for (var i = 0; i < mutations.length; i++) {
+        if (!desktopIconShieldMutationRelevant(mutations[i])) continue;
+        relevant = true;
+        if (mutations[i].type === 'childList') refreshTargets = true;
+      }
+      if (!relevant) return;
+      if (refreshTargets) refreshDesktopIconShieldResizeTargets();
+      scheduleDesktopIconShieldReport(false);
+    });
+    desktopIconShieldReporter.mutationObserver.observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['class', 'hidden', 'aria-hidden']
+    });
+  }
+  window.addEventListener('resize', function () { scheduleDesktopIconShieldReport(false); }, { passive: true });
+  document.addEventListener('transitionend', function () { scheduleDesktopIconShieldReport(false); }, true);
+  document.addEventListener('animationend', function () { scheduleDesktopIconShieldReport(false); }, true);
+  document.addEventListener('click', function () { scheduleDesktopIconShieldReport(false); }, true);
+  document.addEventListener('contextmenu', function () { scheduleDesktopIconShieldReport(false); }, true);
+  document.addEventListener('input', function () { scheduleDesktopIconShieldReport(false); }, true);
+  document.addEventListener('change', function () { scheduleDesktopIconShieldReport(false); }, true);
+  document.addEventListener('visibilitychange', function () {
+    scheduleDesktopIconShieldReport(document.visibilityState === 'hidden');
+  });
+  // Three.js shelf cards move without DOM mutations. A low-rate timer follows
+  // only an actually interactive shelf; it is not a mouse loop or an rAF and
+  // dedupe prevents IPC when the projected hit envelope has not changed.
+  desktopIconShieldReporter.shelfTimer = setInterval(function () {
+    if (!desktopIconShieldModeState().active || !desktopIconShieldShelfNeedsGeometryTracking()) return;
+    scheduleDesktopIconShieldReport(false);
+  }, 250);
+  window.addEventListener('pagehide', function () {
+    if (desktopIconShieldReporter.shelfTimer) clearInterval(desktopIconShieldReporter.shelfTimer);
+    desktopIconShieldReporter.shelfTimer = 0;
+    flushDesktopIconShieldReport(true);
+  }, { once: true });
+  scheduleDesktopIconShieldReport(false);
+}
+function currentDesktopSongMeta() {
+  var song = playQueue && currentIdx >= 0 ? playQueue[currentIdx] : null;
+  song = song || currentLyricSong && currentLyricSong() || {};
+  return {
+    title: song.name || song.title || 'Mineradio',
+    artist: song.artist || song.ar || song.author || '',
+    cover: (typeof songCoverSrc === 'function' && song) ? (songCoverSrc(song, 360) || song.cover || '') : (song.cover || '')
+  };
+}
+function normalizeDesktopLyricText(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+function currentDesktopLyricSnapshot() {
+  var rawT = audio && isFinite(audio.currentTime) ? Number(audio.currentTime) : 0;
+  var t = typeof getAdjustedLyricPlaybackTime === 'function' ? getAdjustedLyricPlaybackTime(rawT) : rawT;
+  var lines = Array.isArray(lyricsLines) ? lyricsLines : [];
+  if (playing && audio && lines.length) {
+    var idx = -1;
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].t <= t + 0.05) idx = i;
+      else break;
+    }
+    if (idx >= 0) {
+      var curLine = lines[idx] || { t: t, text: '' };
+      var nextLine = lines[idx + 1];
+      var nextT = nextLine && nextLine.t > curLine.t ? nextLine.t : Math.min((audio && audio.duration) || t + 4, curLine.t + (curLine.duration || 4.8));
+      var span = Math.max(0.75, nextT - curLine.t);
+      return {
+        text: normalizeDesktopLyricText(curLine.text || currentLyricFallbackText()),
+        progress: getLyricLineProgress(curLine, nextLine, t),
+        progressSpan: span
+      };
+    }
+    var introText = normalizeDesktopLyricText(currentLyricFallbackText());
+    if (introText) {
+      var firstLine = lines[0];
+      var introEnd = firstLine && firstLine.t > 0 ? firstLine.t : Math.min((audio && audio.duration) || 4.8, 4.8);
+      return {
+        text: introText,
+        progress: getLyricLineProgress({ t: 0, text: introText, duration: Math.max(0.8, introEnd), charCount: Math.max(1, introText.length), fallback: true }, null, t),
+        progressSpan: Math.max(0.8, introEnd)
+      };
+    }
+  }
+  if (stageLyrics && stageLyrics.currentText) {
+    return {
+      text: normalizeDesktopLyricText(stageLyrics.currentText),
+      progress: stageLyrics.current && stageLyrics.current.userData ? clampRange(Number(stageLyrics.current.userData.lastLyricProgress) || 0, 0, 1) : 0,
+      progressSpan: 4.8
+    };
+  }
+  return { text: normalizeDesktopLyricText(currentDesktopSongMeta().title || 'Mineradio'), progress: 0, progressSpan: 4.8 };
+}
+function desktopOverlayColorValue(value, fallback) {
+  var raw = String(value || '').trim();
+  fallback = String(fallback || '#d6f8ff').trim();
+  if (/^#[0-9a-f]{3}$/i.test(raw) || /^#[0-9a-f]{6}$/i.test(raw)) return normalizeHexColor(raw, fallback);
+  if (/^rgba?\(/i.test(raw) || /^hsla?\(/i.test(raw)) return raw;
+  return normalizeHexColor(raw, fallback);
+}
+function desktopOverlayColors() {
+  var pal = stageLyrics && stageLyrics.palette || {};
+  return {
+    primary: desktopOverlayColorValue(pal.primary || fx.lyricColor || '#d6f8ff', '#d6f8ff'),
+    secondary: desktopOverlayColorValue(pal.secondary || fx.visualTintColor || '#9cffdf', '#9cffdf'),
+    highlight: desktopOverlayColorValue(pal.highlight || fx.lyricHighlightColor || '#fff0b8', '#fff0b8'),
+    glow: desktopOverlayColorValue(pal.glowColor || pal.secondary || pal.primary || fx.lyricGlowColor || '#9cffdf', '#9cffdf')
+  };
+}
+function desktopLyricsMotionPayload() {
+  return {
+    lyricGlow: !!fx.lyricGlow,
+    lyricGlowBeat: !!fx.lyricGlowBeat,
+    lyricGlowStrength: fx.lyricGlow ? clampRange(Number(fx.lyricGlowStrength) || 0, 0, 0.85) : 0,
+    highBloom: stageLyrics && isFinite(stageLyrics.highBloom) ? clampRange(stageLyrics.highBloom, 0, 1.45) : 0,
+    beatGlow: stageLyrics && isFinite(stageLyrics.beatGlow) ? clampRange(stageLyrics.beatGlow, 0, 1.7) : 0,
+    beatPulse: isFinite(beatPulse) ? clampRange(beatPulse, 0, 1.4) : 0,
+    bass: isFinite(bass) ? clampRange(bass, 0, 1.2) : 0
+  };
+}
+function desktopLyricsPlaybackPayload() {
+  var time = audio && isFinite(audio.currentTime) ? Number(audio.currentTime) : 0;
+  var duration = audio && isFinite(audio.duration) ? Number(audio.duration) : 0;
+  var rate = audio && isFinite(audio.playbackRate) && audio.playbackRate > 0 ? Number(audio.playbackRate) : 1;
+  return {
+    time: Math.max(0, time),
+    duration: Math.max(0, duration),
+    rate: clampRange(rate, 0.25, 4)
+  };
+}
+function desktopLyricsActiveBeatMap() {
+  var useDj = !!(djMode && djMode.active && currentDjBeatMap);
+  return {
+    source: useDj ? 'dj' : 'mr',
+    map: useDj ? currentDjBeatMap : currentBeatMap
+  };
+}
+function desktopLyricsBeatMapPayload(force) {
+  var selected = desktopLyricsActiveBeatMap();
+  var map = selected && selected.map;
+  var source = selected && selected.source || 'mr';
+  var cameraCount = map ? ((map.cameraBeats && map.cameraBeats.length) || (map.beats && map.beats.length) || (map.kicks && map.kicks.length) || 0) : 0;
+  var pulseCount = map ? ((map.pulseBeats && map.pulseBeats.length) || (map.kicks && map.kicks.length) || 0) : 0;
+  var duration = map && isFinite(map.duration) ? Number(map.duration) : 0;
+  var partialUntil = map && isFinite(map.partialUntilSec) ? Number(map.partialUntilSec) : 0;
+  var key = map
+    ? [source, map.analyzedAt || 0, cameraCount, pulseCount, Math.round(duration * 10), Math.round(partialUntil * 10), map.tempoSource || 'local'].join('|')
+    : 'none';
+  var shouldSendMap = !!force || key !== desktopOverlayPushState.lastLyricsBeatKey;
+  desktopOverlayPushState.lastLyricsBeatKey = key;
+  var payload = { beatMapKey: key };
+  if (shouldSendMap) payload.beatMap = map ? packLocalBeatMap(map) : null;
+  return payload;
+}
+function notifyDesktopLyricsBeatMapReady() {
+  try {
+    if (fx && fx.desktopLyrics) pushDesktopLyricsState(true);
+  } catch (e) { }
+}
+function desktopLyricsPushInterval() {
+  var fps = normalizeDesktopLyricsFps(fx && fx.desktopLyricsFps);
+  if (!fps) return 8;
+  return Math.max(8, Math.min(42, 1000 / fps));
+}
+function desktopLyricsCurrentCustomFontId() {
+  var font = customLyricFontRecordForKey(fx && fx.lyricFont);
+  return font ? font.id : '';
+}
+function desktopLyricsCustomFontPayload(includeDataUrl) {
+  var font = customLyricFontRecordForKey(fx && fx.lyricFont);
+  if (!font) return null;
+  var payload = {
+    id: font.id,
+    family: font.family,
+    name: font.name
+  };
+  if (includeDataUrl !== false) payload.dataUrl = font.dataUrl;
+  return payload;
+}
+function desktopLyricsPayload(forceBeatMap, includeCustomFontData) {
+  var meta = currentDesktopSongMeta();
+  var lyric = currentDesktopLyricSnapshot();
+  var beatPayload = desktopLyricsBeatMapPayload(!!forceBeatMap);
+  var payload = {
+    enabled: !!fx.desktopLyrics && !isDevelopmentLockedFx('desktopLyrics'),
+    text: lyric.text,
+    progress: lyric.progress,
+    progressSpan: lyric.progressSpan,
+    title: meta.title,
+    artist: meta.artist,
+    playing: !!playing,
+    size: clampRange(Number(fx.desktopLyricsSize) || fxDefaults.desktopLyricsSize, 0.72, 1.55),
+    opacity: clampRange(fx.desktopLyricsOpacity == null ? fxDefaults.desktopLyricsOpacity : Number(fx.desktopLyricsOpacity), 0.28, 1),
+    y: clampRange(fx.desktopLyricsY == null ? fxDefaults.desktopLyricsY : Number(fx.desktopLyricsY), 0.08, 0.92),
+    clickThrough: isDevelopmentLockedFx('desktopLyricsClickThrough') ? true : fx.desktopLyricsClickThrough !== false,
+    lyricGlowParticles: !!fx.lyricGlowParticles,
+    cinema: fx.desktopLyricsCinema !== false,
+    highlightFollow: fx.desktopLyricsHighlight === true,
+    frameRate: normalizeDesktopLyricsFps(fx.desktopLyricsFps),
+    fontFamily: lyricFontStackForKey(fx.lyricFont),
+    customFont: desktopLyricsCustomFontPayload(includeCustomFontData),
+    fontWeight: lyricFontWeightValue(),
+    letterSpacing: clampRange(Number(fx.lyricLetterSpacing) || 0, -0.04, 0.18),
+    lineHeight: lyricLineHeightFactor(),
+    lyricScale: clampRange(Number(fx.lyricScale) || 1, 0.35, 1.65),
+    feather: lyricsHasNativeKaraoke ? 0.030 : 0.055,
+    motion: desktopLyricsMotionPayload(),
+    playback: desktopLyricsPlaybackPayload(),
+    beatMapKey: beatPayload.beatMapKey,
+    colors: desktopOverlayColors()
+  };
+  if (Object.prototype.hasOwnProperty.call(beatPayload, 'beatMap')) payload.beatMap = beatPayload.beatMap;
+  return payload;
+}
+function wallpaperPayload() {
+  var meta = currentDesktopSongMeta();
+  return {
+    enabled: !!fx.wallpaperMode && !isDevelopmentLockedFx('wallpaperMode'),
+    title: meta.title,
+    artist: meta.artist,
+    cover: meta.cover,
+    playing: !!playing,
+    preset: fx.preset,
+    opacity: clampRange(fx.wallpaperOpacity == null ? fxDefaults.wallpaperOpacity : Number(fx.wallpaperOpacity), 0.35, 1),
+    frameRate: normalizeWallpaperFps(fx.wallpaperFps),
+    colors: desktopOverlayColors()
+  };
+}
+function desktopWallpaperStatusPayload(payload) {
+  if (payload && payload.status && typeof payload.status === 'object') return payload.status;
+  return payload && typeof payload === 'object' ? payload : {};
+}
+function updateDesktopWallpaperRuntimeControls(status) {
+  status = status || desktopWallpaperRuntimeState || {};
+  var supported = status.supported !== false;
+  var attaching = status.attaching === true;
+  var toggle = document.getElementById('t-wallpaperMode');
+  if (toggle) {
+    toggle.classList.toggle('runtime-pending', attaching);
+    toggle.classList.toggle('runtime-unavailable', !supported);
+    toggle.classList.toggle('runtime-interactive', status.interactive === true);
+    toggle.setAttribute('aria-busy', attaching ? 'true' : 'false');
+    if (!supported) toggle.setAttribute('aria-disabled', 'true');
+    else toggle.removeAttribute('aria-disabled');
+    toggle.title = !supported
+      ? '当前系统不支持完整桌面模式'
+      : (attaching ? '正在切换完整桌面模式' : '把完整 Mineradio 放到 Windows 桌面；右上角控制器可显示或隐藏桌面图标，Esc 退出');
+  }
+  var opacity = document.getElementById('fx-wallpaperopacity');
+  if (opacity) opacity.disabled = !supported;
+  document.querySelectorAll('#wallpaper-fps-seg [data-wallpaper-fps]').forEach(function (btn) {
+    btn.disabled = !supported;
+  });
+}
+
+function applyDesktopWallpaperSafeArea(status, enabled) {
+  var root = document.documentElement;
+  if (!root || !root.style) return;
+  var insets = status && status.safeInsets && typeof status.safeInsets === 'object'
+    ? status.safeInsets
+    : null;
+  if (!insets && status && status.bounds && status.workArea) {
+    var bounds = status.bounds;
+    var workArea = status.workArea;
+    insets = {
+      top: Math.max(0, Number(workArea.y) - Number(bounds.y)),
+      right: Math.max(0, Number(bounds.x) + Number(bounds.width) - Number(workArea.x) - Number(workArea.width)),
+      bottom: Math.max(0, Number(bounds.y) + Number(bounds.height) - Number(workArea.y) - Number(workArea.height)),
+      left: Math.max(0, Number(workArea.x) - Number(bounds.x))
+    };
+  }
+  var names = ['top', 'right', 'bottom', 'left'];
+  for (var i = 0; i < names.length; i++) {
+    var name = names[i];
+    var value = enabled === true && insets ? Math.max(0, Number(insets[name]) || 0) : 0;
+    root.style.setProperty('--desktop-safe-' + name, value + 'px');
+  }
+}
+
+function syncDesktopWallpaperBodyClasses(status, enabled, interactive) {
+  status = status || desktopWallpaperRuntimeState || {};
+  enabled = enabled === true;
+  interactive = enabled && interactive === true;
+  var explorerLayeredColorkey = enabled && desktopUsesLayeredExplorerColorkey(status);
+  var iconsHidden = enabled && !desktopIconsAreVisible(status);
+  document.documentElement.classList.toggle('desktop-explorer-layered-colorkey-root', explorerLayeredColorkey);
+  document.body.classList.toggle('desktop-wallpaper-mode', enabled);
+  document.body.classList.toggle('desktop-wallpaper-interactive', interactive);
+  document.body.classList.toggle('desktop-explorer-layered-colorkey', explorerLayeredColorkey);
+  document.body.classList.toggle('desktop-software-locked', interactive && status.softwareInteractionLocked === true);
+  document.body.classList.toggle('desktop-icons-hidden', iconsHidden);
+  if (!interactive) {
+    setDesktopModeControlsOpen(false);
+    setDesktopModeControlPeek(false);
+  }
+}
+
+function releaseDesktopWallpaperStartupVisibilityGate() {
+  var root = document.documentElement;
+  if (!root || !root.classList.contains('startup-fast-skip-preload')) return false;
+  if (typeof releaseStartupFastSkipPreload === 'function') {
+    try { releaseStartupFastSkipPreload(); } catch (_) { }
+  }
+  // Fail open even if the splash helper was interrupted. This class hides the
+  // canvas, Home, search and bottom console, so it must never survive a native
+  // desktop-mode activation.
+  root.classList.remove('startup-fast-skip-preload');
+  return true;
+}
+
+function ensureDesktopWallpaperFunctionalUi(reason) {
+  var body = document.body;
+  if (!body
+    || !body.classList.contains('desktop-wallpaper-mode')
+    || !body.classList.contains('desktop-wallpaper-interactive')) return false;
+
+  releaseDesktopWallpaperStartupVisibilityGate();
+  if (typeof immersiveMode !== 'undefined' && immersiveMode
+    && typeof setImmersiveMode === 'function') {
+    setImmersiveMode(false);
+  }
+
+  var homeActive = body.classList.contains('empty-home-active');
+  if (homeActive) {
+    if (typeof updateControlsChromeState === 'function') updateControlsChromeState();
+    return true;
+  }
+
+  var shelfSuppressesConsole = false;
+  try {
+    shelfSuppressesConsole = typeof isBottomControlsSuppressedForShelf === 'function'
+      && isBottomControlsSuppressedForShelf();
+  } catch (_) { }
+  if (shelfSuppressesConsole) return true;
+
+  if (body.classList.contains('home-controls-locked')) {
+    if (typeof setHomeControlsLocked === 'function') setHomeControlsLocked(false);
+    else body.classList.remove('home-controls-locked');
+  }
+  if (typeof controlsHideTimer !== 'undefined' && controlsHideTimer) {
+    clearTimeout(controlsHideTimer);
+    controlsHideTimer = null;
+  }
+  if (typeof controlsRevealHoldUntil !== 'undefined') {
+    controlsRevealHoldUntil = Math.max(controlsRevealHoldUntil || 0, performance.now() + 900);
+  }
+  var bar = document.getElementById('bottom-bar');
+  if (bar) {
+    bar.classList.add('visible');
+    bar.classList.remove('soft-hidden');
+    bar.style.pointerEvents = '';
+  }
+  if (typeof setControlsHidden === 'function') setControlsHidden(false);
+  if (typeof updateControlsChromeState === 'function') updateControlsChromeState();
+  return !!bar;
+}
+
+function revealDesktopWallpaperUiOnActivation(enabled, interactive) {
+  var nextActive = enabled === true && interactive === true;
+  var wasActive = desktopWallpaperUiActivationState === true;
+  desktopWallpaperUiActivationState = nextActive;
+  if (!nextActive) {
+    if (desktopWallpaperHudPrimeTimer) {
+      clearTimeout(desktopWallpaperHudPrimeTimer);
+      desktopWallpaperHudPrimeTimer = 0;
+    }
+    if (document.body) document.body.classList.remove('desktop-wallpaper-hud-prime');
+    if (typeof controlsRevealHoldUntil !== 'undefined') controlsRevealHoldUntil = 0;
+    setDesktopModeControlsOpen(false);
+    setDesktopModeControlPeek(false);
+    return false;
+  }
+  // Status can arrive after the native HWND was hidden/reparented or after a
+  // throttled first paint. Reassert the actual functional surface on every
+  // active status, not only on the first false -> true edge.
+  ensureDesktopWallpaperFunctionalUi('runtime-status');
+  if (wasActive) return false;
+
+  setDesktopModeControlPeek(true);
+  scheduleDesktopModeControlPeekHide(1800);
+
+  var body = document.body;
+  if (body) body.classList.add('desktop-wallpaper-hud-prime');
+
+  // Full desktop mode is the complete Mineradio workspace. Do not inherit the
+  // ordinary stage's immersive chrome suppression, which otherwise leaves only
+  // the desktop-mode hotspot visible after the native attach finishes.
+  if (typeof immersiveMode !== 'undefined' && immersiveMode
+    && typeof setImmersiveMode === 'function') {
+    setImmersiveMode(false);
+  }
+
+  var homeActive = !!(body && body.classList.contains('empty-home-active'));
+  if (homeActive) {
+    if (typeof updateControlsChromeState === 'function') updateControlsChromeState();
+  } else {
+    // A Home transition can leave this lock behind while Home itself is no
+    // longer visible. Clear only that stale combination; a real Home page keeps
+    // its existing player-console policy.
+    if (body && body.classList.contains('home-controls-locked')) {
+      if (typeof setHomeControlsLocked === 'function') setHomeControlsLocked(false);
+      else body.classList.remove('home-controls-locked');
+    }
+    if (typeof controlsHideTimer !== 'undefined' && controlsHideTimer) {
+      clearTimeout(controlsHideTimer);
+      controlsHideTimer = null;
+    }
+    if (typeof holdBottomControlsVisible === 'function') {
+      holdBottomControlsVisible(4200);
+    } else if (typeof revealBottomControls === 'function') {
+      revealBottomControls(4200);
+    } else {
+      var bar = document.getElementById('bottom-bar');
+      if (bar) {
+        bar.classList.add('visible');
+        bar.classList.remove('soft-hidden');
+      }
+      if (typeof updateControlsChromeState === 'function') updateControlsChromeState();
+    }
+  }
+
+  // The HWND is briefly hidden/reparented below Explorer while this status is
+  // applied. Commit the target HUD frame without relying on an opacity
+  // transition that Chromium may leave at its transparent first sample.
+  var activeSurface = document.getElementById(homeActive ? 'empty-home' : 'bottom-bar');
+  if (activeSurface) {
+    void activeSurface.offsetWidth;
+    try { window.getComputedStyle(activeSurface).opacity; } catch (_) { }
+  }
+  if (desktopWallpaperHudPrimeTimer) clearTimeout(desktopWallpaperHudPrimeTimer);
+  desktopWallpaperHudPrimeTimer = setTimeout(function () {
+    desktopWallpaperHudPrimeTimer = 0;
+    if (document.body) document.body.classList.remove('desktop-wallpaper-hud-prime');
+  }, 900);
+  return true;
+}
+
+function applyDesktopWallpaperRuntimeStatus(payload) {
+  var status = desktopWallpaperStatusPayload(payload);
+  var generation = Number(status.generation);
+  if (isFinite(generation) && generation < desktopWallpaperStatusGeneration) return desktopWallpaperRuntimeState;
+  if (isFinite(generation)) desktopWallpaperStatusGeneration = generation;
+  desktopWallpaperRuntimeState = Object.assign({}, desktopWallpaperRuntimeState, status);
+  var nextEnabled = status.enabled === true || status.active === true
+    ? true
+    : (status.attaching === true ? !!fx.wallpaperMode : false);
+  if (fx.wallpaperMode !== nextEnabled) {
+    fx.wallpaperMode = nextEnabled;
+    updateFxInputs();
+  }
+  if (desktopWindowState && typeof desktopWindowState === 'object') {
+    desktopWindowState.isDesktopEmbedded = nextEnabled;
+    desktopWindowState.isDesktopInteractive = nextEnabled && status.interactive === true;
+  }
+  syncDesktopWallpaperBodyClasses(desktopWallpaperRuntimeState, nextEnabled, status.interactive === true);
+  applyDesktopWallpaperSafeArea(desktopWallpaperRuntimeState, nextEnabled);
+  revealDesktopWallpaperUiOnActivation(nextEnabled, status.interactive === true);
+  if (!nextEnabled) {
+    desktopIconVisibilityPending = false;
+    desktopSoftwareLockPending = false;
+  }
+  updateDesktopModeControl(desktopWallpaperRuntimeState);
+  applyDesktopIconRevealMask();
+  updateDesktopWallpaperRuntimeControls(desktopWallpaperRuntimeState);
+  scheduleDesktopIconShieldReport(!(nextEnabled && status.interactive === true));
+  scheduleDesktopPointerRouteReport(null, true);
+  return desktopWallpaperRuntimeState;
+}
+function desktopWallpaperErrorLabel(error) {
+  var code = String(error || 'WALLPAPER_FAILED');
+  if (code.indexOf('WALLPAPER_PLATFORM_UNSUPPORTED') >= 0) return '当前系统不支持';
+  if (code.indexOf('WALLPAPER_WORKERW_NOT_FOUND') >= 0) return '未找到桌面 WorkerW';
+  if (code.indexOf('WALLPAPER_PROGMAN_NOT_FOUND') >= 0) return '未找到 Windows 桌面宿主';
+  if (code.indexOf('WALLPAPER_NATIVE_ATTACH_ABORTED') >= 0 || code.indexOf('WALLPAPER_START_SUPERSEDED') >= 0) return '启动已取消';
+  if (code.indexOf('FULL_DESKTOP_RECOVERY_TRAY_UNAVAILABLE') >= 0) return '无法创建桌面模式恢复入口';
+  if (code.indexOf('FULL_DESKTOP_WALLPAPER_ENGINE_SUSPEND_FAILED') >= 0
+    || code.indexOf('FULL_DESKTOP_WALLPAPER_ENGINE_HELPER_EXIT_TIMEOUT') >= 0
+    || code.indexOf('WALLPAPER_ENGINE_DESKTOP_TRANSITION_BUSY') >= 0
+    || code.indexOf('WALLPAPER_DESKTOP_PREVIEW') >= 0
+    || code.indexOf('WALLPAPER_ENGINE_SESSION_MISMATCH') >= 0) return 'Wallpaper Engine 项目未能安全切换到桌面预览';
+  if (code.indexOf('DESKTOP_MODE_DETACH') >= 0 || code.indexOf('FULL_DESKTOP_DETACH') >= 0) return '主窗口恢复失败';
+  return '无法进入完整桌面模式';
+}
+function initDesktopWallpaperRuntimeBridge(api) {
+  if (!api) return;
+  if (typeof api.onWallpaperModeState === 'function' && !desktopWallpaperStatusUnsubscribe) {
+    try {
+      desktopWallpaperStatusUnsubscribe = api.onWallpaperModeState(applyDesktopWallpaperRuntimeStatus);
+    } catch (_) {
+      desktopWallpaperStatusUnsubscribe = null;
+    }
+  }
+  if (typeof api.getWallpaperModeStatus === 'function') {
+    Promise.resolve().then(function () {
+      return api.getWallpaperModeStatus();
+    }).then(applyDesktopWallpaperRuntimeStatus).catch(function () { });
+  }
+}
+function pushDesktopLyricsState(force) {
+  var api = getDesktopWindowApi();
+  if (!api || typeof api.updateDesktopLyrics !== 'function') return;
+  var now = performance.now();
+  if (!force && now - desktopOverlayPushState.lyricsAt < desktopLyricsPushInterval()) return;
+  var currentCustomFontId = desktopLyricsCurrentCustomFontId();
+  var includeCustomFontData = !!currentCustomFontId && currentCustomFontId !== desktopOverlayPushState.lastLyricsCustomFontId;
+  var payload = desktopLyricsPayload(!!force, includeCustomFontData);
+  var colors = payload.colors || {};
+  var motion = payload.motion || {};
+  var payloadCustomFontId = payload.customFont ? payload.customFont.id : '';
+  var key = payload.enabled + '|' + payload.text + '|' + Math.round(payload.progress * 1000) + '|' + Math.round((payload.progressSpan || 0) * 100) + '|' + payload.playing + '|' + payload.size + '|' + payload.opacity + '|' + payload.y + '|' + payload.clickThrough + '|' + payload.cinema + '|' + payload.highlightFollow + '|' + payload.frameRate + '|' + payload.fontFamily + '|' + payloadCustomFontId + '|' + payload.fontWeight + '|' + payload.letterSpacing + '|' + payload.lineHeight + '|' + payload.lyricScale + '|' + payload.feather + '|' + payload.beatMapKey + '|' + colors.primary + '|' + colors.secondary + '|' + colors.highlight + '|' + colors.glow + '|' + motion.lyricGlow + '|' + motion.lyricGlowBeat + '|' + Math.round((motion.lyricGlowStrength || 0) * 100) + '|' + Math.round((motion.highBloom || 0) * 100) + '|' + Math.round((motion.beatGlow || 0) * 100) + '|' + Math.round((motion.beatPulse || 0) * 100) + '|' + Math.round((motion.bass || 0) * 100);
+  if (!force && key === desktopOverlayPushState.lastLyricsKey && now - desktopOverlayPushState.lyricsAt < 900) return;
+  desktopOverlayPushState.lyricsAt = now;
+  desktopOverlayPushState.lastLyricsKey = key;
+  desktopOverlayPushState.lastLyricsCustomFontId = payloadCustomFontId;
+  api.updateDesktopLyrics(payload).catch(function (e) { console.warn('desktop lyrics update failed:', e); });
+}
+function applyDesktopLyricsState(force) {
+  var api = getDesktopWindowApi();
+  if (!api) return;
+  normalizeDevelopmentLockedFxState();
+  var payload = desktopLyricsPayload(true, true);
+  var payloadCustomFontId = payload.customFont ? payload.customFont.id : '';
+  if (typeof api.setDesktopLyricsEnabled === 'function') {
+    desktopOverlayPushState.lastLyricsCustomFontId = payloadCustomFontId;
+    api.setDesktopLyricsEnabled(!!payload.enabled, payload).catch(function (e) { console.warn('desktop lyrics state failed:', e); });
+  } else {
+    desktopOverlayPushState.lastLyricsCustomFontId = '';
+  }
+  pushDesktopLyricsState(!!force);
+}
+function pushWallpaperState(force) {
+  var api = getDesktopWindowApi();
+  if (!api || typeof api.updateWallpaperMode !== 'function') return;
+  if (!force) return;
+  api.updateWallpaperMode(Object.assign(wallpaperPayload(), { reason: 'renderer-status-refresh' })).then(function (result) {
+    if (result && result.status) applyDesktopWallpaperRuntimeStatus(result.status);
+    if (result && result.ok === false) console.warn('wallpaper update failed:', result.error || 'WALLPAPER_UPDATE_FAILED');
+  }).catch(function (e) { console.warn('wallpaper update failed:', e); });
+}
+function applyWallpaperModeState(force) {
+  var api = getDesktopWindowApi();
+  if (!api) {
+    fx.wallpaperMode = false;
+    updateFxInputs();
+    return Promise.resolve({ ok: false, enabled: false, error: 'WALLPAPER_DESKTOP_API_UNAVAILABLE' });
+  }
+  normalizeDevelopmentLockedFxState();
+  var payload = wallpaperPayload();
+  if (typeof api.setWallpaperMode !== 'function') return Promise.resolve({ ok: false, enabled: false, error: 'WALLPAPER_DESKTOP_API_UNAVAILABLE' });
+  var operation = ++desktopWallpaperRendererOperation;
+  if (payload.enabled) {
+    desktopWallpaperRuntimeState = Object.assign({}, desktopWallpaperRuntimeState, { attaching: true, enabled: true, lastError: '' });
+    updateDesktopWallpaperRuntimeControls(desktopWallpaperRuntimeState);
+  }
+  return Promise.resolve().then(function () {
+    return api.setWallpaperMode(!!payload.enabled, payload);
+  }).then(function (result) {
+    result = result && typeof result === 'object' ? result : { ok: false, enabled: false, error: 'WALLPAPER_RESULT_INVALID' };
+    if (operation !== desktopWallpaperRendererOperation) return Object.assign({}, result, { rendererStale: true });
+    if (result.status) applyDesktopWallpaperRuntimeStatus(result.status);
+    else {
+      fx.wallpaperMode = result.ok === true && result.enabled === true;
+      updateFxInputs();
+    }
+    if (result.ok !== true) {
+      var failedStatus = result.status && typeof result.status === 'object' ? result.status : {};
+      fx.wallpaperMode = result.enabled === true || failedStatus.enabled === true || failedStatus.active === true;
+      updateFxInputs();
+    }
+    return result;
+  }).catch(function (error) {
+    if (operation !== desktopWallpaperRendererOperation) return { ok: false, enabled: false, rendererStale: true, error: String(error && error.message || error) };
+    fx.wallpaperMode = false;
+    desktopWallpaperRuntimeState = Object.assign({}, desktopWallpaperRuntimeState, { active: false, enabled: false, attaching: false, lastError: String(error && error.message || error) });
+    updateFxInputs();
+    updateDesktopWallpaperRuntimeControls(desktopWallpaperRuntimeState);
+    return { ok: false, enabled: false, error: desktopWallpaperRuntimeState.lastError };
+  });
+}
+function syncDesktopOverlayState() {
+  if (fx.desktopLyrics) pushDesktopLyricsState(false);
+}
+setInterval(function () {
+  if (fx && fx.desktopLyrics) syncDesktopOverlayState();
+  if (fx && fx.wallpaperMode) ensureDesktopWallpaperFunctionalUi('health-watch');
+}, 320);
+
+// 全屏
+var desktopFullscreenActive = false;
+var documentFullscreenActive = false;
+var desktopWindowState = {};
+var desktopWindowMinimizeTimer = 0;
+var desktopWindowRestoreTimer = 0;
+
+function desktopWindowReducedMotion() {
+  return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+
+function clearDesktopWindowTransitionClasses() {
+  document.body.classList.remove('desktop-window-minimizing');
+  document.body.classList.remove('desktop-window-restoring');
+}
+
+function animateDesktopWindowMinimize(api, activationEvent) {
+  if (!api || typeof api.minimize !== 'function') return;
+  // A minimize request must originate from a real activation of the visible
+  // title-bar control. This keeps stale timers or synthetic DOM clicks from
+  // unexpectedly putting the player in the taskbar during playback.
+  if (!activationEvent || activationEvent.isTrusted !== true) return;
+  if (desktopWindowReducedMotion()) {
+    api.minimize();
+    return;
+  }
+  clearTimeout(desktopWindowMinimizeTimer);
+  clearTimeout(desktopWindowRestoreTimer);
+  document.body.classList.remove('desktop-window-restoring');
+  document.body.classList.add('desktop-window-minimizing');
+  desktopWindowMinimizeTimer = setTimeout(function () {
+    document.body.classList.remove('desktop-window-minimizing');
+    api.minimize();
+  }, 150);
+}
+
+function animateDesktopWindowRestore() {
+  if (desktopWindowReducedMotion()) {
+    clearDesktopWindowTransitionClasses();
+    return;
+  }
+  clearTimeout(desktopWindowMinimizeTimer);
+  clearTimeout(desktopWindowRestoreTimer);
+  document.body.classList.remove('desktop-window-minimizing');
+  document.body.classList.add('desktop-window-restoring');
+  desktopWindowRestoreTimer = setTimeout(function () {
+    document.body.classList.remove('desktop-window-restoring');
+  }, 280);
+}
+
+function toggleFullscreen() {
+  var api = window.desktopWindow;
+  if (api && api.isDesktop && typeof api.toggleFullscreen === 'function') {
+    if (document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(function () { });
+      scheduleMainRendererViewportRefresh('document-fullscreen-exit');
+      return;
+    }
+    api.toggleFullscreen();
+    scheduleMainRendererViewportRefresh('desktop-fullscreen-toggle');
+    return;
+  }
+  if (api && api.isDesktop && desktopFullscreenActive && !document.fullscreenElement && typeof api.exitFullscreenWindowed === 'function') {
+    api.exitFullscreenWindowed();
+    scheduleMainRendererViewportRefresh('desktop-fullscreen-exit');
+    return;
+  }
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(function () {
+      if (api && api.isDesktop && typeof api.toggleFullscreen === 'function') api.toggleFullscreen();
+      else showToast('全屏被浏览器拒绝');
+    });
+  } else {
+    document.exitFullscreen();
+    scheduleMainRendererViewportRefresh('document-fullscreen-exit');
+  }
+}
+
+(function initDesktopWindowShell() {
+  var api = window.desktopWindow;
+  if (!api || !api.isDesktop) return;
+
+  document.documentElement.classList.add('desktop-shell-root');
+  document.body.classList.add('desktop-shell');
+  document.body.classList.remove('desktop-fullscreen');
+  desktopFullscreenActive = false;
+  syncCursorAutoHideMode();
+
+  var maxBtn = document.querySelector('[data-window-action="maximize"]');
+  var maxIcon = maxBtn && maxBtn.querySelector('.icon-maximize');
+  var restoreIcon = maxBtn && maxBtn.querySelector('.icon-restore');
+  function applyState(state) {
+    var wasHidden = !!desktopWindowState.isMinimized || desktopWindowState.isVisible === false;
+    desktopWindowState = Object.assign(desktopWindowState, state || {});
+    var isHidden = !!desktopWindowState.isMinimized || desktopWindowState.isVisible === false;
+    if (wasHidden && !isHidden) animateDesktopWindowRestore();
+    var isMaximized = !!desktopWindowState.isMaximized;
+    var isFullScreen = !!desktopWindowState.isFullScreen || !!desktopWindowState.isNativeFullScreen || !!desktopWindowState.isHtmlFullScreen || !!desktopWindowState.isWindowFullScreen || !!document.fullscreenElement;
+    var wasFullScreen = desktopFullscreenActive;
+    desktopFullscreenActive = isFullScreen;
+    document.body.classList.toggle('desktop-maximized', isMaximized);
+    document.body.classList.toggle('desktop-fullscreen', isFullScreen);
+    syncDesktopWallpaperBodyClasses(
+      desktopWallpaperRuntimeState,
+      desktopWindowState.isDesktopEmbedded === true,
+      desktopWindowState.isDesktopInteractive === true
+    );
+    applyDesktopWallpaperSafeArea(desktopWallpaperRuntimeState, desktopWindowState.isDesktopEmbedded === true);
+    scheduleDesktopIconShieldReport(!(desktopWindowState.isDesktopEmbedded === true && desktopWindowState.isDesktopInteractive === true));
+    updateDesktopModeControl(desktopWallpaperRuntimeState);
+    scheduleDesktopPointerRouteReport(null, true);
+    desktopRuntimeState.fullscreen = isFullScreen;
+    if (isFullScreen) layoutFullscreenDiyZone();
+    if (isFullScreen !== wasFullScreen) {
+      scheduleMainRendererViewportRefresh('desktop-shell-state');
+      if (!isFullScreen) {
+        document.body.classList.remove('fullscreen-diy-peek');
+        setTimeout(function () { clearPlayerControlFocusState('desktop-fullscreen-exit'); }, 80);
+      }
+    }
+    syncCursorAutoHideMode();
+    if (maxBtn) {
+      maxBtn.title = isFullScreen ? '退出全屏' : '全屏';
+      maxBtn.setAttribute('aria-label', maxBtn.title);
+    }
+    if (maxIcon) maxIcon.style.display = isFullScreen ? 'none' : '';
+    if (restoreIcon) restoreIcon.style.display = isFullScreen ? '' : 'none';
+  }
+
+  document.querySelectorAll('[data-window-action]').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var action = btn.getAttribute('data-window-action');
+      if (action === 'minimize') animateDesktopWindowMinimize(api, e);
+      if (action === 'maximize') toggleFullscreen();
+      if (action === 'close') {
+        saveLastPlaybackSnapshot(true, 'window-close');
+        api.close(closeBehaviorPreference);
+      }
+    });
+  });
+
+  if (typeof api.onDesktopLyricsLockState === 'function') {
+    api.onDesktopLyricsLockState(function (payload) {
+      var locked = !payload || payload.locked !== false;
+      if (fx.desktopLyricsClickThrough === locked) return;
+      fx.desktopLyricsClickThrough = locked;
+      updateFxInputs();
+      saveLyricLayout({ user: true, reason: 'desktopLyricsClickThrough' });
+      pushDesktopLyricsState(true);
+      showToast(locked ? '桌面歌词已锁定' : '桌面歌词可移动');
+    });
+  }
+  if (typeof api.onDesktopLyricsEnabledState === 'function') {
+    api.onDesktopLyricsEnabledState(function (payload) {
+      var enabled = !!(payload && payload.enabled);
+      if (fx.desktopLyrics === enabled) return;
+      fx.desktopLyrics = enabled;
+      updateFxInputs();
+      saveLyricLayout({ user: true, reason: 'desktopLyrics' });
+      showToast(enabled ? '桌面歌词已开启' : '桌面歌词已关闭');
+    });
+  }
+
+  initDesktopModeControls(api);
+  initDesktopIconShieldReporter(api);
+  initDesktopWallpaperRuntimeBridge(api);
+  api.onStateChange(applyState);
+  if (typeof api.getState === 'function') {
+    api.getState().then(applyState).catch(function () { applyState({}); });
+  } else {
+    applyState({});
+  }
+  document.addEventListener('fullscreenchange', function () {
+    var wasDocumentFullscreen = documentFullscreenActive;
+    documentFullscreenActive = !!document.fullscreenElement;
+    desktopWindowState.isHtmlFullScreen = documentFullscreenActive;
+    if (wasDocumentFullscreen && !documentFullscreenActive && typeof api.exitFullscreenWindowed === 'function') {
+      api.exitFullscreenWindowed();
+    }
+    applyState({});
+  });
+})();
+
+// ============================================================
+//  启动
+// ============================================================
 ;

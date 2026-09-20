@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:*; style-src 'self'; img-src 'self' data: https: http:; media-src http://127.0.0.1:* 'self' file: https: http:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' dsh-mediapipe:; connect-src 'self' http://127.0.0.1:* dsh-mediapipe:; style-src 'self'; img-src 'self' data: https: http:; media-src http://127.0.0.1:* 'self' file: https: http:">
 <title>深空折韵</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -694,13 +694,22 @@
   <img id="thumb-cover" class="hidden" alt="">
 <div id="stage3dOverlay" class="hidden">
     <div id="stage3dHost"></div>
+
+    <!-- 手势 HUD + 手骨架（Ported from Mineradio 2.2.0, GPL-3.0, index.html:1191-1198 原文；样式由
+         renderer/mr/10-shell/00-gesture-control.js 的 DSH 适配段经 CSSOM 注入，CSP style-src 'self' 禁内联）-->
+    <div id="gesture-hud" class="gesture-hud">
+      <div>手势：<b id="gesture-label">待命</b></div>
+      <div id="gesture-confirm" class="gesture-confirm">将手放进摄像头视野</div>
+      <div class="gesture-meter"><span id="gesture-fill"></span></div>
+      <div class="gesture-legend">张掌推开 · 捏合旋转 · 握拳收束 · 左右滑切歌 · V 手势播放 · 食指音量 · 拇指喜欢 · 三指歌词</div>
+    </div>
+    <canvas id="hand-canvas"></canvas>
+
     <button id="btnCloseStage3D" title="退出 3D 舞台 (Esc)">✕</button>
 
 <!-- ===== MR 视觉控制台（HTML 原样复制自 Mineradio index.html fx-panel 全量；GPL-3.0）===== -->
 <button id="btnStageFx" title="视觉控制台 (DIY)">DIY</button>
 <div id="mrFxDrawer" class="hidden">
-<div id="fx-panel">
-<div class="fx-head"><div><div class="fx-title">视觉控制台</div><div class="fx-sub">LYRA ARIA VISUALS · DIY</div></div></div>
 <div id="fx-panel">
       <div class="fx-head">
         <div>
@@ -813,6 +822,7 @@
           step="0.01"><output></output></div>
       <div class="fx-slider"><label>&#27611;&#29627;&#29827;&#36879;&#26126;</label><input id="fx-bgglassopacity" type="range" min="0" max="1"
           step="0.01"><output></output></div>
+      <!-- 控制台玻璃色差（B-b 2026-09-20 放开：05-playback/15 已 vendor + filter SVG 由适配层注入，真身接线） -->
       <div class="fx-slider"><label>控制台玻璃色差</label><input id="fx-glassaberration" type="range" min="30" max="140"
           step="1"><output></output></div>
       <div class="fx-slider"><label>左栏雾面</label><input id="fx-playlistblur" type="range" min="14" max="60"
@@ -1033,6 +1043,7 @@
               <button id="lyric-source-custom" type="button" onclick="setLyricSourceMode('custom')">自定义</button>
             </div>
           </div>
+          
           <div class="fx-section-label">歌词行数</div>
           <div class="fx-seg lyric-display-mode-seg" id="lyric-display-mode-seg">
             <button type="button" data-mode="single" onclick="setLyricDisplayMode('single')">单行</button>
@@ -1168,7 +1179,7 @@
               title="桌面歌词绑定鼓点电影震动，基础漂浮始终保留"><span>桌面歌词电影震动</span><span class="dot"></span></div>
             <div class="fx-toggle" id="t-desktopLyricsHighlight" onclick="toggleFx('desktopLyricsHighlight')"
               title="桌面歌词按播放进度高亮"><span>桌面歌词高亮跟随</span><span class="dot"></span></div>
-            <div class="fx-toggle" id="t-wallpaperMode" onclick="toggleFx('wallpaperMode')"
+            <div class="fx-toggle" id="t-wallpaperMode" hidden data-dsh-deferred="1" onclick="toggleFx('wallpaperMode')"
               title="把当前完整 Mineradio 放到 Windows 桌面；右上控制器可显示、隐藏桌面图标，Esc 退出">
               <span>完整桌面模式<em class="fx-dev-badge">试验</em></span><span class="dot"></span></div>
           </div>
@@ -1347,12 +1358,12 @@
           </div>
           <div class="fx-section-label">启动播放</div>
           <div class="fx-toggle-grid">
-            <div class="fx-toggle" id="t-startupAutoplay" onclick="toggleStartupAutoplay()" title="打开软件后从上次保存进度自动继续播放">
+            <div class="fx-toggle" id="t-startupAutoplay" hidden data-dsh-deferred="1" onclick="toggleStartupAutoplay()" title="打开软件后从上次保存进度自动继续播放">
               <span>启动自动播放</span><span class="dot"></span></div>
             <div class="fx-toggle" id="t-startupFastSkip" onclick="toggleStartupFastSkip()" title="打开软件后直接进入主页，不等待启动动画">
               <span>秒启动跳过启动页</span><span class="dot"></span></div>
           </div>
-          <div class="fx-seg" id="startup-resume-mode-seg" title="控制恢复上次播放时从哪里开始">
+          <div class="fx-seg" id="startup-resume-mode-seg" hidden data-dsh-deferred="1" title="控制恢复上次播放时从哪里开始">
             <button data-startup-resume-mode="resume">按上次进度</button>
             <button data-startup-resume-mode="restart">重播整首</button>
           </div>
@@ -1464,12 +1475,203 @@
       <div class="fx-actions">
         <button class="fx-mini-btn" onclick="resetFx()">恢复默认</button>
       </div>
+
+      <!-- MR index.html:1466-1471 隐藏文件输入原样复制：字体上传（triggerLyricFontUpload，bundle:20966）与
+           背景媒体「选择」（background-image-input click 链，bundle:31339 change 监听）此前因节点缺失成死控件 -->
+      <input type="file" id="lyric-font-input"
+        accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2,application/font-woff,application/x-font-ttf,application/x-font-otf"
+        style="display:none">
+      <input type="file" id="background-image-input"
+        accept=".jpg,.jpeg,.png,.webp,.mp4,.webm,.mov,image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
+        style="display:none">
 </div>
+</div>
+
+<!-- ===== 自由镜头操作提示（MR index.html:1473-1474 原样；bundle updateFreeCameraHint 按 freeCamera.active 切 .show） ===== -->
+<div id="free-camera-hint"><b>自由镜头</b> R 固定/退出 · WASD 移动 · 鼠标转向 · Shift 加速 · Space/Ctrl 升降 · Q/E 轻微旋转 · 滚轮景深 · K 回正
+</div>
+
+<!-- ===== 3D 舞台窗口控制三键（二期）：最小化/最大化切换/关闭；走 preload 已有 IPC window.api.winMin/winMaxToggle/winClose ===== -->
+<div id="stWinCtrl">
+    <button id="stWinMin" title="最小化" aria-label="最小化" onclick="window.api && window.api.winMin && window.api.winMin()"><svg class="ic" viewBox="0 0 16 16"><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+    <button id="stWinMax" title="最大化/还原" aria-label="最大化/还原" onclick="window.api && window.api.winMaxToggle && window.api.winMaxToggle()"><svg class="ic" viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.8"/></svg><svg class="ic ic-restore" viewBox="0 0 16 16"><rect x="2.5" y="5.5" width="8" height="8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 5.5v-3h8v8h-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    <button id="stWinClose" title="关闭" aria-label="关闭" onclick="window.api && window.api.winClose && window.api.winClose()"><svg class="ic" viewBox="0 0 16 16"><line x1="3" y1="3" x2="13" y2="13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line x1="13" y1="3" x2="3" y2="13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+</div>
+
+<!-- ===== 3D 舞台悬浮迷你播放条（二期）：桥走 window.__mp.togglePlay/playNext/playPrev 与 window.__mp.audio，先不做播放模式/收藏 ===== -->
+<div id="stBar" role="group" aria-label="3D 舞台播放控制">
+    <div class="st-bar-btns">
+      <button id="stBtnPrev" title="上一首" aria-label="上一首" onclick="window.__mp && window.__mp.playPrev && window.__mp.playPrev()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 5v14"/><path d="M18 6.5l-7 5.5 7 5.5z"/></svg></button>
+      <button id="stBtnPlay" title="播放/暂停" aria-label="播放/暂停" onclick="window.__mp && window.__mp.togglePlay && window.__mp.togglePlay()"><svg id="stIconPlay" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5.5v13a.6.6 0 0 0 .9.5l10.2-6.5a.6.6 0 0 0 0-1L8.9 5A.6.6 0 0 0 8 5.5z"/></svg><svg id="stIconPause" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M9 5v14"/><path d="M15 5v14"/></svg></button>
+      <button id="stBtnNext" title="下一首" aria-label="下一首" onclick="window.__mp && window.__mp.playNext && window.__mp.playNext()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 5v14"/><path d="M6 6.5l7 5.5-7 5.5z"/></svg></button>
+    </div>
+  <!-- 逐曲歌词校偏控件（盘点 A7；Ported from Mineradio 2.2.0, GPL-3.0, index.html:1391-1406 原文。
+               适配点：原宿主为底栏 control-cluster.modes，DSH 无底栏「词」按钮 → 仅外层宿主换为 fx 面板
+               歌词组本行（「歌词源」与「歌词行数」之间），内部结构与 id 原样保留。
+               已知缺口：#lyrics-toggle-btn 的 onclick=toggleLyricsPanel() 在 DSH 未 vendor
+               （ref 06-lyrics/00-lyrics-fetch-parse.js:662-677），点击会 ReferenceError，待适配层桥接）-->
+          <div id="lyric-timing-control" class="lyric-timing-control">
+            <button id="lyrics-toggle-btn" class="ctrl-btn lyrics-toggle-btn" onclick="toggleLyricsPanel()" title="歌词"><span
+                class="lyrics-word-icon">词</span></button>
+            <div id="lyric-timing-popover" class="lyric-timing-popover" onclick="event.stopPropagation()">
+              <div class="lyric-timing-head">
+                <span>歌词校准</span>
+                <strong id="lyric-timing-value">0.0s</strong>
+              </div>
+              <div id="lyric-timing-song" class="lyric-timing-song">当前歌曲</div>
+              <div class="lyric-timing-actions">
+                <button type="button" data-lyric-offset-step="-0.1" title="歌词延后 0.1 秒">-0.1</button>
+                <button type="button" data-lyric-offset-reset title="重置当前歌曲歌词校准">0</button>
+                <button type="button" data-lyric-offset-step="0.1" title="歌词提前 0.1 秒">+0.1</button>
+              </div>
+            </div>
+          </div>
+    <div class="st-bar-progress">
+      <span id="stBarCur" class="st-bar-time">0:00</span>
+      <div id="stBarTrack" title="播放进度（可拖动）"><div id="stBarFill"></div><div id="stBarThumb"></div></div>
+      <span id="stBarDur" class="st-bar-time">0:00</span>
+    </div>
+    <div class="st-bar-vol">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
+      <input id="stBarVol" type="range" min="0" max="100" value="80" title="音量" aria-label="音量">
+    </div>
 </div>
   </div>
+
+  <!-- 音频路由牵线面板（Ported from Mineradio 2.2.0, GPL-3.0, index.html:1597-1614 原文）-->
+      <!-- 音频路由牵线面板 -->
+      <div id="audio-output-workflow-modal" class="modal-mask">
+        <div class="modal audio-output-workflow-modal">
+          <div class="login-panel-head">
+            <div><b>音频路由</b><small>Patch Bay</small></div>
+            <button class="login-panel-close" type="button" onclick="closeAudioOutputWorkflowPanel()">×</button>
+          </div>
+          <div class="audio-output-workflow-title">
+            <b>音频路由</b>
+            <small id="audio-output-workflow-subtitle">Patch Bay</small>
+          </div>
+          <div id="audio-output-workflow-body" class="audio-output-workflow-body"></div>
+          <div class="btn-row audio-output-workflow-actions">
+            <button class="modal-btn" type="button" onclick="setAudioOutputDevice('', true)">系统默认</button>
+            <button class="modal-btn primary" type="button" onclick="refreshAudioOutputDevices(true)">刷新接口</button>
+          </div>
+        </div>
+      </div>
+
+  <!-- 自定义歌词模态（盘点 A2；Ported from Mineradio 2.2.0, GPL-3.0, index.html:1789-1805 原文。
+       body 级模态，挂音频路由牵线面板之后。保存链 bundle 已 vendor：
+       openCustomLyricModal/closeCustomLyricModal/saveCustomLyricForCurrent/deleteCustomLyricForCurrent
+       （mr-bundle.js:32900/32918/32921/32949），此前缺的只是这份 DOM 与配套 CSS）-->
+    <div id="custom-lyric-modal" class="modal-mask">
+      <div class="modal custom-lyric-modal">
+        <h2>自定义歌词</h2>
+        <div class="custom-lyric-track">
+          <div id="custom-lyric-title" class="custom-lyric-title">当前歌曲</div>
+          <div id="custom-lyric-sub" class="custom-lyric-sub">支持 LRC 时间轴，也可以直接输入纯文本歌词</div>
+        </div>
+        <textarea id="custom-lyric-input" class="custom-lyric-input" spellcheck="false"
+          placeholder="[00:12.00] 第一行歌词&#10;[00:16.50] 第二行歌词&#10;&#10;没有时间轴也可以，每一行会按歌曲时长自动铺开"></textarea>
+        <div id="custom-lyric-status" class="custom-lyric-status"></div>
+        <div class="btn-row">
+          <button class="modal-btn" onclick="deleteCustomLyricForCurrent()">删除</button>
+          <button class="modal-btn" onclick="closeCustomLyricModal()">关闭</button>
+          <button class="modal-btn primary" onclick="saveCustomLyricForCurrent()">保存使用</button>
+        </div>
+      </div>
+    </div>
 
   <script src="karaoke.js"></script>
   <script src="mr-adapter.js"></script>
   <script src="app.js"></script>
+  <script>
+  /* ===== 3D 舞台悬浮播放条 + 窗口控制（二期内联脚本；CSP script-src 'self' 'unsafe-inline' 允许）=====
+     只读现成桥：window.__mp.togglePlay/playNext/playPrev、window.__mp.audio（HTMLAudioElement）、
+     window.api.onWinMaxChange；不修改 app.js/mr-adapter.js。 */
+  (function () {
+    var $id = function (id) { return document.getElementById(id); };
+    var elTrack = $id('stBarTrack'), elFill = $id('stBarFill'), elThumb = $id('stBarThumb'),
+        elCur = $id('stBarCur'), elDur = $id('stBarDur'),
+        icPlay = $id('stIconPlay'), icPause = $id('stIconPause'),
+        elVol = $id('stBarVol'), stWinCtrl = $id('stWinCtrl');
+    var seeking = false, volInited = false;
+
+    function getAudio() { return (window.__mp && window.__mp.audio) || null; }
+    function fmt(t) {
+      if (!isFinite(t) || t < 0) t = 0;
+      var m = Math.floor(t / 60), s = Math.floor(t % 60);
+      return m + ':' + (s < 10 ? '0' : '') + s;
+    }
+    function ratioOf(a) {
+      var d = a.duration;
+      return (isFinite(d) && d > 0) ? Math.min(1, (a.currentTime || 0) / d) : 0;
+    }
+    function paint() {
+      var a = getAudio();
+      if (!a) return;
+      var pct = (ratioOf(a) * 100).toFixed(2) + '%';
+      if (!seeking) {
+        if (elFill) elFill.style.width = pct;
+        if (elThumb) elThumb.style.left = pct;
+      }
+      if (elCur) elCur.textContent = fmt(a.currentTime || 0);
+      if (elDur) elDur.textContent = fmt(isFinite(a.duration) ? a.duration : 0);
+      if (icPlay && icPause) {
+        icPlay.classList.toggle('hidden', !a.paused);
+        icPause.classList.toggle('hidden', a.paused);
+      }
+      if (!volInited && isFinite(a.volume)) {
+        if (elVol) elVol.value = String(Math.round(a.volume * 100));
+        volInited = true;
+      }
+    }
+    /* 500ms 轮询从 audio 读取进度/暂停态；overlay 隐藏时空转 */
+    setInterval(function () {
+      var ov = $id('stage3dOverlay');
+      if (!ov || ov.classList.contains('hidden')) return;
+      paint();
+    }, 500);
+
+    /* 进度条拖拽（Pointer Events + capture；条外区域不拦截，3D 拖转不受影响） */
+    function seekFromEvent(e) {
+      var a = getAudio();
+      if (!a || !elTrack) return;
+      var r = elTrack.getBoundingClientRect();
+      if (!r.width) return;
+      var ratio = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+      var pct = (ratio * 100).toFixed(2) + '%';
+      if (elFill) elFill.style.width = pct;
+      if (elThumb) elThumb.style.left = pct;
+      if (elCur) elCur.textContent = fmt(ratio * (isFinite(a.duration) ? a.duration : 0));
+      try { if (isFinite(a.duration) && a.duration > 0) a.currentTime = ratio * a.duration; } catch (err) {}
+    }
+    if (elTrack) {
+      elTrack.addEventListener('pointerdown', function (e) {
+        seeking = true;
+        try { elTrack.setPointerCapture(e.pointerId); } catch (err) {}
+        seekFromEvent(e);
+        e.preventDefault();
+      });
+      elTrack.addEventListener('pointermove', function (e) { if (seeking) seekFromEvent(e); });
+      elTrack.addEventListener('pointerup', function () { seeking = false; });
+      elTrack.addEventListener('pointercancel', function () { seeking = false; });
+    }
+    if (elVol) {
+      elVol.addEventListener('input', function () {
+        var a = getAudio();
+        if (!a) return;
+        var v = Math.min(1, Math.max(0, Number(elVol.value) / 100));
+        try { a.volume = v; } catch (err) {}
+      });
+    }
+    /* 最大化/还原图标随 win:max-changed 切换（app.js 只绑了 #winCtrl，舞台副本在这里绑） */
+    if (stWinCtrl && window.api && typeof window.api.onWinMaxChange === 'function') {
+      try {
+        window.api.onWinMaxChange(function (maxed) {
+          stWinCtrl.classList.toggle('win-maxed', !!maxed);
+        });
+      } catch (err) {}
+    }
+  })();
+  </script>
 </body>
 </html>

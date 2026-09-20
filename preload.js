@@ -202,6 +202,16 @@ contextBridge.exposeInMainWorld('api', {
   updateWallpaperEngineVisualSettings: (payload) => ipcRenderer.send('mineradio-wallpaper-engine-visual-settings', payload || {}),
   reportWallpaperEnginePointerActivity: (payload) => ipcRenderer.send('mineradio-wallpaper-engine-pointer-activity', payload || {}),
   stopWallpaperEngineScene: (payload) => ipcRenderer.invoke('mineradio-wallpaper-engine-stop-scene', payload || {}),
+  // 手势摄像头权限（Ported from Mineradio 2.2.0, GPL-3.0, desktop/preload.js:123；MR 桥名 desktopWindow，此处并入 api）
+  requestGestureCameraPermission: () => ipcRenderer.invoke('mineradio-gesture-camera-request-permission'),
+  // 歌词窗开关（视觉控制台桌面歌词接线，2026-09-20）
+  lyricWinGet: () => ipcRenderer.invoke('dsh-lyricwin-get'),
+  lyricWinToggle: (on) => ipcRenderer.invoke('dsh-lyricwin-toggle', !!on),
+  // 缓存存储设置（Ported from Mineradio 2.2.0, GPL-3.0, desktop/preload.js:16-18 + 87；MR 桥名 desktopWindow，此处并入 api）
+  getCacheSettings: () => ipcRenderer.invoke('dsh-cache-get-settings'),
+  chooseCacheDirectory: () => ipcRenderer.invoke('dsh-cache-choose-directory'),
+  setCacheSettings: (payload) => ipcRenderer.invoke('dsh-cache-set-settings', payload || {}),
+  restartApp: () => ipcRenderer.invoke('dsh-restart-app'),
   onWallpaperEngineHostBoundsChanged: (callback) => {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, payload) => callback(payload || {});

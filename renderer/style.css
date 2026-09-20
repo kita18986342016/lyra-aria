@@ -2792,6 +2792,11 @@ button:not(.active) .lgp-dot { opacity: .6; }
 
 
 /* ========== MR 视觉控制台（DIY 抽屉；样式原样复制自 Mineradio index.css，GPL-3.0） ========== */
+/* 光标自动隐藏（Mineradio index.css:357-360 原文；由 mr-bundle 01-scene/04-bottom-controls-cursor.js 的 body.cursor-hidden 触发） */
+body.cursor-hidden,
+body.cursor-hidden * {
+  cursor: none !important
+}
 :root{
   --font-sans: "Noto Sans SC", "PingFang SC", "HarmonyOS Sans SC", "Alibaba PuHuiTi", "Inter", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Geist Mono", "SF Mono", ui-monospace, monospace;
@@ -2976,41 +2981,41 @@ body.desktop-shell.diy-mode #fx-panel{
   height: auto;
   max-height: calc(100dvh - 196px)
 }
-@media (max-height:760px){body.desktop-shell.diy-mode #fx-panel{{
+@media (max-height:760px){body.desktop-shell.diy-mode #fx-panel{
     top: 50px;
     bottom: 92px;
     width: min(410px, calc(100vw - 48px));
     height: auto;
     max-height: calc(100dvh - 142px);
     padding: 14px 14px 28px
-  }}}
-@media (max-height:600px){body.desktop-shell.diy-mode #fx-panel{{
+  }}
+@media (max-height:600px){body.desktop-shell.diy-mode #fx-panel{
     top: 42px;
     bottom: 76px;
     max-height: calc(100dvh - 118px);
     padding-bottom: 26px
-  }}}
-@media (max-width:980px){body.desktop-shell.diy-mode #fx-panel{{
+  }}
+@media (max-width:980px){body.desktop-shell.diy-mode #fx-panel{
     left: 18px;
     right: 18px;
     width: auto;
     top: 62px;
     bottom: 132px
-  }}
+  }
 body.desktop-shell.diy-mode #fx-panel.show,
-  body.desktop-shell.diy-mode #fx-panel.peek{{
+  body.desktop-shell.diy-mode #fx-panel.peek{
     right: 18px
-  }}}
-@media (max-width:980px) and (max-height:760px){body.desktop-shell.diy-mode #fx-panel{{
+  }}
+@media (max-width:980px) and (max-height:760px){body.desktop-shell.diy-mode #fx-panel{
     top: 50px;
     bottom: 92px;
     max-height: calc(100dvh - 142px)
-  }}}
-@media (max-width:980px) and (max-height:600px){body.desktop-shell.diy-mode #fx-panel{{
+  }}
+@media (max-width:980px) and (max-height:600px){body.desktop-shell.diy-mode #fx-panel{
     top: 42px;
     bottom: 76px;
     max-height: calc(100dvh - 118px)
-  }}}
+  }}
 .fx-head{
   display: flex;
   justify-content: space-between;
@@ -4221,6 +4226,14 @@ html.control-glass-svg-ok .mini-queue-remove{
 #playlist-panel .fx-mini-btn.ghost{
   background: transparent !important
 }
+/* Stable panel glass (Ported from Mineradio 2.2.0, GPL-3.0, index.css:15676-15682 原样):
+   PC 端只重抽了引用这组变量的规则块、漏了 :root 定义 → var() 未定义使玻璃底失效。 */
+:root {
+  --panel-glass-filter: blur(22px) saturate(1.22) brightness(1.04);
+  --panel-glass-bg: radial-gradient(circle at 16% 0%, rgba(255, 255, 255, .10), transparent 34%), radial-gradient(circle at 88% 8%, rgba(var(--home-accent-rgb), .12), transparent 36%), linear-gradient(145deg, rgba(var(--home-accent-rgb), .115), rgba(12, 13, 18, .70) 42%, rgba(2, 3, 5, .66));
+  --panel-glass-shadow: 0 24px 78px rgba(0, 0, 0, .44), 0 0 0 1px rgba(255, 255, 255, .045), inset 0 1px 0 rgba(255, 255, 255, .18), inset 0 -18px 42px rgba(0, 0, 0, .16);
+  --panel-button-bg: linear-gradient(145deg, rgba(255, 255, 255, .075), rgba(var(--home-accent-rgb), .060) 46%, rgba(0, 0, 0, .14));
+}
 #search-box,
 #search-results,
 .search-mode-tabs,
@@ -4462,21 +4475,21 @@ html.control-glass-svg-ok .mini-queue-remove{
   margin-bottom: 8px
 }
 @media (max-width:720px){.cover-color-pop,
-  .color-lab-pop{{
+  .color-lab-pop{
     width: calc(100vw - 28px) !important
-  }}}
-@media (max-width:520px){.preset-grid,
-  .fx-toggle-grid{{
-    grid-template-columns: 1fr
   }}
-.fx-slider{{
+@media (max-width:520px){.preset-grid,
+  .fx-toggle-grid{
+    grid-template-columns: 1fr
+  }
+.fx-slider{
     grid-template-columns: 74px minmax(0, 1fr) 40px 28px;
     gap: 8px;
     padding: 8px
-  }}
-.lyric-color-grid{{
+  }
+.lyric-color-grid{
     grid-template-columns: repeat(3, minmax(0, 1fr))
-  }}}
+  }}
 /* Visual console task-first layout. Keep the established panel/button glass; only reorganize information. */
 .fx-console-toolbar{
   position: sticky;
@@ -4576,8 +4589,8 @@ html.control-glass-svg-ok .mini-queue-remove{
   display: none
 }
 .fx-console-toolbar .fx-panel-tabs button{
-  flex: 1 0 52px;
-  min-width: 52px;
+  flex: 1 1 0;
+  min-width: 0;
   height: 27px;
   padding: 0 7px;
   border-radius: 8px;
@@ -4777,48 +4790,48 @@ html.control-glass-svg-ok .mini-queue-remove{
   overflow: hidden;
   text-overflow: ellipsis
 }
-@media (max-width:720px){.fx-console-toolbar{{
+@media (max-width:720px){.fx-console-toolbar{
     top: -14px
-  }}
-.fx-console-toolbar .fx-panel-tabs{{
+  }
+.fx-console-toolbar .fx-panel-tabs{
     top: auto
-  }}
-.fx-console-toolbar .fx-panel-tabs button{{
+  }
+.fx-console-toolbar .fx-panel-tabs button{
     flex: 0 0 56px;
     min-width: 56px;
     padding: 0 8px
-  }}}
-@media (max-width:520px){.fx-console-tool-btn span{{
-    display: none
   }}
-.fx-console-tool-btn{{
+@media (max-width:520px){.fx-console-tool-btn span{
+    display: none
+  }
+.fx-console-tool-btn{
     width: 28px;
     padding: 0
-  }}
-.fx-console-search-row{{
+  }
+.fx-console-search-row{
     grid-template-columns: 20px minmax(0, 1fr) 28px 28px
-  }}
-#fx-panel .fx-console-group-body .lyric-color-row.image-pick-row{{
+  }
+#fx-panel .fx-console-group-body .lyric-color-row.image-pick-row{
     grid-template-columns: 42px minmax(0, 1fr)
-  }}
+  }
 #fx-panel .fx-console-group-body .bg-media-actions,
-  #fx-panel .fx-console-group-body .wallpaper-engine-actions{{
+  #fx-panel .fx-console-group-body .wallpaper-engine-actions{
     grid-column: 1 / -1
-  }}}
-@media (max-height:760px){.fx-console-toolbar{{
-    top: -14px
   }}
-#fx-panel .fx-console-group .fx-console-group-head{{
+@media (max-height:760px){.fx-console-toolbar{
+    top: -14px
+  }
+#fx-panel .fx-console-group .fx-console-group-head{
     min-height: 46px;
     padding: 8px 10px
-  }}
-.fx-console-popover{{
+  }
+.fx-console-popover{
     max-height: min(44vh, 280px)
-  }}}
-@media (prefers-reduced-motion:reduce){#fx-panel .fx-search-hit{{
+  }}
+@media (prefers-reduced-motion:reduce){#fx-panel .fx-search-hit{
     animation: none;
     outline-color: rgba(var(--fc-accent-rgb), .92)
-  }}}
+  }}
 /* 覆盖层内定位适配：面板挂在 #stage3dOverlay 内，右侧滑出 */
 #btnStageFx { position: absolute; top: 18px; right: 68px; z-index: 3; border: 1px solid rgba(255,255,255,.18); background: rgba(10,16,28,.6); color: #dfe7f2; height: 34px; padding: 0 14px; border-radius: 17px; font-size: 12px; font-weight: 700; letter-spacing: .04em; cursor: pointer; backdrop-filter: blur(10px); }
 #btnStageFx:hover { background: rgba(255,255,255,.14); }
@@ -4827,3 +4840,2220 @@ html.control-glass-svg-ok .mini-queue-remove{
 #mrFxDrawer #fx-panel { position: static; width: 100%; max-height: none; opacity: 1; transform: none; pointer-events: auto; right: auto; transition: none; }
 /* 取色弹窗（ColorLab/Cover Picker）暂不开放：默认隐藏，其绑定仍工作 */
 #mrFxDrawer .cover-color-pop, #mrFxDrawer .color-lab-pop, #mrFxDrawer .cover-color-loupe { position: fixed; left: -9999px; top: -9999px; opacity: 0; pointer-events: none; }
+
+/* ===== 3D 舞台悬浮迷你播放条 + 窗口控制（二期；只追加，不改既有行）===== */
+/* 右上角窗口三键：胶囊玻璃；z-index 高于播放条；随 #stage3dOverlay 显隐 */
+#stWinCtrl { position: absolute; top: 14px; right: 14px; z-index: 6; display: flex; align-items: center; height: 34px; padding: 0 2px; border-radius: 17px; background: rgba(10,16,28,.6); border: 1px solid rgba(255,255,255,.14); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+#stWinCtrl button { width: 40px; height: 32px; border: none; background: transparent; color: #dfe7f2; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 15px; transition: background .12s, color .12s; }
+#stWinCtrl button:hover { background: rgba(255,255,255,.14); }
+#stWinCtrl button .ic { width: 14px; height: 14px; }
+#stWinCtrl button .ic-restore { display: none; }
+#stWinCtrl.win-maxed #stWinMax .ic { display: none; }
+#stWinCtrl.win-maxed #stWinMax .ic-restore { display: block; }
+#stWinCtrl #stWinClose:hover { background: #e5484d; color: #fff; }
+/* 窗口三键落在最右，原有 ✕ / DIY 左移让位（覆盖层作用域内） */
+#stage3dOverlay #btnCloseStage3D { right: 142px; }
+#stage3dOverlay #btnStageFx { right: 188px; }
+/* 悬浮迷你播放条：底部居中、离开底边 28px；仅条体接收指针事件，不新增全屏拦截层 */
+#stBar { position: absolute; left: 50%; bottom: 28px; z-index: 4; display: flex; align-items: center; gap: 14px; padding: 10px 18px; border-radius: 18px; background: rgba(8,12,22,.55); border: 1px solid rgba(255,255,255,.10); backdrop-filter: blur(18px) saturate(1.2); -webkit-backdrop-filter: blur(18px) saturate(1.2); box-shadow: 0 18px 48px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.07); transform: translateX(-50%); transition: transform .3s cubic-bezier(.16,1,.3,1); pointer-events: auto; max-width: min(760px, calc(100vw - 48px)); }
+/* DIY 抽屉（右侧 360px）打开时播放条左移半格，不与其重叠 */
+#mrFxDrawer:not(.hidden) ~ #stBar { transform: translateX(calc(-50% - 180px)); max-width: calc(100vw - 420px); }
+#stBar .st-bar-btns { display: flex; align-items: center; gap: 2px; flex: none; }
+#stBar button { border: none; background: transparent; color: #e6edf7; width: 38px; height: 38px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: background .15s, color .15s, transform .15s; padding: 0; }
+#stBar button:hover { background: rgba(255,255,255,.13); }
+#stBar button:active { transform: scale(.94); }
+#stBar button svg { width: 20px; height: 20px; }
+#stBar #stBtnPlay { width: 44px; height: 44px; background: rgba(255,255,255,.09); border: 1px solid rgba(255,255,255,.14); }
+#stBar #stBtnPlay:hover { background: rgba(255,255,255,.18); }
+#stBar #stBtnPlay svg { width: 22px; height: 22px; }
+#stBar .st-bar-progress { display: flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 220px; }
+#stBar .st-bar-time { font-size: 11px; color: rgba(230,237,247,.72); font-variant-numeric: tabular-nums; flex: none; min-width: 34px; text-align: center; letter-spacing: .03em; }
+#stBarTrack { position: relative; flex: 1; height: 18px; cursor: pointer; touch-action: none; }
+#stBarTrack::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 5px; transform: translateY(-50%); border-radius: 3px; background: rgba(255,255,255,.16); box-shadow: inset 0 1px 2px rgba(0,0,0,.35); }
+#stBarFill { position: absolute; left: 0; top: 50%; height: 5px; transform: translateY(-50%); width: 0; border-radius: 3px; background: linear-gradient(90deg, var(--accent, #4a7dff), #9db8ff); box-shadow: 0 0 10px rgba(122,162,255,.5); pointer-events: none; }
+#stBarThumb { position: absolute; top: 50%; left: 0; width: 12px; height: 12px; border-radius: 50%; background: #fff; transform: translate(-50%,-50%); box-shadow: 0 1px 6px rgba(0,0,0,.5); pointer-events: none; opacity: .92; }
+#stBarTrack:hover #stBarThumb { opacity: 1; }
+#stBar .st-bar-vol { display: flex; align-items: center; gap: 6px; flex: none; color: rgba(230,237,247,.78); }
+#stBar .st-bar-vol > svg { width: 16px; height: 16px; flex: none; }
+#stBarVol { width: 88px; height: 4px; accent-color: var(--accent, #4a7dff); cursor: pointer; }
+
+/* ===== 控制台美术对齐（二期，抄自 Mineradio index.css 原文）===== */
+/* 记忆状态组（MR index.css 11816-11847） */
+.memory-status-chip { margin-top: 6px; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, .08); background: rgba(255, 255, 255, .04); color: rgba(255, 255, 255, .78); font-size: 11px; line-height: 1.45 }
+.memory-status-sub { margin-top: 4px; margin-bottom: 2px }
+.memory-mask-seg { margin-top: 8px }
+.memory-action-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px }
+/* 预设卡片网格（MR index.css 11886-12106，含 2026 画廊系列与切换脉冲） */
+.preset-card { position: relative; min-height: 94px; border-radius: 11px; border: 1.5px solid rgba(255, 255, 255, .08); background: rgba(255, 255, 255, .025); cursor: pointer; overflow: hidden; transition: all .25s; display: flex; flex-direction: column; justify-content: flex-end; padding: 10px }
+.preset-card:hover { border-color: rgba(255, 255, 255, .2); background: rgba(255, 255, 255, .05) }
+.preset-card.active { border-color: rgba(0, 245, 212, .54); background: rgba(0, 245, 212, .075); box-shadow: 0 0 0 1px rgba(0, 245, 212, .22), 0 16px 46px rgba(0, 245, 212, .055) }
+.preset-card.switching::after { content: ''; position: absolute; inset: -35%; background: radial-gradient(circle, rgba(244, 210, 138, .26), transparent 58%); animation: preset-card-pulse .72s cubic-bezier(.16, 1, .3, 1); pointer-events: none }
+.preset-card .pc-icon { position: absolute; top: 8px; right: 8px; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; color: rgba(255, 255, 255, .45) }
+.preset-card.active .pc-icon { color: var(--fc-accent) }
+.preset-card .pc-name { font-size: 13px; font-weight: 700; color: rgba(255, 255, 255, .92); letter-spacing: .3px }
+.preset-card .pc-desc { font-size: 10px; color: rgba(255, 255, 255, .44); margin-top: 4px; letter-spacing: .3px; line-height: 1.35 }
+.preset-card[data-preset="7"] .pc-name, .preset-card[data-preset="8"] .pc-name { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 5px; row-gap: 1px }
+.preset-card .pc-name-en { color: rgba(255, 255, 255, .48); font-size: 9px; font-weight: 520; line-height: 1.2; letter-spacing: .15px; white-space: nowrap }
+.preset-card .pc-author-ajin { color: #f59e0b; font-weight: 650 }
+.preset-card.active .pc-name { color: #fff }
+.preset-card[data-preset="6"] .pc-name, .preset-card[data-preset="6"] .pc-desc { font-family: "黑体", "SimHei", "Microsoft YaHei", "Noto Sans SC", Arial, sans-serif; font-weight: 800; letter-spacing: .4px }
+.preset-card[data-preset="6"] .pc-name { font-size: 14px }
+.preset-card[data-preset="6"] .pc-desc { font-size: 10.5px; color: rgba(255, 255, 255, .52); font-weight: 700 }
+.preset-card[data-preset="6"] .pc-yui7w { color: #3257f7; font-family: "Microsoft Yi Baiti", "SimHei", "Microsoft YaHei", sans-serif; font-weight: 900; font-style: italic; letter-spacing: .7px }
+.preset-card[data-preset="6"] .pc-icon { color: #3257f7 }
+.preset-card[data-preset="6"].active .pc-icon { color: #3257f7 !important; text-shadow: 0 0 12px rgba(50, 87, 247, .44) }
+.preset-card .pc-bg { position: absolute; inset: 0; opacity: .35; pointer-events: none }
+.preset-card.preset-card-premium { min-height: 108px; border-color: color-mix(in srgb, var(--preset-accent) 26%, rgba(255, 255, 255, .08)); background: radial-gradient(circle at 84% 18%, color-mix(in srgb, var(--preset-accent) 18%, transparent), transparent 36%), radial-gradient(circle at 10% 100%, color-mix(in srgb, var(--preset-accent-2) 12%, transparent), transparent 48%), linear-gradient(145deg, rgba(255, 255, 255, .032), rgba(255, 255, 255, .012)); isolation: isolate }
+.preset-card.preset-card-premium::before { content: ''; position: absolute; inset: 0; pointer-events: none; z-index: -1; opacity: .7; background: linear-gradient(115deg, transparent 24%, color-mix(in srgb, var(--preset-accent) 10%, transparent) 49%, transparent 70%), repeating-linear-gradient(90deg, transparent 0 17px, rgba(255, 255, 255, .018) 18px 19px); transform: translateZ(0); transition: opacity .3s ease, transform .45s cubic-bezier(.2, .8, .2, 1) }
+.preset-card.preset-card-premium:hover { border-color: color-mix(in srgb, var(--preset-accent) 52%, rgba(255, 255, 255, .15)); box-shadow: 0 17px 38px rgba(0, 0, 0, .22), inset 0 1px rgba(255, 255, 255, .06) }
+.preset-card.preset-card-premium:hover::before { opacity: 1; transform: translate3d(3px, -2px, 0) }
+.preset-card.preset-card-premium.active { border-color: color-mix(in srgb, var(--preset-accent) 72%, white 8%); background: radial-gradient(circle at 84% 18%, color-mix(in srgb, var(--preset-accent) 25%, transparent), transparent 38%), radial-gradient(circle at 10% 100%, color-mix(in srgb, var(--preset-accent-2) 17%, transparent), transparent 52%), rgba(255, 255, 255, .035); box-shadow: 0 0 0 1px color-mix(in srgb, var(--preset-accent) 24%, transparent), 0 18px 46px rgba(0, 0, 0, .25) }
+.preset-card.preset-card-premium .pc-icon, .preset-card.preset-card-premium.active .pc-icon { color: var(--preset-accent); filter: drop-shadow(0 0 9px color-mix(in srgb, var(--preset-accent) 38%, transparent)) }
+.preset-card.preset-card-premium .pc-name { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 6px; font-size: 13.5px; letter-spacing: .45px }
+.preset-card.preset-card-premium .pc-name-en { color: color-mix(in srgb, var(--preset-accent) 70%, rgba(255, 255, 255, .45)); font-size: 8.5px; letter-spacing: .55px }
+.preset-card.preset-card-premium .pc-desc { color: rgba(255, 255, 255, .53); letter-spacing: .45px }
+@keyframes preset-card-pulse { 0% { opacity: 0; transform: scale(.6) rotate(0deg) } 35% { opacity: 1 } 100% { opacity: 0; transform: scale(1.25) rotate(12deg) } }
+/* 音域回响·WE 音频监视（MR index.css 12367-12451） */
+.fx-sonic-hidden { display: none !important; }
+.sonic-workshop-theme-seg { margin: 6px 0 10px; }
+.sonic-workshop-theme-seg button { min-width: 0; }
+.sonic-audio-monitor { margin: 8px 0 10px; border: 1px solid rgba(255, 255, 255, .075); border-radius: 10px; background: rgba(255, 255, 255, .026); overflow: hidden }
+.sonic-audio-monitor-head { min-height: 40px; display: grid; grid-template-columns: minmax(84px, 112px) minmax(0, 1fr) minmax(78px, auto); align-items: center; gap: 9px; padding: 7px 9px }
+.sonic-audio-monitor-head .fx-mini-btn { height: 28px; min-width: 0; flex: 0 0 auto }
+.sonic-audio-meter { height: 8px; border-radius: 999px; overflow: hidden; background: rgba(255, 255, 255, .07); box-shadow: inset 0 0 10px rgba(0, 0, 0, .35) }
+.sonic-audio-meter span { display: block; width: 100%; height: 100%; transform-origin: 0 50%; transform: scaleX(0); border-radius: inherit; background: linear-gradient(90deg, #33e6ff, #f4d28a, #ff5258); transition: transform .08s linear }
+#sonic-audio-monitor-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255, 255, 255, .50); font-size: 10px; text-align: right; font-variant-numeric: tabular-nums }
+.sonic-audio-monitor-panel { height: 0; opacity: 0; pointer-events: none; transition: height .22s ease, opacity .18s ease }
+.sonic-audio-monitor-panel.open { height: 112px; opacity: 1; pointer-events: auto }
+#sonic-audio-monitor-canvas { display: block; width: 100%; height: 108px; border-top: 1px solid rgba(255, 255, 255, .06); background: #05080e }
+/* 单项复位圆钮（MR index.css 12453-12478） */
+.fx-reset-one { width: 24px; height: 24px; border: 1px solid rgba(255, 255, 255, .09); border-radius: 50%; background: rgba(255, 255, 255, .035); color: rgba(255, 255, 255, .46); cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; transition: color .2s, background .2s, border-color .2s, transform .2s }
+.fx-reset-one:hover { color: #eafffb; background: rgba(0, 245, 212, .085); border-color: rgba(0, 245, 212, .26); transform: rotate(-18deg) scale(1.04) }
+.fx-reset-one svg { width: 13px; height: 13px; display: block }
+/* 歌词色板网格（MR index.css 12480-12519） */
+.lyric-color-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 7px; margin: 8px 0 10px; padding: 9px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, .055); background: rgba(255, 255, 255, .024) }
+.lyric-swatch { height: 30px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, .12); background: var(--swatch, #a9b8c8); cursor: pointer; position: relative; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .20), 0 8px 18px rgba(0, 0, 0, .18); transition: transform .18s, border-color .18s, box-shadow .18s }
+.lyric-swatch:hover { transform: translateY(-1px); border-color: rgba(255, 255, 255, .34) }
+.lyric-swatch.active { border-color: rgba(244, 210, 138, .88); box-shadow: 0 0 0 1px rgba(244, 210, 138, .42), 0 10px 24px rgba(244, 210, 138, .12), inset 0 1px 0 rgba(255, 255, 255, .25) }
+.lyric-swatch.auto { background: linear-gradient(135deg, rgba(143, 233, 255, .52), rgba(156, 255, 223, .36), rgba(244, 210, 138, .42)); display: flex; align-items: center; justify-content: center; color: rgba(8, 10, 12, .78); font-size: 9px; font-weight: 800; letter-spacing: .5px }
+/* 背景媒体预览与 WE 行（MR index.css 12556-12667） */
+.bg-media-preview { width: 42px; height: 32px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, .14); background: radial-gradient(circle at 28% 24%, rgba(255, 255, 255, .24), transparent 36%), linear-gradient(135deg, rgba(143, 233, 255, .28), rgba(244, 210, 138, .20), rgba(255, 255, 255, .05)); background-size: cover; background-position: var(--custom-bg-position-x, 50%) var(--custom-bg-position-y, 50%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 10px 22px rgba(0, 0, 0, .20); overflow: hidden; position: relative }
+.bg-media-preview::after { content: attr(data-kind); position: absolute; right: 5px; bottom: 4px; padding: 1px 4px; border-radius: 5px; background: rgba(0, 0, 0, .46); color: rgba(255, 255, 255, .72); font-size: 8px; font-weight: 800; letter-spacing: .2px }
+.bg-media-preview.empty::after { display: none }
+.bg-media-actions { display: grid; grid-template-columns: repeat(4, minmax(38px, 1fr)); gap: 5px; width: clamp(168px, 38vw, 218px) }
+.bg-media-actions .fx-mini-btn { height: 28px; border-radius: 9px; padding: 0 7px; font-size: 11px }
+.bg-media-actions .fx-mini-btn:disabled { opacity: .34; cursor: default; border-color: rgba(255, 255, 255, .08); color: rgba(255, 255, 255, .42) }
+.wallpaper-engine-row { border-color: rgba(97, 185, 255, .13); background: linear-gradient(135deg, rgba(65, 142, 255, .075), rgba(255, 255, 255, .022)) }
+.wallpaper-engine-mark { width: 42px; height: 32px; border-radius: 12px; display: grid; place-items: center; color: rgba(239, 249, 255, .96); font: 800 11px/1 "JetBrains Mono", monospace; letter-spacing: .7px; border: 1px solid rgba(121, 201, 255, .24); background: radial-gradient(circle at 30% 20%, rgba(255, 255, 255, .26), transparent 30%), linear-gradient(145deg, rgba(41, 147, 255, .62), rgba(56, 76, 138, .34)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18), 0 8px 22px rgba(19, 97, 171, .18) }
+.wallpaper-engine-actions { display: grid; grid-template-columns: minmax(74px, 1fr) minmax(82px, 1fr); gap: 5px; width: clamp(172px, 39vw, 224px) }
+.wallpaper-engine-actions .fx-mini-btn { min-width: 0; height: 28px; padding: 0 7px; border-radius: 9px; font-size: 10.5px; white-space: nowrap }
+.wallpaper-engine-actions .fx-mini-btn:disabled { opacity: .34; cursor: default }
+.wallpaper-engine-visual-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 10px; padding: 8px 10px 10px; margin: -2px 0 8px; border: 1px solid rgba(97, 185, 255, .10); border-top: 0; border-radius: 0 0 14px 14px; background: rgba(36, 91, 138, .035) }
+.wallpaper-engine-visual-controls .fx-slider { margin: 0 }
+/* 歌词辉光行（MR index.css 13185-13195 / 13515 / 14057-14064） */
+#lyric-glow-row { border-color: color-mix(in srgb, var(--lyric-glow-color) 22%, rgba(255, 255, 255, .065)); background: linear-gradient(90deg, color-mix(in srgb, var(--lyric-glow-color) 10%, transparent), rgba(255, 255, 255, .026)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), 0 0 18px color-mix(in srgb, var(--lyric-glow-color) 8%, transparent) }
+#lyric-glow-picker { border-color: color-mix(in srgb, var(--lyric-glow-color) 46%, rgba(255, 255, 255, .16)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14), 0 0 18px color-mix(in srgb, var(--lyric-glow-color) 22%, transparent), 0 10px 22px rgba(0, 0, 0, .18) }
+#lyric-glow-value { color: color-mix(in srgb, var(--lyric-glow-color) 82%, rgba(255, 255, 255, .54)) }
+#lyric-glow-link-btn { border-color: color-mix(in srgb, var(--lyric-glow-color) 28%, rgba(255, 255, 255, .12)); color: color-mix(in srgb, var(--lyric-glow-color) 76%, rgba(255, 255, 255, .78)) }
+#lyric-glow-link-btn.active { background: color-mix(in srgb, var(--lyric-glow-color) 13%, transparent); color: color-mix(in srgb, var(--lyric-glow-color) 88%, #fff); box-shadow: 0 0 18px color-mix(in srgb, var(--lyric-glow-color) 14%, transparent) }
+/* 字体网格（MR index.css 13537-13628） */
+.fx-font-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 8px 0 10px }
+.fx-font-grid button { min-height: 32px; border-radius: 9px; border: 1px solid rgba(255, 255, 255, .08); background: rgba(255, 255, 255, .030); color: rgba(255, 255, 255, .58); font-family: inherit; font-size: 11px; cursor: pointer; transition: background .18s, border-color .18s, color .18s, transform .18s }
+.fx-font-grid.expanded { grid-template-columns: repeat(4, minmax(0, 1fr)) }
+.fx-font-grid button[data-font="gothic"] { font-family: "UnifrakturCook", "UnifrakturMaguntia", "Old English Text MT", "Blackletter", "Cinzel Decorative", serif; font-size: 12.5px }
+.fx-font-grid button[data-font="stone-song"], .fx-font-grid button[data-font="bold-song"] { font-family: "Source Han Serif SC", "Noto Serif SC", "STZhongsong", "SimSun", serif; font-weight: 800 }
+.fx-font-grid button[data-font^="custom:"] { position: relative; padding-right: 22px; font-weight: 760; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.fx-font-grid .font-upload-btn { border-style: dashed; color: rgba(var(--fc-accent-rgb), .76); background: rgba(var(--fc-accent-rgb), .045) }
+.fx-font-grid .font-remove { position: absolute; right: 6px; top: 50%; width: 15px; height: 15px; border-radius: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; color: rgba(255, 255, 255, .36); font-size: 12px; line-height: 1 }
+.fx-font-grid .font-remove:hover { background: rgba(255, 255, 255, .12); color: #fff }
+.fx-font-grid button:hover { background: rgba(255, 255, 255, .06); color: #fff; transform: translateY(-1px) }
+.fx-font-grid button.active { border-color: rgba(var(--fc-accent-rgb), .36); background: rgba(var(--fc-accent-rgb), .09); color: #fff }
+/* 计时浮层占位与开发角标（MR index.css 13655 / 13714-13729） */
+#t-float { display: none !important }
+.fx-dev-badge { display: inline-flex; align-items: center; margin-left: 5px; padding: 1px 5px; border-radius: 999px; border: 1px solid rgba(244, 210, 138, .28); background: rgba(244, 210, 138, .08); color: rgba(244, 210, 138, .76); font-style: normal; font-size: 9px; font-weight: 800; line-height: 1.35; vertical-align: 1px; letter-spacing: .05em }
+/* 材质质量/前台帧率分段（MR index.css 13778-13818） */
+.lyric-texture-quality-seg button { display: flex; min-width: 0; flex-direction: column; align-items: center; justify-content: center; gap: 1px; line-height: 1.05 }
+.lyric-texture-quality-seg button span { font-size: 12px; font-weight: 850 }
+.lyric-texture-quality-seg button small { font-size: 9px; font-weight: 700; opacity: .68 }
+.foreground-fps-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: hidden }
+.foreground-fps-seg button { min-width: 0; border-right: 1px solid rgba(255, 255, 255, .05); border-bottom: 1px solid rgba(255, 255, 255, .05) }
+.foreground-fps-seg button:nth-child(3n) { border-right: none }
+.foreground-fps-seg button:nth-last-child(-n + 3) { border-bottom: none }
+/* 高级折叠头悬停/箭头（MR index.css 13840-13849） */
+.fx-advanced-head:hover { color: #fff }
+.fx-advanced-head .arrow { transition: transform .2s; font-size: 10px }
+.fx-advanced.open .fx-advanced-head .arrow { transform: rotate(90deg) }
+/* 缓存存储面板（MR index.css 13858-13927） */
+.cache-storage-panel { border: 1px solid rgba(255, 255, 255, .075); background: rgba(3, 9, 14, .42); border-radius: 10px; padding: 10px; margin: -1px 0 12px }
+.cache-storage-head, .cache-storage-row, .cache-storage-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px }
+.cache-storage-head { color: rgba(255, 255, 255, .82); font-size: 11px; font-weight: 700 }
+.cache-storage-head span:last-child, .cache-storage-row b { color: rgba(var(--fc-accent-rgb), .86); font-size: 10px; font-variant-numeric: tabular-nums }
+.cache-storage-path { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(222, 240, 246, .56); font-size: 9px; line-height: 1.45; margin: 4px 0 8px }
+.cache-storage-path.small { color: rgba(222, 240, 246, .38); margin: 2px 0 7px }
+.cache-storage-actions { justify-content: flex-start; margin: 7px 0 10px }
+.cache-storage-actions .fx-mini-btn { min-height: 25px; padding: 0 8px; font-size: 10px }
+.cache-storage-row { color: rgba(255, 255, 255, .63); font-size: 10px }
+.cache-storage-row.muted { color: rgba(255, 255, 255, .42) }
+.cache-storage-note { margin-top: 5px; line-height: 1.45 }
+/* 工作台 tab 条与页容器（MR index.css 16324-16371：页显隐全靠这两条 display 规则） */
+.fx-panel-tabs { position: sticky; top: -18px; z-index: 4; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 5px; margin: -2px -2px 14px; padding: 5px; border-radius: 14px; background: rgba(0, 0, 0, .50); border: 1px solid rgba(255, 255, 255, .075); box-shadow: 0 10px 34px rgba(0, 0, 0, .24), inset 0 1px 0 rgba(255, 255, 255, .07); backdrop-filter: blur(18px) saturate(1.12); -webkit-backdrop-filter: blur(18px) saturate(1.12); }
+.fx-panel-tabs button { min-width: 0; height: 30px; border: 0; border-radius: 10px; background: transparent; color: rgba(255, 255, 255, .52); font: 700 11px/1 var(--font-sans); letter-spacing: .02em; cursor: pointer; transition: background .18s, color .18s, box-shadow .18s, transform .18s; }
+.fx-panel-tabs button:hover { color: #fff; background: rgba(255, 255, 255, .055) }
+.fx-panel-tabs button.active { color: #fff; background: rgba(var(--fc-accent-rgb), .15); box-shadow: inset 0 0 0 1px rgba(var(--fc-accent-rgb), .24), 0 8px 22px rgba(var(--fc-accent-rgb), .08); }
+.fx-tab-page { display: none }
+.fx-tab-page.active { display: block }
+/* 手势设置组（MR index.css 16689-16792；#hand-canvas 未搬入故不取） */
+.gesture-settings-card {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  background:
+    radial-gradient(circle at 92% 6%, rgba(126, 216, 255, .09), transparent 34%),
+    linear-gradient(145deg, rgba(255, 255, 255, .035), rgba(255, 255, 255, .012));
+  box-shadow: inset 0 1px rgba(255, 255, 255, .035)
+}
+.gesture-settings-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px }
+.gesture-settings-head>div { display: flex; flex-direction: column; gap: 2px }
+.gesture-settings-head strong { color: rgba(255, 255, 255, .9); font-size: 12px; letter-spacing: .35px }
+.gesture-settings-head span:not(.gesture-live-mark) { color: rgba(255, 255, 255, .4); font-size: 9.5px }
+.gesture-live-mark { padding: 3px 6px; border: 1px solid rgba(126, 216, 255, .25); border-radius: 999px; color: rgba(166, 230, 255, .7); font: 700 8px/1 ui-monospace, Consolas, monospace; letter-spacing: 1px }
+.gesture-toggle-grid { margin-bottom: 10px }
+.gesture-settings-subtitle { margin: 2px 0 6px; color: rgba(255, 255, 255, .42); font-size: 9.5px; letter-spacing: .4px }
+.gesture-sensitivity-seg { margin-bottom: 10px }
+.gesture-command-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px }
+.gesture-command-grid>div { min-width: 0; padding: 8px 8px 7px; border: 1px solid rgba(255, 255, 255, .055); border-radius: 10px; background: rgba(0, 0, 0, .12); display: grid; grid-template-columns: 22px 1fr; grid-template-rows: auto auto; column-gap: 7px }
+.gesture-command-grid b { grid-row: 1 / 3; align-self: center; color: rgba(203, 236, 248, .82); font-size: 16px; font-weight: 500; text-align: center }
+.gesture-command-grid span { overflow: hidden; text-overflow: ellipsis; color: rgba(255, 255, 255, .34); font-size: 8.5px; white-space: nowrap }
+.gesture-command-grid strong { overflow: hidden; text-overflow: ellipsis; color: rgba(255, 255, 255, .74); font-size: 9.5px; font-weight: 600; white-space: nowrap }
+/* 工作台搜索命中闪烁关键帧（MR index.css 17284-17292；既有 .fx-search-hit 规则引用了它但关键帧缺失） */
+@keyframes fx-console-search-hit { 0%, 100% { outline-color: transparent } 18%, 76% { outline-color: rgba(var(--fc-accent-rgb), .96) } }
+
+/* ===== 控制台美术对齐（二期）：按 MR 原文重写被 { } 转义破坏的媒体查询（只追加，不改既有行）===== */
+@media (max-width:720px) {
+  .fx-panel-tabs { display: flex; overflow-x: auto; scrollbar-width: none; top: -14px }
+  .fx-panel-tabs::-webkit-scrollbar { display: none }
+  .fx-panel-tabs button { flex: 0 0 auto; min-width: 58px; padding: 0 10px }
+  .cover-color-pop, .color-lab-pop { width: calc(100vw - 28px) !important }
+}
+@media (max-width:720px) {
+  .fx-console-toolbar { top: -14px }
+  .fx-console-toolbar .fx-panel-tabs { top: auto }
+  .fx-console-toolbar .fx-panel-tabs button { flex: 0 0 56px; min-width: 56px; padding: 0 8px }
+}
+@media (max-width:520px) {
+  .fx-console-tool-btn span { display: none }
+  .fx-console-tool-btn { width: 28px; padding: 0 }
+  .fx-console-search-row { grid-template-columns: 20px minmax(0, 1fr) 28px 28px }
+  #fx-panel .fx-console-group-body .lyric-color-row.image-pick-row { grid-template-columns: 42px minmax(0, 1fr) }
+  #fx-panel .fx-console-group-body .bg-media-actions, #fx-panel .fx-console-group-body .wallpaper-engine-actions { grid-column: 1 / -1 }
+}
+@media (max-width:520px) {
+  .preset-grid, .fx-toggle-grid { grid-template-columns: 1fr }
+  .fx-slider { grid-template-columns: 74px minmax(0, 1fr) 40px 28px; gap: 8px; padding: 8px }
+  .lyric-color-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) }
+}
+@media (max-height:760px) {
+  .fx-console-toolbar { top: -14px }
+  #fx-panel .fx-console-group .fx-console-group-head { min-height: 46px; padding: 8px 10px }
+  .fx-console-popover { max-height: min(44vh, 280px) }
+}
+@media (prefers-reduced-motion:reduce) {
+  #fx-panel .fx-search-hit { animation: none; outline-color: rgba(var(--fc-accent-rgb), .92) }
+}
+/* ===== WE 抽屉/背景层 CSS（协调者抽取自 Mineradio index.css，二期合并块）===== */
+/* ---- modal-mask/modal 基类 (Mineradio index.css 7620-7668) ---- */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: radial-gradient(circle at 50% 48%, rgba(244, 210, 138, .07), transparent 34%), rgba(0, 0, 0, 0.78);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  visibility: hidden
+}
+
+.modal-mask.show {
+  display: flex;
+  opacity: 1;
+  visibility: visible
+}
+
+.modal-mask::before {
+  content: none
+}
+
+.modal {
+  position: relative;
+  background: linear-gradient(180deg, rgba(24, 23, 26, 0.96), rgba(12, 11, 12, 0.92));
+  border: 1px solid rgba(244, 210, 138, 0.16);
+  border-radius: 18px;
+  padding: 32px;
+  max-width: 380px;
+  width: 90vw;
+  text-align: center;
+  box-shadow: 0 26px 90px rgba(0, 0, 0, .56), 0 0 0 1px rgba(255, 255, 255, .035), inset 0 1px 0 rgba(255, 255, 255, .07);
+  will-change: opacity, transform, filter
+}
+
+.modal h2 {
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: .5px;
+  margin-bottom: 18px;
+  color: rgba(255, 255, 255, 0.95)
+}
+
+.modal .desc {
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-bottom: 20px;
+  line-height: 1.6
+}
+/* ---- WE 背景层全族 (Mineradio index.css 888-1030) ---- */
+#wallpaper-engine-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  isolation: isolate;
+  border-radius: 0;
+  clip-path: inset(0);
+  background: #000;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 420ms cubic-bezier(.16, 1, .3, 1), visibility 0s linear 420ms;
+  contain: strict
+}
+
+#wallpaper-engine-layer.ready {
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s
+}
+
+body.wallpaper-engine-dwm-active #wallpaper-engine-layer {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  transition: none !important
+}
+
+/* DWM keeps the real WE scene/cursor-parallax path native. This narrowly
+   clipped compositor copy exists only so the saved bottom-bar SVG backdrop
+   filter can sample the wallpaper together with the DOM cover and particles. */
+#wallpaper-engine-glass-sampler {
+  position: fixed;
+  z-index: 0;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  border-radius: 0;
+  clip-path: inset(0 round var(--wallpaper-engine-glass-radius, 0px));
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  background: transparent;
+  contain: strict
+}
+
+#wallpaper-engine-glass-sampler-video {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  object-fit: fill;
+  opacity: 1;
+  pointer-events: none;
+  background: transparent
+}
+
+body.wallpaper-engine-dwm-active.wallpaper-engine-glass-sampler-ready #wallpaper-engine-glass-sampler.bar-visible {
+  opacity: 1;
+  visibility: visible
+}
+
+#wallpaper-engine-image,
+#wallpaper-engine-video,
+#wallpaper-engine-freeze {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  clip-path: inherit;
+  object-fit: cover;
+  object-position: center;
+  transform: translate3d(var(--wallpaper-engine-visual-position-x, 0%), var(--wallpaper-engine-visual-position-y, 0%), 0) scale(var(--wallpaper-engine-visual-scale, 1.08));
+  transform-origin: center;
+  opacity: 0;
+  transition: opacity 300ms ease;
+  pointer-events: none;
+  background: #000
+}
+
+#wallpaper-engine-image,
+#wallpaper-engine-video {
+  z-index: 1
+}
+
+#wallpaper-engine-freeze {
+  z-index: 2;
+  object-fit: fill;
+  visibility: hidden;
+  transition: opacity 160ms cubic-bezier(.2, .8, .2, 1), visibility 0s linear 160ms
+}
+
+#wallpaper-engine-layer.freeze-ready #wallpaper-engine-freeze {
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s
+}
+
+#wallpaper-engine-layer.image-ready #wallpaper-engine-image,
+#wallpaper-engine-layer.video-ready #wallpaper-engine-video {
+  opacity: var(--wallpaper-engine-visual-opacity, 1)
+}
+
+#wallpaper-engine-layer.engine-ready #wallpaper-engine-video {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill
+}
+
+body.desktop-shell #wallpaper-engine-layer,
+body.desktop-shell #wallpaper-engine-image,
+body.desktop-shell #wallpaper-engine-video,
+body.desktop-shell #wallpaper-engine-freeze {
+  border-radius: 34px;
+  clip-path: inset(0 round 34px)
+}
+
+body.desktop-shell.desktop-maximized #wallpaper-engine-layer,
+body.desktop-shell.desktop-maximized #wallpaper-engine-image,
+body.desktop-shell.desktop-maximized #wallpaper-engine-video,
+body.desktop-shell.desktop-maximized #wallpaper-engine-freeze,
+body.desktop-shell.desktop-fullscreen #wallpaper-engine-layer,
+body.desktop-shell.desktop-fullscreen #wallpaper-engine-image,
+body.desktop-shell.desktop-fullscreen #wallpaper-engine-video,
+body.desktop-shell.desktop-fullscreen #wallpaper-engine-freeze,
+body.desktop-shell.desktop-wallpaper-mode #wallpaper-engine-layer,
+body.desktop-shell.desktop-wallpaper-mode #wallpaper-engine-image,
+body.desktop-shell.desktop-wallpaper-mode #wallpaper-engine-video,
+body.desktop-shell.desktop-wallpaper-mode #wallpaper-engine-freeze,
+html:fullscreen body.desktop-shell #wallpaper-engine-layer,
+html:fullscreen body.desktop-shell #wallpaper-engine-image,
+html:fullscreen body.desktop-shell #wallpaper-engine-video,
+html:fullscreen body.desktop-shell #wallpaper-engine-freeze {
+  border-radius: 0 !important;
+  clip-path: none !important
+}
+
+/* ---- WE 行/抽屉全量 (Mineradio index.css 12610-13169) ---- */
+.wallpaper-engine-row {
+  border-color: rgba(97, 185, 255, .13);
+  background: linear-gradient(135deg, rgba(65, 142, 255, .075), rgba(255, 255, 255, .022))
+}
+
+.wallpaper-engine-mark {
+  width: 42px;
+  height: 32px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  color: rgba(239, 249, 255, .96);
+  font: 800 11px/1 "JetBrains Mono", monospace;
+  letter-spacing: .7px;
+  border: 1px solid rgba(121, 201, 255, .24);
+  background:
+    radial-gradient(circle at 30% 20%, rgba(255, 255, 255, .26), transparent 30%),
+    linear-gradient(145deg, rgba(41, 147, 255, .62), rgba(56, 76, 138, .34));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18), 0 8px 22px rgba(19, 97, 171, .18)
+}
+
+.wallpaper-engine-actions {
+  display: grid;
+  grid-template-columns: minmax(74px, 1fr) minmax(82px, 1fr);
+  gap: 5px;
+  width: clamp(172px, 39vw, 224px)
+}
+
+.wallpaper-engine-actions .fx-mini-btn {
+  min-width: 0;
+  height: 28px;
+  padding: 0 7px;
+  border-radius: 9px;
+  font-size: 10.5px;
+  white-space: nowrap
+}
+
+.wallpaper-engine-actions .fx-mini-btn:disabled {
+  opacity: .34;
+  cursor: default
+}
+
+.wallpaper-engine-visual-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 10px;
+  padding: 8px 10px 10px;
+  margin: -2px 0 8px;
+  border: 1px solid rgba(97, 185, 255, .10);
+  border-top: 0;
+  border-radius: 0 0 14px 14px;
+  background: rgba(36, 91, 138, .035)
+}
+
+.wallpaper-engine-visual-controls .fx-slider {
+  margin: 0
+}
+
+@media (max-width: 540px) {
+  .wallpaper-engine-visual-controls { grid-template-columns: 1fr }
+}
+
+.wallpaper-engine-library-modal {
+  position: relative;
+  width: min(1120px, 94vw);
+  max-width: none;
+  height: min(820px, 88vh);
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  overflow: hidden;
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 12% -12%, rgba(74, 164, 255, .13), transparent 34%),
+    linear-gradient(180deg, rgba(17, 20, 27, .985), rgba(8, 9, 13, .97));
+  border-color: rgba(119, 198, 255, .18)
+}
+
+.wallpaper-engine-library-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  flex: 0 0 auto
+}
+
+.wallpaper-engine-library-head h2 {
+  margin: 4px 0 5px;
+  font-size: 20px;
+  font-weight: 760;
+  color: rgba(255, 255, 255, .96)
+}
+
+.wallpaper-engine-library-head p {
+  margin: 0;
+  max-width: 780px;
+  color: rgba(255, 255, 255, .48);
+  font-size: 12px;
+  line-height: 1.6
+}
+
+.wallpaper-engine-kicker {
+  color: rgba(114, 199, 255, .76);
+  font: 700 9px/1.2 "JetBrains Mono", monospace;
+  letter-spacing: 1.45px
+}
+
+.wallpaper-engine-close {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, .13);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .035);
+  color: rgba(255, 255, 255, .74);
+  font-size: 21px;
+  line-height: 30px;
+  cursor: pointer
+}
+
+.wallpaper-engine-close:hover {
+  background: rgba(255, 255, 255, .09);
+  color: #fff
+}
+
+.wallpaper-engine-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto auto auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 18px;
+  flex: 0 0 auto
+}
+
+#wallpaper-engine-search {
+  height: 34px;
+  min-width: 0;
+  padding: 0 12px;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, .11);
+  outline: none;
+  color: rgba(255, 255, 255, .88);
+  background: rgba(255, 255, 255, .045)
+}
+
+#wallpaper-engine-search:focus {
+  border-color: rgba(113, 199, 255, .42);
+  box-shadow: 0 0 0 3px rgba(72, 166, 255, .08)
+}
+
+.wallpaper-engine-toolbar .fx-mini-btn {
+  height: 34px;
+  padding: 0 12px;
+  white-space: nowrap
+}
+
+.wallpaper-engine-library-status {
+  margin: 11px 1px 8px;
+  color: rgba(255, 255, 255, .5);
+  font-size: 11px;
+  flex: 0 0 auto
+}
+
+.wallpaper-engine-library-status.loading::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 7px;
+  border-radius: 50%;
+  border: 1px solid rgba(124, 207, 255, .28);
+  border-top-color: rgba(124, 207, 255, .95);
+  animation: wallpaper-engine-spin .7s linear infinite
+}
+
+@keyframes wallpaper-engine-spin {
+  to { transform: rotate(360deg) }
+}
+
+.wallpaper-engine-manual-roots {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-height: 0;
+  margin-bottom: 8px;
+  flex: 0 0 auto
+}
+
+.wallpaper-engine-root-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  height: 24px;
+  padding: 0 5px 0 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(117, 198, 255, .13);
+  background: rgba(69, 143, 213, .07);
+  color: rgba(215, 239, 255, .58);
+  font-size: 10px
+}
+
+.wallpaper-engine-root-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.wallpaper-engine-root-chip button {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(255, 255, 255, .48);
+  cursor: pointer
+}
+
+.wallpaper-engine-root-chip button:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, .08)
+}
+
+.wallpaper-engine-grid {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: start;
+  gap: 13px;
+  padding: 2px 5px 10px 1px;
+  overscroll-behavior: contain
+}
+
+.wallpaper-engine-empty {
+  flex: 1 0 100%;
+  min-height: 210px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  color: rgba(255, 255, 255, .38);
+  font-size: 12px
+}
+
+.wallpaper-engine-load-more {
+  flex: 1 0 100%;
+  min-height: 42px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 13px;
+  color: rgba(255, 255, 255, .72);
+  background: rgba(255, 255, 255, .055);
+  cursor: pointer;
+  transition: border-color .2s ease, background .2s ease, color .2s ease
+}
+
+.wallpaper-engine-load-more:hover,
+.wallpaper-engine-load-more:focus-visible {
+  color: #fff;
+  border-color: rgba(122, 204, 255, .38);
+  background: rgba(122, 204, 255, .10)
+}
+
+.wallpaper-engine-card {
+  position: relative;
+  flex: 0 0 calc((100% - 39px) / 4);
+  aspect-ratio: 16/9;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, .10);
+  background: linear-gradient(145deg, rgba(31, 43, 58, .92), rgba(7, 9, 13, .98));
+  cursor: pointer;
+  transition: border-color .2s ease, transform .2s ease, box-shadow .2s ease
+}
+
+.wallpaper-engine-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(122, 204, 255, .34);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, .30)
+}
+
+.wallpaper-engine-card.active {
+  border-color: rgba(132, 211, 255, .66);
+  box-shadow: 0 0 0 1px rgba(132, 211, 255, .18), 0 14px 34px rgba(14, 92, 159, .24)
+}
+
+.wallpaper-engine-card.favorite {
+  border-color: rgba(255, 215, 104, .28)
+}
+
+.wallpaper-engine-card-preview,
+.wallpaper-engine-card-placeholder {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: linear-gradient(145deg, #172132, #07090d)
+}
+
+.wallpaper-engine-card-preview {
+  opacity: 0;
+  transition: opacity .28s ease, transform .28s ease
+}
+
+.wallpaper-engine-card-preview.loaded {
+  opacity: 1
+}
+
+.wallpaper-engine-card:hover .wallpaper-engine-card-preview {
+  transform: scale(1.025)
+}
+
+.wallpaper-engine-card-meta {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 2;
+  padding: 28px 10px 9px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, .90));
+  color: rgba(255, 255, 255, .95);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis
+}
+
+.wallpaper-engine-card-meta small {
+  display: block;
+  margin-top: 3px;
+  color: rgba(255, 255, 255, .55);
+  font-size: 9px;
+  font-weight: 500
+}
+
+.wallpaper-engine-card-star,
+.wallpaper-engine-card-settings,
+.wallpaper-engine-card-hide {
+  position: absolute;
+  top: 7px;
+  z-index: 3;
+  width: 27px;
+  height: 27px;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 50%;
+  background: rgba(4, 6, 9, .72);
+  color: rgba(255, 255, 255, .72);
+  cursor: pointer;
+  backdrop-filter: blur(8px)
+}
+
+.wallpaper-engine-card-star { left: 7px; font-size: 16px }
+.wallpaper-engine-card-settings { right: 41px; font-size: 13px }
+.wallpaper-engine-card-hide { right: 7px; font-size: 15px }
+.wallpaper-engine-card-star.active { color: #ffd76c; border-color: rgba(255, 215, 108, .46) }
+.wallpaper-engine-card-settings:hover { color: #dff4ff; background: rgba(40, 131, 194, .72) }
+.wallpaper-engine-card-hide:hover { color: #fff; background: rgba(157, 39, 55, .76) }
+
+.wallpaper-engine-details-drawer {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: flex-end;
+  border-radius: inherit;
+  background: rgba(2, 4, 8, .58);
+  backdrop-filter: blur(7px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s ease
+}
+
+.wallpaper-engine-details-drawer.show {
+  opacity: 1;
+  pointer-events: auto
+}
+
+.wallpaper-engine-details-panel {
+  width: min(430px, 92%);
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  border-left: 1px solid rgba(123, 203, 255, .16);
+  background:
+    radial-gradient(circle at 100% 0, rgba(57, 157, 232, .13), transparent 36%),
+    linear-gradient(180deg, rgba(17, 21, 29, .995), rgba(8, 10, 15, .99));
+  box-shadow: -22px 0 50px rgba(0, 0, 0, .34);
+  transform: translateX(24px);
+  transition: transform .22s cubic-bezier(.2, .8, .2, 1)
+}
+
+.wallpaper-engine-details-drawer.show .wallpaper-engine-details-panel {
+  transform: translateX(0)
+}
+
+.wallpaper-engine-details-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto
+}
+
+.wallpaper-engine-details-head h3 {
+  margin: 5px 0 0;
+  color: rgba(255, 255, 255, .95);
+  font-size: 18px;
+  line-height: 1.3
+}
+
+.wallpaper-engine-details-summary {
+  margin: 13px 0 10px;
+  color: rgba(216, 239, 255, .62);
+  font-size: 11px;
+  line-height: 1.6;
+  flex: 0 0 auto
+}
+
+.wallpaper-engine-details-properties {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 1px 4px 8px 0;
+  overscroll-behavior: contain
+}
+
+.wallpaper-engine-property-row {
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "copy badge" "copy value";
+  gap: 3px 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .035)
+}
+
+.wallpaper-engine-property-copy {
+  grid-area: copy;
+  min-width: 0
+}
+
+.wallpaper-engine-property-copy strong,
+.wallpaper-engine-property-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.wallpaper-engine-property-copy strong {
+  color: rgba(255, 255, 255, .86);
+  font-size: 11px;
+  font-weight: 650
+}
+
+.wallpaper-engine-property-copy small {
+  margin-top: 4px;
+  color: rgba(255, 255, 255, .36);
+  font: 500 9px/1.25 "JetBrains Mono", monospace
+}
+
+.wallpaper-engine-property-badge {
+  grid-area: badge;
+  justify-self: end;
+  padding: 2px 6px;
+  border: 1px solid rgba(108, 218, 167, .24);
+  border-radius: 999px;
+  color: rgba(154, 241, 196, .9);
+  background: rgba(44, 157, 101, .12);
+  font-size: 8.5px
+}
+
+.wallpaper-engine-property-badge.warning {
+  color: rgba(255, 210, 125, .86);
+  border-color: rgba(255, 194, 82, .22);
+  background: rgba(168, 112, 23, .12)
+}
+
+.wallpaper-engine-property-value {
+  grid-area: value;
+  justify-self: end;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, .58);
+  font-size: 10px
+}
+
+.wallpaper-engine-details-empty {
+  min-height: 140px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  color: rgba(255, 255, 255, .38);
+  font-size: 11px
+}
+
+.wallpaper-engine-details-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+  flex: 0 0 auto
+}
+
+.wallpaper-engine-details-actions .fx-mini-btn {
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px
+}
+
+.wallpaper-engine-details-actions .fx-mini-btn:disabled {
+  opacity: .34;
+  cursor: default
+}
+
+.wallpaper-engine-details-note {
+  display: block;
+  margin-top: 9px;
+  color: rgba(255, 255, 255, .32);
+  font-size: 9px;
+  line-height: 1.5;
+  flex: 0 0 auto
+}
+
+@media (max-width: 980px) {
+  .wallpaper-engine-card { flex-basis: calc((100% - 26px) / 3) }
+}
+
+@media (max-width: 720px) {
+  .wallpaper-engine-library-modal { width: 96vw; height: 92vh; padding: 16px }
+  .wallpaper-engine-toolbar { grid-template-columns: 1fr 1fr }
+  #wallpaper-engine-search { grid-column: 1/-1 }
+  .wallpaper-engine-card { flex-basis: calc((100% - 13px) / 2) }
+}
+
+@media (max-width: 480px) {
+  .wallpaper-engine-card { flex-basis: 100% }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #wallpaper-engine-layer,
+  #wallpaper-engine-image,
+  #wallpaper-engine-video,
+  #wallpaper-engine-freeze,
+  .wallpaper-engine-details-drawer,
+  .wallpaper-engine-details-panel,
+  .wallpaper-engine-card { transition-duration: .01ms !important }
+  .wallpaper-engine-library-status.loading::before { animation-duration: 1.4s }
+}
+/* ===== 抓虫修复（P1-4）：抽屉打开时隐藏 DIY 按钮（对齐 MR fab 随面板隐藏语义）===== */
+#stage3dOverlay.fx-drawer-open #btnStageFx { display: none }
+
+/* ===== 音频路由/输出面板 CSS（Ported from Mineradio 2.2.0, GPL-3.0, index.css 相关规则整块照抄）===== */
+.audio-output-section {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin: 8px 0 12px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  background: rgba(255, 255, 255, .035)
+}
+
+.quality-output-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px 1px;
+  color: rgba(255, 255, 255, .48);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .3px
+}
+
+.quality-output-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px
+}
+
+.quality-output-refresh {
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, .09);
+  background: rgba(255, 255, 255, .04);
+  color: rgba(255, 255, 255, .58);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer
+}
+
+.audio-output-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 5px;
+  max-height: 62px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 1px
+}
+
+.audio-output-summary-card {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, .075);
+  background: linear-gradient(135deg, rgba(255, 255, 255, .055), rgba(255, 255, 255, .026));
+  color: rgba(255, 255, 255, .72);
+  font-family: inherit;
+  text-align: left;
+  padding: 7px 8px 7px 7px;
+  cursor: pointer;
+  min-width: 0
+}
+
+.audio-output-summary-card:hover {
+  color: rgba(255, 255, 255, .94);
+  border-color: rgba(var(--fc-accent-rgb), .32);
+  background: linear-gradient(135deg, rgba(var(--fc-accent-rgb), .105), rgba(255, 255, 255, .035))
+}
+
+.audio-output-summary-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px
+}
+
+.audio-output-summary-copy b,
+.audio-output-summary-copy small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.audio-output-summary-copy b {
+  font-size: 11px;
+  color: inherit
+}
+
+.audio-output-summary-copy small {
+  font-size: 9.5px;
+  color: rgba(255, 255, 255, .46)
+}
+
+.audio-output-summary-action {
+  font-size: 10px;
+  font-weight: 900;
+  color: rgba(var(--fc-accent-rgb), .82)
+}
+
+.audio-output-option {
+  min-height: 32px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  background: rgba(255, 255, 255, .035);
+  color: rgba(255, 255, 255, .62);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 9px;
+  cursor: pointer
+}
+
+.audio-output-option:hover,
+.audio-output-option.active {
+  color: #fff;
+  border-color: rgba(var(--fc-accent-rgb), .34);
+  background: rgba(var(--fc-accent-rgb), .11)
+}
+
+.flow-port {
+  position: absolute;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1px solid rgba(var(--fc-accent-rgb), .58);
+  background: rgba(9, 11, 16, .94);
+  box-shadow: 0 0 0 3px rgba(var(--fc-accent-rgb), .07), 0 0 11px rgba(var(--fc-accent-rgb), .20), inset 0 0 0 1px rgba(255, 255, 255, .06);
+  cursor: crosshair;
+  z-index: 8;
+  opacity: .62;
+  transform: translateY(-50%);
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, background .16s ease
+}
+
+.flow-port::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: inherit;
+  background: rgba(var(--fc-accent-rgb), .82);
+  box-shadow: 0 0 8px rgba(var(--fc-accent-rgb), .35)
+}
+
+.flow-port.in {
+  left: -6px
+}
+
+.flow-port.out {
+  right: -6px
+}
+
+.workflow-node:hover .flow-port,
+.dragging-line .flow-port,
+.workflow-node.connected .flow-port,
+.workflow-node.active .flow-port {
+  opacity: 1;
+  border-color: rgba(255, 255, 255, .88);
+  box-shadow: 0 0 0 4px rgba(var(--fc-accent-rgb), .12), 0 0 18px rgba(var(--fc-accent-rgb), .38), inset 0 0 0 1px rgba(255, 255, 255, .10)
+}
+
+.workflow-node:hover .flow-port.out,
+.dragging-line .flow-port.out {
+  transform: translateY(-50%) scale(1.08)
+}
+
+.audio-route-graph {
+  position: relative;
+  display: grid;
+  gap: 9px;
+  padding: 9px 8px 10px 14px;
+  color: rgba(255, 255, 255, .74);
+  overflow: visible
+}
+
+.audio-route-graph > *:not(.workflow-link-layer) {
+  position: relative;
+  z-index: 1
+}
+
+.audio-flow-source {
+  position: relative;
+  min-height: 88px;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border-radius: 13px;
+  border: 1px solid rgba(var(--fc-accent-rgb), .30);
+  background: linear-gradient(135deg, rgba(var(--fc-accent-rgb), .14), rgba(255, 255, 255, .042) 48%, rgba(255, 255, 255, .025));
+  color: rgba(255, 255, 255, .82);
+  padding: 10px 15px 10px 10px;
+  box-shadow: 0 0 20px rgba(var(--fc-accent-rgb), .10), inset 0 1px 0 rgba(255, 255, 255, .07);
+  overflow: visible;
+  cursor: default;
+  transition: transform .18s ease, border-color .18s ease, background .18s ease, box-shadow .18s ease, color .18s ease
+}
+
+.audio-flow-source .route-node-kicker {
+  grid-column: 1 / -1;
+  align-self: end;
+  color: rgba(var(--fc-accent-rgb), .78);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .14em
+}
+
+.audio-route-status {
+  position: relative;
+  display: grid;
+  grid-template-columns: 14px auto 1fr;
+  align-items: center;
+  gap: 7px;
+  min-height: 26px;
+  padding: 0 2px;
+  font-size: 10px;
+  letter-spacing: .2px;
+  color: rgba(255, 255, 255, .54)
+}
+
+.audio-route-status b {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, .82)
+}
+
+.audio-route-status small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.audio-route-board {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 17px;
+  border: 1px solid rgba(255, 255, 255, .072);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, .035), transparent 1px) 0 0 / 42px 42px,
+    linear-gradient(180deg, rgba(255, 255, 255, .027), transparent 1px) 0 0 / 42px 42px,
+    rgba(4, 6, 10, .22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .055), 0 18px 54px rgba(0, 0, 0, .16)
+}
+
+.audio-route-board-head {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(120px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 0 2px
+}
+
+.audio-route-chip {
+  max-width: 100%;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  background: rgba(255, 255, 255, .038);
+  color: rgba(255, 255, 255, .50);
+  font-size: 10px;
+  font-weight: 900;
+  padding: 0 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis
+}
+
+.audio-route-chip.active {
+  border-color: rgba(var(--fc-accent-rgb), .34);
+  background: rgba(var(--fc-accent-rgb), .105);
+  color: rgba(255, 255, 255, .86)
+}
+
+.audio-route-lanes {
+  display: grid;
+  gap: 10px
+}
+
+.route-lane {
+  position: relative;
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 11px;
+  padding: 11px 12px 11px 14px;
+  border-radius: 13px;
+  border: 1px solid rgba(255, 255, 255, .062);
+  background: linear-gradient(135deg, rgba(255, 255, 255, .042), rgba(255, 255, 255, .016));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .045);
+  overflow: visible
+}
+
+.route-lane::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 999px 999px 0;
+  background: linear-gradient(180deg, rgba(var(--fc-accent-rgb), .72), rgba(244, 210, 138, .42));
+  box-shadow: 0 0 12px rgba(var(--fc-accent-rgb), .22)
+}
+
+.route-lane-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-rows: 1fr auto;
+  align-items: center;
+  align-content: center;
+  gap: 7px 8px;
+  padding-right: 10px;
+  border-right: 1px solid rgba(255, 255, 255, .06)
+}
+
+.route-lane-head b,
+.route-lane-head small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.route-lane-head b {
+  font-size: 11px;
+  color: rgba(255, 255, 255, .78)
+}
+
+.route-lane-head small {
+  margin-top: 1px;
+  font-size: 9.5px;
+  color: rgba(255, 255, 255, .36)
+}
+
+.route-lane-index {
+  width: 26px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid rgba(var(--fc-accent-rgb), .20);
+  background: rgba(var(--fc-accent-rgb), .07);
+  color: rgba(255, 255, 255, .62);
+  font-size: 9px;
+  font-weight: 900
+}
+
+.route-lane-state {
+  grid-column: 2 / 3;
+  justify-self: start;
+  min-height: 18px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  background: rgba(255, 255, 255, .035);
+  color: rgba(255, 255, 255, .56);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 900;
+  padding: 0 8px;
+  white-space: nowrap
+}
+
+.route-lane-title {
+  font-size: 10px;
+  font-weight: 900;
+  color: rgba(255, 255, 255, .40);
+  letter-spacing: .08em
+}
+
+.route-node-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
+  align-content: start;
+  gap: 8px
+}
+
+.route-node-grid::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 50%;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(var(--fc-accent-rgb), .22), rgba(126, 211, 255, .13), transparent);
+  transform: translateY(-50%);
+  pointer-events: none;
+  z-index: 0
+}
+
+.route-node-grid > * {
+  position: relative;
+  z-index: 1
+}
+
+.audio-route-node {
+  position: relative;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 10px;
+  align-items: center;
+  gap: 8px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, .075);
+  background: linear-gradient(135deg, rgba(255, 255, 255, .055), rgba(255, 255, 255, .026));
+  color: rgba(255, 255, 255, .70);
+  font-family: inherit;
+  text-align: left;
+  padding: 6px 8px 6px 7px;
+  cursor: pointer;
+  overflow: visible;
+  transition: transform .18s ease, border-color .18s ease, background .18s ease, box-shadow .18s ease, color .18s ease
+}
+
+.audio-route-node::before {
+  content: "";
+  position: absolute;
+  left: -38%;
+  top: 0;
+  width: 38%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(var(--fc-accent-rgb), .18), transparent);
+  transform: skewX(-16deg);
+  opacity: 0;
+  pointer-events: none
+}
+
+.audio-route-node:hover,
+.audio-flow-source:hover {
+  transform: translateY(-1px);
+  color: rgba(255, 255, 255, .92);
+  border-color: rgba(var(--fc-accent-rgb), .32);
+  background: linear-gradient(135deg, rgba(var(--fc-accent-rgb), .105), rgba(255, 255, 255, .035))
+}
+
+.audio-route-node.connected {
+  border-color: rgba(var(--fc-accent-rgb), .46);
+  background: linear-gradient(135deg, rgba(var(--fc-accent-rgb), .14), rgba(255, 255, 255, .040));
+  box-shadow: 0 0 0 1px rgba(var(--fc-accent-rgb), .08), 0 12px 26px rgba(0, 0, 0, .18), inset 0 1px 0 rgba(255, 255, 255, .08)
+}
+
+.audio-route-node.pending {
+  border-style: dashed;
+  border-color: rgba(244, 210, 138, .42);
+  background: linear-gradient(135deg, rgba(244, 210, 138, .075), rgba(255, 255, 255, .026))
+}
+
+.audio-route-node.warning {
+  border-style: solid;
+  border-color: rgba(255, 83, 103, .50);
+  background: linear-gradient(135deg, rgba(255, 83, 103, .10), rgba(255, 255, 255, .026))
+}
+
+.audio-route-node.connected::before {
+  opacity: 1;
+  animation: routeEnergySweep 1.95s ease-in-out infinite
+}
+
+.audio-route-node.disabled {
+  opacity: .56
+}
+
+.audio-route-node.disabled .flow-port {
+  cursor: not-allowed;
+  opacity: .26
+}
+
+.route-node-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--fc-accent-rgb), .13);
+  color: rgba(255, 255, 255, .88);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .04em;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .065)
+}
+
+.route-node-text {
+  min-width: 0;
+  display: grid;
+  gap: 2px
+}
+
+.route-node-text b,
+.route-node-text small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.route-node-text b {
+  font-size: 11px;
+  color: rgba(255, 255, 255, .84)
+}
+
+.route-node-text small {
+  font-size: 9.5px;
+  color: rgba(255, 255, 255, .42)
+}
+
+.route-node-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .18)
+}
+
+.audio-route-node.connected .route-node-pulse {
+  background: rgba(var(--fc-accent-rgb), .9);
+  box-shadow: 0 0 14px rgba(var(--fc-accent-rgb), .45);
+  animation: routeNodePulse 1.55s ease-in-out infinite
+}
+
+.audio-route-node.pending .route-node-pulse {
+  background: rgba(244, 210, 138, .86);
+  box-shadow: 0 0 14px rgba(244, 210, 138, .32)
+}
+
+.audio-route-node.warning .route-node-pulse {
+  background: rgba(255, 83, 103, .90);
+  box-shadow: 0 0 14px rgba(255, 83, 103, .38)
+}
+
+.route-lane .audio-route-note {
+  grid-column: 2 / 3;
+  margin-top: -3px
+}
+
+.audio-route-note,
+.audio-route-empty {
+  font-size: 10px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, .34);
+  padding: 0 2px 2px
+}
+
+.audio-output-workflow-modal {
+  width: min(1080px, calc(100vw - 44px));
+  max-width: min(1080px, calc(100vw - 44px));
+  max-height: calc(100vh - 42px);
+  padding: 24px 28px 24px;
+  overflow: auto;
+  text-align: left;
+  scrollbar-width: thin;
+  background: radial-gradient(circle at 18% 10%, rgba(255, 255, 255, .09), transparent 28%), radial-gradient(circle at 78% 62%, rgba(var(--fc-accent-rgb), .055), transparent 38%), rgba(6, 7, 10, .34);
+  border-color: rgba(255, 255, 255, .060);
+  border-radius: 24px;
+  box-shadow: 0 26px 84px rgba(0, 0, 0, .40), inset 0 1px 0 rgba(255, 255, 255, .060);
+  backdrop-filter: blur(28px) saturate(1.18);
+  -webkit-backdrop-filter: blur(28px) saturate(1.18)
+}
+
+.audio-output-workflow-title {
+  display: grid;
+  gap: 4px;
+  margin: 0 40px 18px 2px
+}
+
+.audio-output-workflow-title b {
+  font-size: 16px;
+  color: rgba(255, 255, 255, .92);
+  letter-spacing: .06em
+}
+
+.audio-output-workflow-title small {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, .42)
+}
+
+.audio-output-workflow-body {
+  position: relative;
+  min-height: 430px
+}
+
+.audio-output-workflow-modal .audio-route-graph {
+  min-height: 430px;
+  grid-template-columns: 236px minmax(0, 1fr);
+  grid-template-areas: "source board" "status board";
+  align-items: stretch;
+  gap: 14px 28px;
+  padding: 20px 20px 20px 22px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  background: rgba(255, 255, 255, .026)
+}
+
+.audio-output-workflow-modal .audio-flow-source {
+  grid-area: source;
+  align-self: end
+}
+
+.audio-output-workflow-modal .audio-route-status {
+  grid-area: status;
+  align-self: start
+}
+
+.audio-output-workflow-modal .audio-route-board {
+  grid-area: board;
+  align-self: stretch;
+  min-height: 100%
+}
+
+.audio-output-workflow-modal .audio-route-lanes {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+  gap: 10px
+}
+
+.audio-output-workflow-modal .route-node-grid {
+  max-height: min(136px, calc(100vh - 390px));
+  overflow: auto;
+  padding-right: 2px;
+  overscroll-behavior: contain
+}
+
+.audio-output-workflow-modal .route-lane.bridge .route-node-grid {
+  max-height: none
+}
+
+.audio-output-workflow-actions {
+  margin-top: 16px
+}
+
+@media (max-width: 760px) {
+  .audio-output-workflow-modal .audio-route-graph {
+    grid-template-columns: 1fr;
+    grid-template-areas: "source" "status" "board";
+    min-height: 0
+  }
+
+  .audio-route-board-head {
+    grid-template-columns: 1fr
+  }
+
+  .route-board-badges {
+    justify-content: flex-start
+  }
+
+  .audio-output-workflow-modal .audio-route-lanes {
+    grid-template-columns: 1fr
+  }
+
+  .route-lane {
+    grid-template-columns: 1fr
+  }
+
+  .route-lane-head {
+    border-right: 0;
+    padding-right: 0
+  }
+
+  .route-lane .audio-route-note {
+    grid-column: 1 / -1
+  }
+
+  .audio-output-workflow-modal .workflow-link-layer,
+  .audio-output-workflow-modal .flow-port {
+    display: none
+  }
+
+  .audio-output-workflow-body {
+    min-height: 0
+  }
+}
+
+.login-node-graph .flow-port {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: grab;
+  opacity: .86
+}
+
+.login-node-graph .workflow-node:hover .flow-port,
+.login-node-graph.dragging-line .flow-port,
+.login-node-graph .workflow-node.connected .flow-port,
+.login-node-graph .workflow-node.active .flow-port {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none
+}
+
+.login-node-graph.dragging-line .flow-port {
+  cursor: grabbing
+}
+
+.login-node-graph .flow-port::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, .44);
+  background: rgba(8, 10, 14, .80);
+  box-shadow: 0 0 0 4px rgba(var(--fc-accent-rgb), .060), 0 0 14px rgba(var(--fc-accent-rgb), .24), inset 0 0 0 1px rgba(var(--fc-accent-rgb), .26);
+  transform: translate(-50%, -50%);
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease
+}
+
+.login-node-graph .flow-port::after {
+  inset: auto;
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  transform: translate(-50%, -50%);
+  background: rgba(255, 255, 255, .82);
+  box-shadow: 0 0 10px rgba(255, 255, 255, .36)
+}
+
+.login-node-graph .flow-port.in {
+  left: -24px
+}
+
+.login-node-graph .flow-port.out {
+  right: -24px
+}
+
+.login-node-graph .workflow-node:hover .flow-port::before,
+.login-node-graph.dragging-line .flow-port::before,
+.login-node-graph.drop-ready .login-node-hub .flow-port::before {
+  border-color: rgba(255, 255, 255, .82);
+  box-shadow: 0 0 0 8px rgba(var(--fc-accent-rgb), .075), 0 0 22px rgba(var(--fc-accent-rgb), .36), inset 0 0 0 1px rgba(var(--fc-accent-rgb), .44);
+  transform: translate(-50%, -50%) scale(1.06)
+}
+
+/* ============================================================ */
+/*  逐曲歌词校偏 + 自定义歌词（盘点 A7 / A2；Ported from Mineradio 2.2.0,   */
+/*  GPL-3.0, public/css/index.css 选段。追加块：仅追加在文件末尾，不动上方既有行； */
+/*  规则体逐条原文照抄，头部标注 ref css 行号）                                */
+/*  未搬运：ref 15192-15290 / 15690-15760 / 16035+ 的保存玻璃主题覆盖列表——     */
+/*  DSH 已有自己的等价覆盖（style.css:4046-4089、4252-4282 已含               */
+/*  .lyric-timing-popover / .custom-lyric-track），重复搬运反而双重覆盖。        */
+/*  适配说明：#fx-panel 为 overflow-x:hidden 的纵向面板，校偏弹层 .lyric-timing-  */
+/*  popover 以宿主行全宽为定位基准（left:50% = 面板中线），226px 宽不会越界。      */
+/* ============================================================ */
+
+
+/* ===== 自定义歌词弹窗 + 歌词时间校偏 CSS（Ported from Mineradio 2.2.0, GPL-3.0, index.css 整块照抄；替换被配额中断的截断块）===== */
+.volume-control,
+.quality-control,
+.lyric-timing-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center
+}
+
+.volume-control::before,
+.quality-control::before,
+.lyric-timing-control::before {
+  content: '';
+  position: absolute;
+  left: -34px;
+  right: -34px;
+  bottom: 18px;
+  height: 132px;
+  display: none;
+  z-index: 0
+}
+
+.volume-control.open::before,
+.volume-control:hover::before,
+.volume-control:focus-within::before,
+.quality-control.open::before,
+.quality-control:hover::before,
+.quality-control:focus-within::before,
+.lyric-timing-control:hover::before,
+.lyric-timing-control:focus-within::before {
+  display: block
+}
+
+.lyric-timing-control.has-offset .lyrics-toggle-btn {
+  color: #fff6c8;
+  box-shadow: inset 0 0 2px 1px rgba(255, 255, 255, .32), inset 0 0 12px rgba(255, 220, 128, .18), 0 0 18px rgba(255, 220, 128, .12)
+}
+
+.volume-control .ctrl-btn,
+.quality-control .ctrl-btn,
+.lyric-timing-control .ctrl-btn {
+  position: relative;
+  z-index: 2
+}
+
+.volume-control.open .volume-popover,
+.volume-control:hover .volume-popover,
+.volume-control:focus-within .volume-popover,
+.quality-control.open .quality-popover,
+.quality-control:hover .quality-popover,
+.quality-control:focus-within .quality-popover,
+.lyric-timing-control:hover .lyric-timing-popover,
+.lyric-timing-control:focus-within .lyric-timing-popover {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0)
+}
+
+.lyric-timing-popover {
+  position: absolute;
+  left: 50%;
+  bottom: 46px;
+  transform: translateX(-50%) translateY(8px);
+  width: 226px;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, .10);
+  background: rgba(10, 10, 14, .82);
+  backdrop-filter: blur(24px) saturate(1.16);
+  -webkit-backdrop-filter: blur(24px) saturate(1.16);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .40), inset 0 1px 0 rgba(255, 255, 255, .08);
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s, transform .2s;
+  z-index: 8
+}
+
+#bottom-bar.soft-hidden .lyric-timing-popover,
+body:not(.controls-visible) .lyric-timing-popover,
+.lyric-timing-control.closing .lyric-timing-popover {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transform: translateX(-50%) translateY(8px) scale(.98) !important
+}
+
+#bottom-bar.soft-hidden .lyric-timing-control::before,
+body:not(.controls-visible) .lyric-timing-control::before,
+.lyric-timing-control.closing::before {
+  display: none !important
+}
+
+.lyric-timing-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0
+}
+
+.lyric-timing-head span {
+  font-size: 11px;
+  font-weight: 850;
+  color: rgba(255, 255, 255, .72);
+  white-space: nowrap
+}
+
+.lyric-timing-head strong {
+  min-width: 48px;
+  text-align: right;
+  font-size: 12px;
+  color: rgba(255, 246, 200, .94);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap
+}
+
+.lyric-timing-song {
+  min-height: 16px;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, .44);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis
+}
+
+.lyric-timing-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px
+}
+
+.lyric-timing-actions button {
+  height: 30px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, .09);
+  background: rgba(255, 255, 255, .045);
+  color: rgba(255, 255, 255, .72);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 850;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background .18s, border-color .18s, color .18s, transform .18s
+}
+
+.lyric-timing-actions button:hover {
+  transform: translateY(-1px);
+  color: #fff;
+  border-color: rgba(255, 246, 200, .34);
+  background: rgba(255, 246, 200, .10)
+}
+
+.lyric-timing-actions button:active {
+  transform: translateY(0) scale(.98)
+}
+
+.lyric-timing-actions button:disabled {
+  opacity: .38;
+  cursor: not-allowed;
+  transform: none
+}
+
+.custom-lyric-modal {
+  width: min(560px, 92vw);
+  max-width: min(560px, 92vw);
+  padding: 28px;
+  text-align: left
+}
+
+.custom-lyric-modal h2 {
+  text-align: center;
+  margin-bottom: 14px
+}
+
+.custom-lyric-track {
+  padding: 11px 12px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  background: rgba(255, 255, 255, .035)
+}
+
+.custom-lyric-title {
+  font-size: 13px;
+  color: rgba(255, 255, 255, .92);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis
+}
+
+.custom-lyric-sub {
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, .42)
+}
+
+.custom-lyric-input {
+  width: 100%;
+  height: min(310px, 42vh);
+  resize: vertical;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, .10);
+  background: rgba(255, 255, 255, .045);
+  color: rgba(255, 255, 255, .92);
+  padding: 13px 14px;
+  font-family: 'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 12.5px;
+  line-height: 1.65;
+  outline: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04)
+}
+
+.custom-lyric-input:focus {
+  border-color: rgba(244, 210, 138, .42);
+  background: rgba(244, 210, 138, .055)
+}
+
+.custom-lyric-input::placeholder {
+  color: rgba(255, 255, 255, .28)
+}
+
+.custom-lyric-status {
+  min-height: 18px;
+  margin-top: 9px;
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, .45);
+  letter-spacing: .2px
+}
+
+.custom-lyric-status.good {
+  color: rgba(126, 226, 168, .86)
+}
+
+.custom-lyric-status.fail {
+  color: #ff8f9d
+}
+
+/* Unified saved glass: keep panels in the same texture as the player bar. */
+#search-box,
+#search-results,
+.search-mode-tabs,
+#fx-panel,
+#playlist-panel,
+#upload-tip,
+#trial-banner,
+#toast,
+#cuefield-feedback,
+#source-fallback-notice,
+#ai-depth-chip,
+#beat-chip,
+.modal,
+.modal.update-modal,
+.track-detail-modal,
+.cover-color-pop,
+.color-lab-pop,
+.visual-guide-card,
+.volume-popover,
+.quality-popover,
+.control-source-switcher,
+.lyric-timing-popover,
+.mini-queue-popover,
+.home-hero,
+.home-card,
+.home-tile,
+.home-mosaic-cell,
+.pl-inline-detail,
+.local-beat-track,
+.custom-lyric-track,
+.cover-crop-stage,
+#drop-overlay .drop-text {
+  background: var(--saved-panel-glass-bg) !important;
+  border-color: transparent !important;
+  box-shadow: var(--saved-panel-glass-shadow) !important;
+  backdrop-filter: var(--saved-panel-glass-filter) !important;
+  -webkit-backdrop-filter: var(--saved-panel-glass-filter) !important;
+}
+
+html.control-glass-svg-ok #search-results,
+html.control-glass-svg-ok #fx-panel,
+html.control-glass-svg-ok #playlist-panel,
+html.control-glass-svg-ok #upload-tip,
+html.control-glass-svg-ok #trial-banner,
+html.control-glass-svg-ok #toast,
+html.control-glass-svg-ok #cuefield-feedback,
+html.control-glass-svg-ok #source-fallback-notice,
+html.control-glass-svg-ok #ai-depth-chip,
+html.control-glass-svg-ok #beat-chip,
+html.control-glass-svg-ok .modal,
+html.control-glass-svg-ok .modal.update-modal,
+html.control-glass-svg-ok .track-detail-modal,
+html.control-glass-svg-ok .cover-color-pop,
+html.control-glass-svg-ok .color-lab-pop,
+html.control-glass-svg-ok .visual-guide-card,
+html.control-glass-svg-ok .volume-popover,
+html.control-glass-svg-ok .quality-popover,
+html.control-glass-svg-ok .lyric-timing-popover,
+html.control-glass-svg-ok .mini-queue-popover,
+html.control-glass-svg-ok .home-hero,
+html.control-glass-svg-ok .home-card,
+html.control-glass-svg-ok .home-tile,
+html.control-glass-svg-ok .home-mosaic-cell,
+html.control-glass-svg-ok .pl-inline-detail,
+html.control-glass-svg-ok .local-beat-track,
+html.control-glass-svg-ok .custom-lyric-track,
+html.control-glass-svg-ok .cover-crop-stage,
+html.control-glass-svg-ok #drop-overlay .drop-text {
+  backdrop-filter: var(--saved-panel-glass-svg-filter) !important;
+  -webkit-backdrop-filter: var(--saved-panel-glass-svg-filter) !important;
+}
+
+#search-box,
+#search-results,
+.search-mode-tabs,
+#fx-panel,
+#upload-tip,
+#trial-banner,
+#toast,
+#cuefield-feedback,
+#source-fallback-notice,
+#ai-depth-chip,
+#beat-chip,
+.modal,
+.modal.update-modal,
+.track-detail-modal,
+.cover-color-pop,
+.color-lab-pop,
+.visual-guide-card,
+.home-hero,
+.home-card,
+.home-tile,
+.home-mosaic-cell,
+.pl-inline-detail,
+.local-beat-track,
+.custom-lyric-track,
+.cover-crop-stage,
+#drop-overlay .drop-text {
+  background: var(--panel-glass-bg) !important;
+  border-color: rgba(255, 255, 255, .075) !important;
+  box-shadow: var(--panel-glass-shadow) !important;
+  backdrop-filter: var(--panel-glass-filter) !important;
+  -webkit-backdrop-filter: var(--panel-glass-filter) !important;
+}
+
+html.control-glass-svg-ok #search-results,
+html.control-glass-svg-ok #fx-panel,
+html.control-glass-svg-ok #upload-tip,
+html.control-glass-svg-ok #trial-banner,
+html.control-glass-svg-ok #toast,
+html.control-glass-svg-ok #cuefield-feedback,
+html.control-glass-svg-ok #source-fallback-notice,
+html.control-glass-svg-ok #ai-depth-chip,
+html.control-glass-svg-ok #beat-chip,
+html.control-glass-svg-ok .modal,
+html.control-glass-svg-ok .modal.update-modal,
+html.control-glass-svg-ok .track-detail-modal,
+html.control-glass-svg-ok .cover-color-pop,
+html.control-glass-svg-ok .color-lab-pop,
+html.control-glass-svg-ok .visual-guide-card,
+html.control-glass-svg-ok .home-hero,
+html.control-glass-svg-ok .home-card,
+html.control-glass-svg-ok .home-tile,
+html.control-glass-svg-ok .home-mosaic-cell,
+html.control-glass-svg-ok .pl-inline-detail,
+html.control-glass-svg-ok .local-beat-track,
+html.control-glass-svg-ok .custom-lyric-track,
+html.control-glass-svg-ok .cover-crop-stage,
+html.control-glass-svg-ok #drop-overlay .drop-text {
+  backdrop-filter: var(--panel-glass-filter) !important;
+  -webkit-backdrop-filter: var(--panel-glass-filter) !important;
+}
+
+html.control-glass-svg-ok .home-hero,
+html.control-glass-svg-ok .home-card,
+html.control-glass-svg-ok .home-tile,
+html.control-glass-svg-ok .home-mosaic-cell,
+html.control-glass-svg-ok .modal,
+html.control-glass-svg-ok .track-detail-modal,
+html.control-glass-svg-ok .visual-guide-card,
+html.control-glass-svg-ok .volume-popover,
+html.control-glass-svg-ok .quality-popover,
+html.control-glass-svg-ok .lyric-timing-popover,
+html.control-glass-svg-ok .mini-queue-popover,
+html.control-glass-svg-ok .pl-inline-detail {
+  backdrop-filter: blur(22px) saturate(1.16) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(1.16) !important;
+}
+
+/* 自由镜头操作提示（Ported from Mineradio 2.2.0, GPL-3.0, index.css:1216-1246 原样） */
+#free-camera-hint {
+  position: fixed;
+  z-index: 22;
+  left: 24px;
+  bottom: 92px;
+  max-width: min(420px, calc(100vw - 48px));
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, .10);
+  background: rgba(5, 6, 8, .78);
+  box-shadow: 0 18px 52px rgba(0, 0, 0, .42), inset 0 1px 0 rgba(255, 255, 255, .08);
+  backdrop-filter: blur(18px) saturate(1.08);
+  -webkit-backdrop-filter: blur(18px) saturate(1.08);
+  color: rgba(255, 255, 255, .72);
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity .2s, transform .2s
+}
+
+#free-camera-hint.show {
+  opacity: 1;
+  transform: translateY(0)
+}
+
+#free-camera-hint b {
+  color: #fff;
+  font-weight: 780
+}
+
+/* B-b 控制玻璃 SVG filter 容器（MR index.css:5011-5017 原文照抄；DSH 此前未抽） */
+.control-glass-filter-svg {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none
+}
+
+/* B-a 音域回响·WE 工坊层（MR index.css:1096-1127 原文照抄；#sonic-workshop-layer 由
+   bundle sonic-workshop-preset.js ensureLayer 动态创建，z-index:0 垫在 canvas-container 之下） */
+#sonic-workshop-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none !important;
+  background: #000;
+  opacity: 0;
+  transition: opacity 520ms cubic-bezier(.16, 1, .3, 1);
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none
+}
+
+#sonic-workshop-layer iframe {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #000;
+  pointer-events: none !important;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none
+}
+
+#sonic-workshop-layer,
+#sonic-workshop-layer * {
+  pointer-events: none !important
+}

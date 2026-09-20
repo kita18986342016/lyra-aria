@@ -12,6 +12,10 @@
     get qualityForSong() { return qualityForSong; },
     get coverCache() { return coverCache; },
     startSong, playList, // 自动化验证直调入口
+    togglePlay, playNext, playPrev, // 3D 舞台悬浮播放条（二期 3d 追加）也走这里，避免重复实现
+    queuePlayNext, // 3D 歌单架详情行「下一首播放」桥（盘点 A-②#9）
+    toggleFav: async (id, song) => { state.favorites = await window.api.toggleFavorite(id, song && song.online ? song : undefined); return isFav(id); },
+    isFav: (id) => isFav(id),
   };
 
   const state = {
@@ -6229,10 +6233,16 @@
       $('#stStage3d').checked = false;
       syncStage3d();
     });
-    // DIY 视觉控制台抽屉（MR fx-panel 歌词舞台部分）
-    $('#btnStageFx').addEventListener('click', () => $('#mrFxDrawer').classList.toggle('hidden'));
+    // DIY 视觉控制台抽屉（MR fx-panel 歌词舞台部分）；打开时隐藏 DIY 按钮避免压住面板标题（P1-4，对齐 MR fab-随面板隐藏语义）
+    $('#btnStageFx').addEventListener('click', () => {
+      const drawer = $('#mrFxDrawer');
+      drawer.classList.toggle('hidden');
+      $('#stage3dOverlay').classList.toggle('fx-drawer-open', !drawer.classList.contains('hidden'));
+    });
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && stage3dOn() && !$('#stage3dOverlay').classList.contains('hidden')) {
+        // P2-3：WE 导入模态打开时 Esc 应只关模态（模态自身的关闭在适配层捕获阶段处理），不退出整个舞台
+        if (document.getElementById('wallpaper-engine-modal')?.classList.contains('show')) return;
         try { localStorage.setItem('mp_stage3d', '0'); } catch { /* 忽略 */ }
         $('#stStage3d').checked = false;
         syncStage3d();

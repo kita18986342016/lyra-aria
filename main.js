@@ -19,6 +19,13 @@ const { FullDesktopModeRuntime } = require('./desktop/full-desktop-mode-runtime'
 const { nativeWindowHandleDecimal } = require('./desktop/wallpaper-mode-runtime');
 // 特权协议必须在 app ready 前注册（mineradio-wallpaper:// = WE 壁纸封面/预览媒体流，带 token 鉴权）
 registerWallpaperEngineScheme(protocol);
+// 特权协议必须在 app ready 前注册（dsh-mediapipe:// = 手势识别 MediaPipe 本地资产，Ported from
+// Mineradio 2.2.0 手势子系统的本地化配套；DSH 页面为 file:，renderer 的 fetch/XHR 无法取 file:
+// 子资源（Chromium 限制），wasm/tflite/binarypb/.data 必须经专用只读协议；handler 见 app.whenReady）
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'dsh-mediapipe',
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
+}]);
 
 // Windows 任务栏/通知归属：不设 AppUserModelID 时任务栏右键菜单显示 "Electron"，
 // 设为与 build.appId 一致的应用 ID（配合安装版快捷方式可正确显示「深空折韵」）
@@ -50,6 +57,12 @@ const DATA_ROOT = probeDataRoot() || null;
 if (DATA_ROOT) {
   // 与旧版一致：Electron/Chromium 运行时缓存（Cache/GPUCache/Local Storage 等）也放 D 盘（须在 app ready 前）
   app.setPath('userData', path.join(DATA_ROOT, 'userdata'));
+}
+// 隔离测试实例（DSH_TEST_INSTANCE=1）：换 userData → 单实例锁、Local Storage 与正式实例互不干扰，
+// 供自动化 CDP 测试与正式实例并行运行（数据目录同样隔离，见 main() 内 store.setDataDir）。
+// DSH_TEST_SLOT=2/3/... 可再开多个互不冲突的隔离实例（userData 后缀不同，锁互不干扰）
+if (process.env.DSH_TEST_INSTANCE) {
+  app.setPath('userData', app.getPath('userData') + '-test' + (process.env.DSH_TEST_SLOT || ''));
 }
 // 数据根（模块级引用）：main() 里 store.setDataDir() 之后即为最终数据目录（D 盘或 %APPDATA%）
 function dataRoot() {
@@ -110,6 +123,133 @@ try {
     DeleteObject: gdi.func('int DeleteObject(void*)')
   };
 } catch (e) { console.error('[播放器] 缩略图原生注入不可用:', e.message); }
+
+// ===== 缓存存储设置（Ported from Mineradio 2.2.0, GPL-3.0, desktop/main.js:280-461 + 4136-4165）=====
+// 差异说明：本项目不改重 Chromium sessionData/缓存路径（避免老用户登录态迁移丢失），
+// 歌词/节拍行指向缓存根下预留目录（当前未写入，占用如实显示）；WE 行指向本项目 WE 运行时真实缓存。
+const DSH_CACHE_SETTINGS_FILE = 'cache-settings.json';
+let dshCacheSettings = null;
+function dshDefaultCacheRootPath() {
+  // 数据根在 D 盘（见 probeDataRoot）；缓存根默认跟数据根同盘同父，D 盘不可用则退回 userData
+  const dataDir = store.getDataDir();
+  if (dataDir && /^[A-Za-z]:\\/.test(dataDir)) return path.join(dataDir, 'cache');
+  return path.join(app.getPath('userData'), 'cache');
+}
+function dshNormalizeCacheRootPath(value) {
+  const fallback = dshDefaultCacheRootPath();
+  const candidate = String(value || '').trim();
+  if (!candidate) return fallback;
+  try { return path.resolve(candidate); } catch (_) { return fallback; }
+}
+function dshNormalizeCacheSettings(value) {
+  const rootPath = dshNormalizeCacheRootPath(value && value.rootPath);
+  return {
+    version: 1,
+    rootPath,
+    lyricsPath: path.join(rootPath, 'lyrics'),
+    chromiumPath: app.getPath('sessionData'),
+    beatmapsPath: path.join(rootPath, 'beatmaps'),
+    nativePath: path.join(rootPath, 'native-helper-temp'),
+  };
+}
+function dshReadCacheSettings() {
+  try {
+    const file = path.join(app.getPath('userData'), DSH_CACHE_SETTINGS_FILE);
+    const parsed = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+    return dshNormalizeCacheSettings(parsed);
+  } catch (error) {
+    console.warn('[CacheSettings] read failed:', error.message);
+    return dshNormalizeCacheSettings(null);
+  }
+}
+function dshWriteCacheSettings(settings) {
+  const normalized = dshNormalizeCacheSettings(settings);
+  const file = path.join(app.getPath('userData'), DSH_CACHE_SETTINGS_FILE);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tempFile = `${file}.tmp`;
+  fs.writeFileSync(tempFile, JSON.stringify(normalized, null, 2), 'utf8');
+  fs.renameSync(tempFile, file);
+  return normalized;
+}
+function dshEnsureCacheDirectories(settings) {
+  // 目录不可达（U 盘拔出/网络盘休眠）不得阻止启动：保持用户保存值，运行期回退 userData 下的稳定目录
+  const normalized = dshNormalizeCacheSettings(settings);
+  try {
+    for (const dir of [normalized.lyricsPath, normalized.beatmapsPath, normalized.nativePath]) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    return normalized;
+  } catch (error) {
+    const fallback = dshNormalizeCacheSettings({ rootPath: path.join(app.getPath('userData'), 'cache-fallback') });
+    console.warn('[CacheSettings] cache root unavailable, using startup fallback:', error.message);
+    for (const dir of [fallback.lyricsPath, fallback.beatmapsPath, fallback.nativePath]) {
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (_) { /* 忽略 */ }
+    }
+    return fallback;
+  }
+}
+async function dshDirectoryUsageBytes(directory) {
+  let total = 0;
+  async function walk(current) {
+    let entries = [];
+    try {
+      entries = await fs.promises.readdir(current, { withFileTypes: true });
+    } catch (_) {
+      return;
+    }
+    await Promise.all(entries.map(async (entry) => {
+      const entryPath = path.join(current, entry.name);
+      try {
+        if (entry.isDirectory()) return walk(entryPath);
+        if (entry.isFile()) {
+          const stat = await fs.promises.stat(entryPath);
+          total += Math.max(0, Number(stat.size) || 0);
+        }
+      } catch (_) { }
+    }));
+  }
+  await walk(directory);
+  return total;
+}
+async function dshCacheSettingsSnapshot() {
+  const settings = dshNormalizeCacheSettings(dshCacheSettings || dshReadCacheSettings());
+  // WE 静音场景包缓存：与 desktop/wallpaper-engine-runtime.js:1614-1618 的 nativeTempPath 推导保持一致
+  const weNativeTemp = process.env.MINERADIO_NATIVE_TEMP_DIR
+    || path.join(process.env.LOCALAPPDATA || process.env.APPDATA || process.cwd(), 'Mineradio', 'native-helper-temp');
+  const wallpaperEnginePath = path.join(weNativeTemp, 'wallpaper-engine-muted-package-cache');
+  const [lyricsBytes, chromiumBytes, beatmapsBytes, wallpaperEngineBytes, userDataBytes] = await Promise.all([
+    dshDirectoryUsageBytes(settings.lyricsPath),
+    dshDirectoryUsageBytes(app.getPath('sessionData')),
+    dshDirectoryUsageBytes(settings.beatmapsPath),
+    dshDirectoryUsageBytes(wallpaperEnginePath),
+    dshDirectoryUsageBytes(app.getPath('userData')),
+  ]);
+  return {
+    ok: true,
+    settings: {
+      rootPath: settings.rootPath,
+      lyricsPath: settings.lyricsPath,
+      chromiumPath: settings.chromiumPath,
+      activeChromiumPath: settings.chromiumPath,
+      beatmapsPath: settings.beatmapsPath,
+      activeBeatmapsPath: settings.beatmapsPath,
+      nativePath: settings.nativePath,
+      activeNativePath: weNativeTemp,
+      wallpaperEnginePath,
+      activeWallpaperEnginePath: wallpaperEnginePath,
+      userDataPath: app.getPath('userData'),
+      restartRequired: false,
+    },
+    usage: {
+      lyricsBytes,
+      chromiumBytes,
+      beatmapsBytes,
+      wallpaperEngineBytes,
+      userDataBytes,
+      totalManagedBytes: lyricsBytes + chromiumBytes + beatmapsBytes + wallpaperEngineBytes,
+    },
+  };
+}
 
 // ===== SMTC 任务栏音符按钮（酷狗式媒体控件）=====
 // 原理：Windows 桌面进程无法直接激活 SystemMediaTransportControls（E_NOTIMPL），
@@ -381,6 +521,7 @@ function ensureSmtcHttp() {
         res.end(buf);
       } catch { res.writeHead(404); res.end(); }
     });
+    smtcHttpSrv.on('error', () => { /* 端口被占（如多实例）时静默放弃 SMTC 封面服务，不让未捕获 error 崩主进程 */ });
     smtcHttpSrv.listen(18080, '127.0.0.1');
     return true;
   } catch { return false; }
@@ -562,7 +703,7 @@ function migrateLegacyData() {
 
 function main() {
   // 数据根：D 盘可用 → D:\MusicPlayerData（用户偏好，旧数据原位可用）；否则系统用户数据目录
-  store.setDataDir(DATA_ROOT || app.getPath('userData'));
+  store.setDataDir(process.env.DSH_TEST_INSTANCE ? app.getPath('userData') : (DATA_ROOT || app.getPath('userData')));
   migrateLegacyData(); // D 盘不可用且旧数据残留时兜底迁移
   // ===== 本地多账号：数据按 accounts/<id>/ 隔离；设置/外观(config)为设备级 =====
   const ACC_REG_FILE = () => path.join(dataRoot(), 'accounts-registry.json');
@@ -612,7 +753,8 @@ function main() {
   //  ② isLocalAppUrl：DSH 主窗经 loadFile(file://) 加载，判定 file: 协议即可（MR 判本地服务器端口）；
   //  ③ MR「全屏沉浸桌面模式」用户功能（enable/disable/Esc/托盘恢复）未移植，FullDesktopModeRuntime
   //    仅作 WE 协同状态源（恒 disabled，协同分支自然不触发），beforePassive 传不可达 no-op；
-  //  ④ 手势摄像头（gesture camera）权限段未移植；
+  //  ④ 手势摄像头（gesture camera）权限段：初版未移植，现已补移植（授权签发 + media 放行 +
+  //    IPC + preload 端点，见 isTrustedGestureCamera* / 'mineradio-gesture-camera-request-permission'）；
   //  ⑤ MAIN_WINDOW_BACKGROUND_THROTTLING 固定 false：DSH 后台保持渲染（任务栏封面缩略图实时），
   //    不能被 WE 宿主恢复路径改回节流；
   //  ⑥ 托盘重建（createOrUpdateTray）/sendWindowState 为 MR 专属，未移植。
@@ -645,6 +787,7 @@ function main() {
 
   let wallpaperEngineCaptureSourceId = '';
   let wallpaperEngineCaptureGrant = null;
+  let gestureCameraPermissionGrant = null; // 手势摄像头一次性授权（Ported from Mineradio desktop/main.js:184）
   let wallpaperEngineCaptureOperation = 0;
   let wallpaperEngineCapturePreparationOperation = 0;
   let wallpaperEngineGlassCaptureOperation = 0;
@@ -664,6 +807,7 @@ function main() {
   let windowFullscreenActive = false;
   let htmlFullscreenActive = false;
   const WALLPAPER_ENGINE_CAPTURE_GRANT_MS = 12000;
+  const GESTURE_CAMERA_PERMISSION_GRANT_MS = 45000; // Ported from Mineradio desktop/main.js:209
   const WALLPAPER_ENGINE_CAPTURE_PREPARE_TIMEOUT_MS = 9000;
   const WALLPAPER_ENGINE_MAX_CAPTURE_FPS = 240;
   const WALLPAPER_ENGINE_HOST_RESUME_TIMEOUT_MS = 30000;
@@ -691,6 +835,65 @@ function main() {
 
   function isTrustedWallpaperEngineIpc(event) {
     return !!(event && win && !win.isDestroyed() && event.sender === win.webContents); // 差异①：主窗限定（不含歌词窗）
+  }
+
+  // ===== 手势摄像头权限链（Ported from Mineradio 2.2.0, GPL-3.0, desktop/main.js:747-807 + 4989-4993；
+  //       即前述差异④的补移植）=====
+  // 链路：渲染层经 preload 的 requestGestureCameraPermission() 发起 IPC → 此处签发 45s 一次性授权 →
+  // session 权限处理器（configureLocalAppPermissions 的 media 分支）凭授权对 video 采集放行。
+  // MR 原文的 isTrustedMainWindowIpc / isTrustedMainDocumentUrl 在 DSH 分别对应
+  // isTrustedWallpaperEngineIpc（差异①主窗限定）与 isLocalAppUrl（差异②file: 协议）。
+  function clearGestureCameraPermissionGrant() {
+    gestureCameraPermissionGrant = null;
+  }
+
+  function isTrustedGestureCameraDocumentUrl(value) {
+    // MR 原文（desktop/main.js:747-756）判本地服务器端口 + 路径 '/' 或 '/index.html'；
+    // DSH 主窗为 file: 文档，pathname 是 '/D:/.../renderer/index.html' 形态，故等价改为 file: + index.html 结尾。
+    try {
+      const u = new URL(String(value || ''));
+      if (!isLocalAppUrl(u.href)) return false;
+      const pathname = path.posix.normalize(u.pathname || '/');
+      return pathname === '/' || /\/index\.html$/i.test(pathname);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function createGestureCameraPermissionGrant(event) {
+    if (!isTrustedWallpaperEngineIpc(event)) return null; // MR 原文 isTrustedMainWindowIpc（差异①）
+    if (event.senderFrame && event.senderFrame.parent) return null; // MR 原文：仅主框架文档可签发
+    const sourceUrl = event.senderFrame && event.senderFrame.url || event.sender.getURL();
+    gestureCameraPermissionGrant = {
+      webContentsId: event.sender.id,
+      origin: sourceUrl,
+      expiresAt: Date.now() + GESTURE_CAMERA_PERMISSION_GRANT_MS,
+    };
+    return gestureCameraPermissionGrant;
+  }
+
+  function isTrustedGestureCameraMediaPermission(webContents, origin, details) {
+    const grant = gestureCameraPermissionGrant;
+    if (!grant || Date.now() > grant.expiresAt) {
+      clearGestureCameraPermissionGrant();
+      return false;
+    }
+    try {
+      if (!webContents || webContents.isDestroyed() || webContents.id !== grant.webContentsId) return false;
+      if (!mainWindow || mainWindow.isDestroyed() || webContents !== mainWindow.webContents) return false;
+      if (!isTrustedGestureCameraDocumentUrl(origin) || !isTrustedGestureCameraDocumentUrl(grant.origin)) return false;
+      if (details && details.isMainFrame === false) return false;
+      const mediaType = String(details && details.mediaType || '').toLowerCase();
+      const mediaTypes = details && Array.isArray(details.mediaTypes)
+        ? details.mediaTypes.map((value) => String(value || '').toLowerCase()).filter(Boolean)
+        : [];
+      if (mediaType.includes('audio') || mediaTypes.some((value) => value.includes('audio'))) return false;
+      if (mediaType && !mediaType.includes('video')) return false;
+      if (mediaTypes.length && !mediaTypes.every((value) => value.includes('video'))) return false;
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   function broadcastDesktopWallpaperStatus(status) {
@@ -1320,7 +1523,7 @@ function main() {
     };
   }
 
-  // WE 相关会话权限（Ported from Mineradio desktop/main.js:1654-1763，差异④：去手势摄像头）。
+  // WE 相关会话权限（Ported from Mineradio desktop/main.js:1654-1763；media 分支含手势摄像头授权补移植）。
   // display-capture/media 仅在一次性捕获授权（grant）有效时放行；其余权限走本地应用白名单。
   function configureLocalAppPermissions() {
     const ses = session.defaultSession;
@@ -1329,7 +1532,8 @@ function main() {
     ses.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
       const origin = requestingOrigin || (details && details.requestingUrl) || (webContents && webContents.getURL && webContents.getURL()) || '';
       if (permission === 'display-capture') return isTrustedWallpaperEngineDisplayCapturePermission(webContents, origin, details);
-      if (permission === 'media') return isTrustedWallpaperEnginePreparationMediaPermission(webContents, origin, details);
+      if (permission === 'media') return isTrustedWallpaperEnginePreparationMediaPermission(webContents, origin, details)
+        || isTrustedGestureCameraMediaPermission(webContents, origin, details); // 手势摄像头（MR desktop/main.js:1661-1662）
       return LOCAL_APP_PERMISSION_ALLOWLIST.has(permission) && isLocalAppUrl(origin);
     });
     ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
@@ -1339,7 +1543,8 @@ function main() {
         return;
       }
       if (permission === 'media') {
-        callback(isTrustedWallpaperEnginePreparationMediaPermission(webContents, origin, details));
+        callback(isTrustedWallpaperEnginePreparationMediaPermission(webContents, origin, details)
+          || isTrustedGestureCameraMediaPermission(webContents, origin, details)); // 手势摄像头（MR desktop/main.js:1671-1674）
         return;
       }
       callback(LOCAL_APP_PERMISSION_ALLOWLIST.has(permission) && isLocalAppUrl(origin));
@@ -1430,6 +1635,51 @@ function main() {
       }).catch(() => reply({}));
     }, { useSystemPicker: false });
   }
+
+  // ===== 缓存存储设置 IPC（Ported from Mineradio 2.2.0, GPL-3.0, desktop/main.js:4136-4165 + 4881-4888）=====
+  ipcMain.handle('dsh-cache-get-settings', async () => {
+    try { return await dshCacheSettingsSnapshot(); }
+    catch (error) { return { ok: false, error: error.message || 'CACHE_SETTINGS_READ_FAILED' }; }
+  });
+  ipcMain.handle('dsh-cache-choose-directory', async () => {
+    const result = await dialog.showOpenDialog({
+      title: '选择缓存目录',
+      defaultPath: dshCacheSettings ? dshCacheSettings.rootPath : dshDefaultCacheRootPath(),
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || !result.filePaths || !result.filePaths[0]) return { ok: true, canceled: true };
+    return { ok: true, canceled: false, rootPath: dshNormalizeCacheRootPath(result.filePaths[0]) };
+  });
+  ipcMain.handle('dsh-cache-set-settings', async (_event, payload = {}) => {
+    try {
+      const nextRoot = dshNormalizeCacheRootPath(payload.rootPath);
+      fs.mkdirSync(nextRoot, { recursive: true });
+      fs.accessSync(nextRoot, fs.constants.W_OK);
+      dshCacheSettings = dshEnsureCacheDirectories(dshWriteCacheSettings({ rootPath: nextRoot }));
+      const snapshot = await dshCacheSettingsSnapshot();
+      return snapshot;
+    } catch (error) {
+      return { ok: false, error: error.message || 'CACHE_SETTINGS_WRITE_FAILED' };
+    }
+  });
+  ipcMain.handle('dsh-restart-app', async () => {
+    try {
+      app.relaunch();
+      app.exit(0); // 与 MR 同款硬重启（desktop/main.js:4881-4888）；WE 壁纸进程由其自身的看护逻辑处理
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message || 'RESTART_FAILED' };
+    }
+  });
+
+  // ===== 手势摄像头权限 IPC（Ported from Mineradio 2.2.0, GPL-3.0, desktop/main.js:4989-4993，桥名原样保留）=====
+  // 渲染层开摄像头前先经此签发 45s 一次性授权（gestureCameraPermissionGrant），
+  // 随后 getUserMedia 触发的 media 权限请求由 configureLocalAppPermissions 凭该授权放行。
+  ipcMain.handle('mineradio-gesture-camera-request-permission', async (event) => {
+    const grant = createGestureCameraPermissionGrant(event);
+    if (!grant) return { ok: false, error: 'GESTURE_CAMERA_UNTRUSTED_SENDER' };
+    return { ok: true, expiresAt: grant.expiresAt };
+  });
 
   // ===== WE IPC（Ported from Mineradio desktop/main.js:4168-4560）=====
   ipcMain.handle('mineradio-wallpaper-engine-list', async (event, payload = {}) => {
@@ -2252,6 +2502,16 @@ function main() {
     if (on) { lyricWinCreate(); applyLyricConfig(); }
     else if (lyricWin) { lyricWin.destroy(); lyricWin = null; }
   }
+  // 歌词窗开关 IPC（视觉控制台「桌面歌词」开关接线，2026-09-20；fx 桥 → 真实歌词窗）
+  ipcMain.handle('dsh-lyricwin-get', (e) => {
+    if (!isTrusted(e)) return { ok: false };
+    return { ok: true, enabled: !!(config.lyricWin && config.lyricWin.enabled) };
+  });
+  ipcMain.handle('dsh-lyricwin-toggle', (e, on) => {
+    if (!isTrusted(e)) return { ok: false };
+    lyricWinToggle(!!on);
+    return { ok: true, enabled: !!(config.lyricWin && config.lyricWin.enabled) };
+  });
 
   // ---------- 曲库 ----------
   async function rescanLibrary() {
@@ -5083,6 +5343,68 @@ function main() {
     } catch { /* 忽略 */ }
     return 'audio/mpeg';
   }
+  // ---- B-1 beatmap 缓存端点辅助（MR server.js 同名函数等价实现） ----
+  const SEND_JSON_CORS = { 'access-control-allow-origin': '*', 'access-control-allow-private-network': 'true', 'content-type': 'application/json; charset=utf-8' };
+  function sendStreamJson(res, data, status) {
+    try { res.writeHead(status || 200, SEND_JSON_CORS); res.end(JSON.stringify(data)); } catch { /* 忽略 */ }
+  }
+  function readStreamJsonBody(req) {
+    return new Promise((resolve, reject) => {
+      let size = 0; const chunks = [];
+      req.on('data', (c) => { size += c.length; if (size > 8 * 1024 * 1024) { reject(new Error('BEAT_CACHE_BODY_TOO_LARGE')); req.destroy(); return; } chunks.push(c); });
+      req.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); } catch (e) { reject(e); } });
+      req.on('error', reject);
+    });
+  }
+  function beatCacheRootInfo() {
+    const dir = path.resolve(path.join(dataRoot(), 'beatmaps'));
+    const root = path.parse(dir).root;
+    const drive = root ? root.replace(/[\\\/]+$/, '').toUpperCase() : '';
+    const allowed = !!root && !/^C:$/i.test(drive); // MR 同款纪律：C 盘不写节拍缓存（memory-only 降级）
+    const available = allowed && fs.existsSync(root);
+    return { dir, root, drive, allowed, available };
+  }
+  function ensureBeatMapCacheDir() {
+    const info = beatCacheRootInfo();
+    if (!info.allowed) { const err = new Error('BEAT_CACHE_ON_C_DRIVE_DISABLED'); err.code = 'BEAT_CACHE_ON_C_DRIVE_DISABLED'; err.info = info; throw err; }
+    if (!info.available) { const err = new Error('BEAT_CACHE_DRIVE_UNAVAILABLE'); err.code = 'BEAT_CACHE_DRIVE_UNAVAILABLE'; err.info = info; throw err; }
+    fs.mkdirSync(info.dir, { recursive: true });
+    return info.dir;
+  }
+  function safeBeatMapCacheFile(key) {
+    const raw = String(key || '').trim();
+    if (!raw || raw.length > 240) return null;
+    const hash = crypto.createHash('sha1').update(raw).digest('hex');
+    const label = raw.replace(/[^a-z0-9_.-]+/gi, '_').replace(/^_+|_+$/g, '').slice(0, 48) || 'beatmap';
+    return path.join(ensureBeatMapCacheDir(), `${label}-${hash}.json`);
+  }
+  function readBeatMapCacheFile(key) {
+    const file = safeBeatMapCacheFile(key);
+    if (!file || !fs.existsSync(file)) return null;
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return raw && raw.map ? raw : null;
+  }
+  function writeBeatMapCacheFile(body) {
+    const key = String(body && body.key || '').trim();
+    const map = body && body.map;
+    if (!key || !map || typeof map !== 'object') return { ok: false, error: 'INVALID_BEATMAP_CACHE_PAYLOAD' };
+    const payload = {
+      v: 1, key, savedAt: Date.now(),
+      meta: {
+        provider: String(body.provider || '').slice(0, 32),
+        title: String(body.title || '').slice(0, 160),
+        artist: String(body.artist || '').slice(0, 160),
+        mode: String(body.mode || 'mr').slice(0, 32),
+      },
+      map,
+    };
+    const file = safeBeatMapCacheFile(payload.key);
+    if (!file) return { ok: false, error: 'INVALID_BEATMAP_CACHE_KEY' };
+    const tmp = file + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(payload));
+    fs.renameSync(tmp, file);
+    return { ok: true, key: payload.key, savedAt: payload.savedAt, dir: path.dirname(file) };
+  }
   async function handleStream(req, res) {
     try {
       const u = new URL(req.url, 'http://127.0.0.1');
@@ -5100,6 +5422,48 @@ function main() {
           res.writeHead(200, { 'access-control-allow-origin': '*', 'access-control-allow-private-network': 'true', 'content-type': cr.headers.get('content-type') || 'image/jpeg', 'cache-control': 'public, max-age=86400' });
           res.end(Buffer.from(ab));
         } catch { try { res.writeHead(502); res.end(); } catch { /* 忽略 */ } }
+        return;
+      }
+      // ---------- B-1 离线节拍链：beatmap D 盘缓存端点（Ported from Mineradio server.js:709-773, 4769-4880 语义，GPL-3.0） ----------
+      // MR 原文在 express 风格 server.js；DSH 等价物 = 本地流服务器。免鉴权同 /api/cover（只存按歌 key 的
+      // beatmap JSON，不含账号/直链信息——MR 注释同义）。缓存目录跟随数据根（DSH 数据根本身在 D 盘即满足
+      // MR 的"不写 C 盘"纪律；C 盘兜底场景照 MR 语义禁用磁盘缓存 → memory-only 降级）。
+      if (u.pathname === '/api/beatmap/cache/status') {
+        const info = beatCacheRootInfo();
+        sendStreamJson(res, {
+          enabled: info.allowed && info.available,
+          dir: info.dir,
+          drive: info.drive,
+          reason: !info.allowed ? 'C_DRIVE_DISABLED' : (!info.available ? 'TARGET_DRIVE_UNAVAILABLE' : ''),
+          mode: info.allowed && info.available ? 'disk' : 'memory-only',
+        });
+        return;
+      }
+      if (u.pathname === '/api/beatmap/cache') {
+        if (req.method === 'GET') {
+          const key = u.searchParams.get('key') || '';
+          try {
+            const entry = readBeatMapCacheFile(key);
+            sendStreamJson(res, entry
+              ? { ok: true, hit: true, key: entry.key || key, map: entry.map, meta: entry.meta || {}, savedAt: entry.savedAt || 0 }
+              : { ok: true, hit: false, key });
+          } catch (err) {
+            const info = err.info || beatCacheRootInfo();
+            sendStreamJson(res, { ok: false, hit: false, enabled: false, mode: 'memory-only', key, reason: err.code || err.message || 'BEAT_CACHE_READ_FAILED', dir: info.dir });
+          }
+          return;
+        }
+        if (req.method === 'POST') {
+          try {
+            const body = await readStreamJsonBody(req);
+            sendStreamJson(res, writeBeatMapCacheFile(body));
+          } catch (err) {
+            const info = err.info || beatCacheRootInfo();
+            sendStreamJson(res, { ok: false, enabled: false, mode: 'memory-only', reason: err.code || err.message || 'BEAT_CACHE_WRITE_FAILED', dir: info.dir });
+          }
+          return;
+        }
+        sendStreamJson(res, { ok: false, error: 'METHOD_NOT_ALLOWED' }, 405);
         return;
       }
       if (u.searchParams.get('k') !== streamKey) { res.writeHead(403); res.end(); return; }
@@ -5184,6 +5548,32 @@ function main() {
       await wallpaperEngineLibrary.installProtocol(protocol);
     } catch (error) {
       console.warn('[Wallpaper Engine] local media protocol unavailable:', error && error.message || error);
+    }
+    // 手势识别 MediaPipe 本地资产协议（dsh-mediapipe://assets/<file>；特权注册见本文件顶部）：
+    // MR 原文手势子系统从 jsDelivr CDN 取 MediaPipe 运行时（hands.js glue 经 fetch/XHR 拉取
+    // wasm/tflite/binarypb/.data，script 标签 crossorigin=anonymous 拉 *_bin.js）；DSH 页面为
+    // file:，fetch/XHR/CORS 脚本均无法加载 file: 子资源（Chromium 限制），故统一改走本协议，
+    // 并在响应头带 ACAO:*（crossorigin=anonymous 脚本标签需要）。
+    try {
+      const MEDIAPIPE_ASSETS_DIR = path.join(__dirname, 'renderer', 'mr', 'vendor', 'mediapipe');
+      const MEDIAPIPE_ASSET_MIME = { '.js': 'text/javascript', '.wasm': 'application/wasm' };
+      protocol.handle('dsh-mediapipe', async (request) => {
+        try {
+          const name = decodeURIComponent(String(new URL(request.url).pathname || '')).replace(/^\/+/, '');
+          if (!/^[A-Za-z0-9._-]+$/.test(name)) return new Response('Not Found', { status: 404 }); // 只放行目录内白名单文件名（防穿越）
+          const data = await fs.promises.readFile(path.join(MEDIAPIPE_ASSETS_DIR, name));
+          return new Response(data, {
+            headers: {
+              'Content-Type': MEDIAPIPE_ASSET_MIME[path.extname(name).toLowerCase()] || 'application/octet-stream',
+              'Access-Control-Allow-Origin': '*',
+            },
+          });
+        } catch (_) {
+          return new Response('Not Found', { status: 404 });
+        }
+      });
+    } catch (error) {
+      console.warn('[GestureCamera] local mediapipe protocol unavailable:', error && error.message || error);
     }
     try { configureLocalAppPermissions(); } catch (error) { console.warn('[Wallpaper Engine] permission handlers unavailable:', error && error.message || error); }
     // B 站 CDN 热链保护：<audio> 发不了自定义头，用 webRequest 统一补 Referer（音视频直链/封面必备）
