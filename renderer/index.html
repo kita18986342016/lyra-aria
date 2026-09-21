@@ -1600,6 +1600,13 @@
      只读现成桥：window.__mp.togglePlay/playNext/playPrev、window.__mp.audio（HTMLAudioElement）、
      window.api.onWinMaxChange；不修改 app.js/mr-adapter.js。 */
   (function () {
+    /* 生命周期打点（正式仪表）：inline:eval + ui:click:pdStage3D/btnCloseStage3D + ui:change:stStage3d，
+       单会话个位数条目；标记集总说明见 mr-adapter.js 头部「生命周期打点」。*/
+    if (window.__mrMark) {
+      window.__mrMark('inline:eval');
+      document.addEventListener('click', function (e) { var t = e.target && e.target.closest ? e.target.closest('#pdStage3D,#btnCloseStage3D') : null; if (t) window.__mrMark('ui:click:' + t.id); }, true);
+      document.addEventListener('change', function (e) { if (e.target && e.target.id === 'stStage3d') window.__mrMark('ui:change:stStage3d'); }, true);
+    }
     var $id = function (id) { return document.getElementById(id); };
     var elTrack = $id('stBarTrack'), elFill = $id('stBarFill'), elThumb = $id('stBarThumb'),
         elCur = $id('stBarCur'), elDur = $id('stBarDur'),

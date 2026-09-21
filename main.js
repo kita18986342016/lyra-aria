@@ -3670,10 +3670,11 @@ function main() {
       return r.ok ? { ok: true, data: r.data } : { ok: false, reason: humanizeFailReason(r.message || ('HTTP ' + r.status)) };
     });
     // ref: 网易云=song id；酷狗=分享链接或 hash（url/hash/id 三选一，推荐 url）
-    ipcMain.handle('leiz:resolve', async (e, source, ref, level) => {
-      if (!isTrusted(e) || !['netease', 'kugou'].includes(source) || typeof ref !== 'string' || !ref) return { ok: false, reason: '参数错误' };
-      // 档位映射（幂等）：输入可能是档位名(渲染层新契约 standard/high/lossless/master)或源值(歌词/手机端 exhigh/320/flac/jymaster…)，
-      // 先归一到档位，再映射一次到源值。此前直接 lvMap[level] 导致渲染层已映射的值再查 miss→恒无损（双重映射 bug）。
+    // 档位归一→源特有值（幂等，leiz:resolve 与 resolve:song 播放端点共用）：输入可能是档位名
+    // (渲染层新契约 standard/high/lossless/master) 或源值(歌词/手机端 exhigh/320/flac/jymaster…)。
+    // 此前 resolve:song 不做这层转换，把 'master' 原样拼进上游 URL → 上游不认（酷狗只认 hires）
+    // → 静默回退默认档 =「选臻品必降标准/高品」（2026-09-20 用户报告根因）。
+    const leizSourceLevel = (source, level) => {
       const toTier = (x) => {
         x = String(x || '');
         if (x === 'standard' || x === 'high' || x === 'lossless' || x === 'master') return x;
@@ -3686,7 +3687,11 @@ function main() {
       const srcLv = source === 'netease'
         ? { standard: 'standard', high: 'exhigh', lossless: 'lossless', master: 'jymaster' }
         : { standard: '128', high: '320', lossless: 'flac', master: 'hires' };
-      const lv = srcLv[toTier(level)] || 'lossless';
+      return srcLv[toTier(level)] || 'lossless';
+    };
+    ipcMain.handle('leiz:resolve', async (e, source, ref, level) => {
+      if (!isTrusted(e) || !['netease', 'kugou'].includes(source) || typeof ref !== 'string' || !ref) return { ok: false, reason: '参数错误' };
+      const lv = leizSourceLevel(source, level);
       let p;
       if (source === 'netease') {
         p = '/netease?id=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
@@ -3747,10 +3752,13 @@ function main() {
           return { ok: true, data: out };
         }
         if (source === 'netease' || source === 'kugou') {
-          const r = await leizResolveCore(source, String(song.ref || ''), String(quality || song.level || 'lossless'));
+          // 2026-09-20 修复：quality 是渲染层归一档名（master/lossless…），必须先转源特有值
+          // （酷狗 master→hires、网易 master→jymaster）再拼上游 URL——原样透传会被上游静默回退降档
+          const lv = leizSourceLevel(source, String(quality || song.level || 'lossless'));
+          const r = await leizResolveCore(source, String(song.ref || ''), lv);
           if (r.ok && r.data) {
             const u = r.data.url || r.data.src;
-            if (u) r.data.streamUrl = makeStreamUrl({ url: u, reResolve: { kind: 'leiz', source, ref: String(song.ref || ''), level: String(quality || song.level || 'lossless') } });
+            if (u) r.data.streamUrl = makeStreamUrl({ url: u, reResolve: { kind: 'leiz', source, ref: String(song.ref || ''), level: lv } });
           }
           return r;
         }
@@ -5166,8 +5174,9 @@ function main() {
         const b = lyricWin.getBounds();
         const inside = pt.x >= b.x && pt.x <= b.x + b.width && pt.y >= b.y && pt.y <= b.y + b.height;
         if (config.lyricWin.locked) {
-          // 顶部 46px、水平居中 ±150px = 锁图标条热区（#lockbar top:8 + 按钮 26 + 富余）
-          const overStrip = pt.y >= b.y && pt.y <= b.y + 46 && Math.abs(pt.x - (b.x + b.width / 2)) <= 150;
+          // 顶部 44px、水平居中 ±26px = 圆形锁钮热区（#lockbar top:8 + 钮 28px + 富余；
+          // 2026-09-20 长条胶囊改单圆钮后热区随收，避免歌词上半段整片变成可交互区挡下层点击）
+          const overStrip = pt.y >= b.y && pt.y <= b.y + 44 && Math.abs(pt.x - (b.x + b.width / 2)) <= 26;
           if (overStrip !== lyricStripInteractive) {
             lyricStripInteractive = overStrip;
             try {

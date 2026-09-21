@@ -205,24 +205,36 @@ body.stroke[data-sweep='legacy'] #lineNext {
 body:not(.stroke) #lineNext { text-shadow: none; -webkit-text-stroke: 0; filter: none; }
 
 
-/* 锁定时悬停工具条（顶部小胶囊：解除锁定，纯图标，浅色醒目） */
+/* 锁定时悬停工具条：纯圆形锁钮（白底圆钮自带投影，保证透明歌词窗上可见；容器不再有胶囊底） */
 #lockbar {
   position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
   display: none; z-index: 5;
-  background: rgba(255, 255, 255, .92); color: #3a4256;
-  border-radius: 16px; padding: 3px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, .28);
 }
 body.hover #lockbar { display: block; }
-/* 解锁态：悬停工具条同锁定态规则（鼠标移出即隐藏，包括按钮） */
+/* 解锁态：同一颗钮（图标切开锁形，点击重新锁定） */
 #unlockBtn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px;
-  background: none; border: none; color: #3a4256; cursor: pointer;
+  width: 28px; height: 28px;
+  background: rgba(255, 255, 255, .92); border: none; color: #3a4256; cursor: pointer;
   border-radius: 50%;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .28);
 }
 #unlockBtn svg { width: 15px; height: 15px; }
-#unlockBtn:hover { color: #4a7dff; background: rgba(74, 125, 255, .12); }
+#unlockBtn:hover { color: #4a7dff; background: #fff; }
+
+/* 悬停按钮才出现的文字说明气泡（2026-09-20：替代旧长条常驻文案；原生 title 在置顶穿透窗上
+   出现慢且样式不可控，改用兄弟选择器驱动的自绘气泡。pointer-events:none——气泡绝不挡点击，
+   也不会因为盖住按钮破坏 :hover 链） */
+#lockHint {
+  position: absolute; top: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+  display: none;
+  font-size: 12px; color: #3a4256; white-space: nowrap;
+  background: rgba(255, 255, 255, .92);
+  padding: 4px 10px; border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .28);
+  pointer-events: none;
+}
+#unlockBtn:hover ~ #lockHint { display: block; }
 
 /* 解锁后的迷你控制条（底部，融入面板）——鼠标进入才显示（opacity 过渡，避免 display 切换闪跳） */
 #ctrlbar {
@@ -266,6 +278,5 @@ body.taskbar #lineNext { font-size: 11px; }
 /* 锁定（鼠标穿透）时去掉拖动光标 */
 body.locked #stage { cursor: default; }
 
-/* v1.4.2：锁定态解锁提示（2026-09-20 修：删除重复规则块；白色胶囊底上文字改深色——原白字白底不可见） */
-#lockHint { display: none; font-size: 12px; color: #3a4256; margin-right: 6px; white-space: nowrap; }
-body.locked.hover #lockHint { display: inline; }
+/* v1.4.2：锁定/解锁态气泡文案由 lyric-win.js 按状态写入 #lockHint（见 applyConfig），
+   样式只有一套——气泡显隐完全由 #unlockBtn:hover 驱动，不再分锁定态规则 */

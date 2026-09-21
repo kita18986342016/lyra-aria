@@ -13,10 +13,11 @@
       <div id="lineTrans"></div>
       <div id="lineNext" class="line-neighbor"></div>
     </div>
-    <!-- 锁定时悬停出现的工具条：解除锁定（纯图标；2026-09-20 修：删除重复 lockHint span——
-         两个同名 id 的提示文本叠加是"锁定条 x 拉满"的根因；文案改左键触发） -->
+    <!-- 锁定时悬停出现的圆形锁钮：白底圆钮保证在桌面歌词上可见；#lockHint 是悬停按钮才显示的
+         气泡提示（必须放在按钮之后，靠 #unlockBtn:hover ~ 兄弟选择器驱动），不占常驻版面 -->
     <div id="lockbar">
-      <span id="lockHint">左键点锁解锁 · Ctrl+Alt+L</span><button id="unlockBtn" title="解除锁定"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg></button>
+      <button id="unlockBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg></button>
+      <span id="lockHint">左键点锁解锁 · Ctrl+Alt+L</span>
     </div>
     <!-- 解锁后的迷你控制条（酷狗迷你模式） -->
     <div id="ctrlbar">

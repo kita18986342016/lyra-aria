@@ -100,14 +100,19 @@ async function main() {
   check('③ 真实滚轮滚动控制台', s3 > 100, { scrollTop: s3 });
 
   // ④ 退出=鼠标移出面板 → peek 自动收（MR 语义，无关闭按钮）
+  // 轮询式断言：③ 的真实 Input 事件与本合成 move 存在到达顺序竞态（偶发先到的 Input.move 落在
+  // 面板矩形内把收起定时器清掉重开），700ms 单次判定会抖（实测同实例 FAIL/PASS 混出现）——
+  // 3s 内每 400ms 补发移开并复查，任一次收起即过（不改变断言语义）
   const c4 = await ev(`(async function(){
     var p = document.getElementById('fx-panel');
-    // 鼠标移到远离面板/fab 的左上角 → 适配层 peek 驱动 170ms 后收起
-    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 40, clientY: 40, bubbles: true }));
-    document.dispatchEvent(new MouseEvent('mousemove', { clientX: 40, clientY: 40, bubbles: true }));
-    await new Promise(function(r){ setTimeout(r, 700); });
-    var closed = !(p.classList.contains('peek') || p.classList.contains('show'));
-    return { closed: closed };
+    for (var i = 0; i < 8; i++) {
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX: 40, clientY: 40, bubbles: true }));
+      document.dispatchEvent(new MouseEvent('mousemove', { clientX: 40, clientY: 40, bubbles: true }));
+      await new Promise(function(r){ setTimeout(r, 400); });
+      if (!(p.classList.contains('peek') || p.classList.contains('show')))
+        return { closed: true, rounds: i + 1 };
+    }
+    return { closed: false, rounds: 8 };
   })()`);
   check('④ 鼠标移开控制台自动收起(MR 退出语义)', c4.closed === true, c4);
 

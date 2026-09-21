@@ -12,6 +12,7 @@
     get qualityForSong() { return qualityForSong; },
     get coverCache() { return coverCache; },
     startSong, playList, // 自动化验证直调入口
+    updatePlayerMeta, // 音质标签诚实化（2026-09-20）验收直调：构造 pending/playedLevel 态断言底栏中性/实际档显示
     togglePlay, playNext, playPrev, // 3D 舞台悬浮播放条（二期 3d 追加）也走这里，避免重复实现
     queuePlayNext, // 3D 歌单架详情行「下一首播放」桥（盘点 A-②#9）
     toggleFav: async (id, song) => { state.favorites = await window.api.toggleFavorite(id, song && song.online ? song : undefined); return isFav(id); },
@@ -3532,6 +3533,10 @@
     state.playingId = song.id;
     // 在线歌曲：主进程解析直链（网易云 id / 酷狗 hash 或分享链接 / QQ 搜索词+序号）
     if (song.online) {
+      // 音质诚实（2026-09-20 用户拍板「标签按实际音质显示」）：解析确认前进中性态——
+      // 此前标签一直亮搜索时盖戳的所选档（乐观显示），实际流降档时标签说谎
+      song.qualityPending = true;
+      updatePlayerMeta();
       audio.dataset.songId = song.id;
       (async () => {
         let r = null;
@@ -3572,22 +3577,31 @@
         if (state.playingId !== song.id) return;
         if (r && r.ok && r.data && r.data.url) {
           // 音质诚实：按实际解析结果更新歌曲音质（免费歌 flac=无损 / 320=高品 / 付费兜底 128=标准），列表与底栏同步
+          // 2026-09-20 用户拍板「标签按实际音质显示」：song.playedLevel=实际确认档（底栏/详情标签唯一来源），
+          // 响应无码率/格式信息时 real=null → 标签隐藏（不说谎）；song.level 保留原有对齐修正（请求档位戳）
+          // 2026-09-21 取证修复（酷狗"臻品掉高品"显示根因之二）：①上游响应字段名是 type 不是 format，
+          // 原 fmt 恒空 → FLAC 容器兜底从未生效；②酷狗响应 bitrate 恒 0 → 用 size/duration 推实测码率
+          // （1.65M FLAC 被 level=high 名义压成"高品"标签的问题）；③FLAC 容器 ≥ 无损，先于 level 名判定
           const br = Number(r.data.bitrate) || 0;
-          const fmt = String(r.data.format || '');
-          if (br > 0 || fmt) {
-            // B站自建解析按音轨代码诚实标档（30251=Hi-Res无损 / 30280=高清192k），其余源按码率推
-            // 归一顺序：①码率≥2Mbps=臻品母带（kugou 母带 level=high 与高品同名，只能靠码率）②level 名归一（exhigh→high 等，单位安全）③兜底格式/码率
-            let real = null;
-            if (br >= 2000000 || r.data.level === 'jymaster' || r.data.level === 'jyeffect' || r.data.level === 'hires') real = 'master';
-            else real = normOnlineLevel(r.data.level)
-              || (fmt === 'flac' ? 'lossless' : br >= 1000000 ? 'lossless' : br >= 300000 ? 'high' : br > 0 ? 'standard' : null);
-            if (real && song.level !== real) {
-              song.level = real;
-              if (br) song.bitrate = br;
-              renderList();
-              updatePlayerMeta();
-            }
-          }
+          const size = Number(r.data.size) || 0, dur = Number(r.data.duration) || 0;
+          const ebr = br > 0 ? br : (size > 0 && dur > 0 ? Math.round(size * 8 / dur) : 0);
+          const fmt = String(r.data.format || r.data.type || '').toUpperCase();
+          song.qualityPending = false;
+          let real = null;
+          // B站自建解析按音轨代码诚实标档（30251=Hi-Res无损 / 30280=高清192k），其余源按码率推
+          // 归一顺序：①实测码率≥2Mbps 或臻品级 level 名=臻品母带（kugou 母带 level=high 与高品同名，只能靠码率）
+          // ②无损容器（flac/ape/wav/alac——酷狗 FLAC 名义 level=high，容器才是真相）或 level 名归一
+          // ③兜底码率估算
+          if (ebr >= 2000000 || r.data.level === 'jymaster' || r.data.level === 'jyeffect' || r.data.level === 'hires') real = 'master';
+          else if (LOSSLESS_CONTAINERS.has(fmt) || normOnlineLevel(r.data.level) === 'lossless') real = 'lossless';
+          else real = normOnlineLevel(r.data.level)
+            || (ebr >= 1000000 ? 'lossless' : ebr >= 300000 ? 'high' : ebr > 0 ? 'standard' : null);
+          const prevActual = song.playedLevel;
+          song.playedLevel = real;
+          if (ebr) song.bitrate = ebr;
+          if (real && song.level !== real) song.level = real;
+          if (song.playedLevel !== prevActual) renderList(); // 详情页正在播标签同步（值没变不重排列表）
+          updatePlayerMeta();
           audio.src = r.data.url;
           // v1.4.2：优先本地流地址（直链只在主进程，过期由主进程自动重解析续播）；服务器未就绪时回退直连
           if (r.data.streamUrl) audio.src = r.data.streamUrl;
@@ -3602,6 +3616,8 @@
           }
         } else {
           // v1.4.2：解析失败升格为通知卡片（带原因，用户可看清为什么放不了）；换源兜底继续走
+          song.qualityPending = false; // 撤中性态：标签回退上次确认档（无则隐藏），换源重入 startSong 会重新进确认态
+          updatePlayerMeta();
           showNoticeCard('播放失败', `「${song.title}」${(r && r.reason) || '网络异常'}，正在尝试其他音源…`);
           if (autoPlay && song.online) {
             // 换源兜底：本源没有这首歌（如网易无版权下架）→ 其他源找同歌换源续播；都没有 → 跳下一首
@@ -7502,10 +7518,20 @@
     const qSpan = $('#pQuality');
     if (qSpan) {
       if (s && s.online) {
-        const norm = normOnlineLevel(s.level) || 'high';
-        qSpan.textContent = QUAL_LABELS[norm] || '高品';
-        qSpan.dataset.q = norm; // 音质分色:标准蓝 / 高品紫 / 无损金
-        qSpan.classList.remove('hidden');
+        // 音质诚实（2026-09-20 用户拍板）：只认实际确认档 song.playedLevel——解析中"…"中性态，
+        // 确认后亮实际档，拿不到实际信息就隐藏；不读搜索时盖戳的所选档（乐观显示废除），
+        // 也删掉了原 || 'high' 在无档位信息时假造"高品"的兜底
+        if (s.qualityPending) {
+          qSpan.textContent = '…';
+          qSpan.dataset.q = 'pending';
+          qSpan.classList.remove('hidden');
+        } else if (s.playedLevel) {
+          qSpan.textContent = QUAL_LABELS[s.playedLevel] || s.playedLevel;
+          qSpan.dataset.q = s.playedLevel;
+          qSpan.classList.remove('hidden');
+        } else {
+          qSpan.classList.add('hidden');
+        }
       } else if (s) {
         qSpan.classList.add('hidden');
       } else { qSpan.classList.add('hidden'); }

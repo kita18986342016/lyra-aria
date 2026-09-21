@@ -187,9 +187,10 @@
     // 桌面歌词字体（设置→桌面歌词→字体；default=系统默认栈，字形装饰仍只走 stroke/filter 安全通道）
     const FONT_STYLES = ['default', 'noto', 'misans', 'yahei', 'songti', 'kai', 'wenkai', 'xingkai', 'xinwei'];
     document.body.dataset.font = FONT_STYLES.includes(cfg.lyricFont) ? cfg.lyricFont : 'default';
-    // 顶部工具条图标随状态切换（图标=当前状态）：锁定态=锁形（点击解除）；解锁态=开锁形（点击锁定）
+    // 顶部锁钮图标随状态切换（图标=当前状态）：锁定态=锁形（点击解除）；解锁态=开锁形（点击锁定）。
+    // 文字说明走 #lockHint 悬停气泡（自绘，比原生 title 快且样式统一），文案同步随状态切换
     $('#unlockBtn').innerHTML = cfg.locked ? ICON_LOCK : ICON_UNLOCK;
-    $('#unlockBtn').title = cfg.locked ? '锁定中：点击解锁（或 Ctrl+Alt+L）' : '重新锁定';
+    $('#lockHint').textContent = cfg.locked ? '点击解锁 · Ctrl+Alt+L' : '重新锁定';
     // 右下角播放模式按钮（列表循环/单曲循环/随机）
     const m = cfg.playMode || 'order';
     $('#cMode').innerHTML = MODE_ICONS[m] || ICON_MODE_ORDER;

@@ -7,6 +7,22 @@
 //   ③ 帧驱动（节拍/频段分析公式照搬 11-main-loop.js:357-540）+ 挂载/卸载生命周期。
 'use strict';
 
+// ===== 生命周期打点（正式仪表，2026-09-20 首进 3D 提速批次引入）=====
+// window.__mrP 收集一次性里程碑 [标记名, performance.now 毫秒]，用于诊断"冷启动→进 3D"哪段慢。
+// 全部单次触发（有 __probe* 旗标防重复），单会话 <30 条、无高频写入。
+// 标记集：adapter:eval｜preboot:scheduled/fire/fire-fallback｜boot:start/scriptAppend/
+//   bundleExecDone/bindsDone/scriptError｜setLrc:pending/applied｜mount:start/bootReady/
+//   lyrParticles/audioGraph/shelf/syncDone/reveal｜frame1:start/renderStart/renderDone｜
+//   loading:shown｜lyrics:currentReady｜paused:adopted/adoptIntro｜ui:click:*、ui:change:*（index.html 内联）。
+// 用法：CDP 求值 JSON.stringify(window.__mrP)。
+window.__mrP = window.__mrP || [];
+function __mrMark(name) {
+  try { window.__mrP.push([name, Math.round(performance.now() * 10) / 10]); } catch (e) { /* 忽略 */ }
+}
+window.__mrMark = __mrMark;
+__mrMark('adapter:eval');
+// ===== 生命周期打点结束 =====
+
 // ---------- ① 环境补齐（在 MR 模块之前求值；原样照抄，勿改实现） ----------
 var SKULL_PRESET_INDEX = 7;            // 占位：bundle 载入时被 02-visual/01-float-skull:120 的真实声明（=6）覆盖。
                                        // 旧注释"恒假"已失效——安魂卡（preset 6）实际会激活骷髅分支，
@@ -556,6 +572,49 @@ function mrTargetSkullParticleFps(now) {
   return (playing && window.audio && !window.audio.paused) ? mrCapMainLoopFpsForBudget(60, 45) : 24;
 }
 
+// ② 暂停态行层采纳（2026-09-21 首进提速）：MR 的 tickLyricsParticles 只在 playing / 进度拖动预览时
+// 构建/采纳当前行（mr/02-visual/14:3095-3104），而 DSH 冷启动恢复的是暂停中的歌 → 暂停进舞台时
+// 行层永不出现，#stage3dLoading 无限转（实测 8s+ 不出字，只能按播放才解）。此处用 MR 原函数补齐
+// "暂停也采纳"：payload/预热情门/showStageLine(noSyncBuild 协作式)/进度公式全是 MR 自己的链路，
+// 采纳成功后 MR 原暂停保持语义（14:3096-3101 'in' 态冻结）自然接管，恢复播放走 MR 原路径，无伪造状态。
+function mrPausedLyricAdopt() {
+  if (!MrStage.mounted) return;
+  if (typeof playing === 'undefined' || playing) return; // 播放路径 MR 自管
+  var a = MrStage.audioEl;
+  if (!a || !a.src || a.paused !== true || a.ended) return;
+  if (typeof isProgressDragPreviewActive === 'function' && isProgressDragPreviewActive()) return; // 拖动预览 MR 自管
+  if (typeof fx === 'undefined' || !fx || !fx.particleLyrics) return;
+  if (typeof stageLyrics === 'undefined' || !stageLyrics || stageLyrics.current) return;
+  if (!window.lyricsLines || !window.lyricsLines.length) return;
+  if (typeof showStageLine !== 'function') return;
+  var t = typeof stageLyricPlaybackSeconds === 'function' ? stageLyricPlaybackSeconds() : Math.max(0, Number(a.currentTime) || 0);
+  var idx = typeof findStageLyricIndexAtTime === 'function' ? findStageLyricIndexAtTime(t) : -1;
+  if (idx < 0) {
+    // 前奏段：MR playing 路径同款歌名兜底行（14:3115-3125），单行同步构建（毫秒级）
+    var introText = currentLyricFallbackText();
+    if (!introText || (stageLyrics.currentIdx === -2 && stageLyrics.currentText === introText)) return;
+    stageLyrics.currentIdx = -2;
+    stageLyrics.transitionLineStep = 0;
+    if (showStageLine(introText)) __mrMark('paused:adoptIntro');
+    return;
+  }
+  // 预热线在途（prewarm/demand 构建中或预热窗口未开）→ 本帧跳过，下一帧再试
+  if (typeof stageLyricWarmupPending === 'function' && stageLyricWarmupPending()) return;
+  var payload = typeof buildStageLyricPlaybackPayload === 'function' ? buildStageLyricPlaybackPayload(idx) : null;
+  if (!payload) return;
+  stageLyrics.transitionLineStep = 0;
+  if (!showStageLine(payload, false, { noSyncBuild: true })) return; // 协作构建未就绪 → 内部已排 demand，下帧再试
+  stageLyrics.currentIdx = idx; // 镜像 tickLyricsParticles:3178
+  if (stageLyrics.current) { // 镜像 tickLyricsParticles:3181-3185 的进度灌入（暂停期冻结，恢复播放后 MR 自驱）
+    var curLine = window.lyricsLines[idx] || { t: t };
+    var nextLine = window.lyricsLines[idx + 1];
+    var lyricT = typeof getAdjustedLyricPlaybackTime === 'function' ? getAdjustedLyricPlaybackTime(t) : t;
+    updateLyricMeshProgress(stageLyrics.current, getLyricLineProgress(curLine, nextLine, lyricT),
+      { nativeKaraoke: lyricLineHasNativeKaraoke(curLine) });
+  }
+  __mrMark('paused:adopted');
+}
+
 // ① 首进 loading 显隐：挂载后、当前行层 mesh 未就绪且本曲有歌词 → 显示"正在点亮舞台…"，
 // 行层分批构建完成（stageLyrics.current 非空）即自动隐藏。重进因 mesh 保留 current 常在 → 不闪。
 function mrStageLoadingTick() {
@@ -564,12 +623,22 @@ function mrStageLoadingTick() {
   var hasLyric = (typeof lyricsLines !== 'undefined' && lyricsLines && lyricsLines.length) ||
                  (typeof window !== 'undefined' && window.lyricsLines && window.lyricsLines.length);
   var ready = (typeof stageLyrics !== 'undefined' && stageLyrics && stageLyrics.current);
-  el.classList.toggle('show', !!(MrStage.mounted && hasLyric && !ready));
+  var show = !!(MrStage.mounted && hasLyric && !ready);
+  // fx.particleLyrics 关闭时舞台本就不出歌词（MR 原语义）→ loading 不能无限转
+  if (show && (typeof fx === 'undefined' || (fx && fx.particleLyrics === false))) show = false;
+  if (show && !el.classList.contains('show') && !MrStage.__probeLoadShown) { MrStage.__probeLoadShown = true; __mrMark('loading:shown'); }
+  if (ready && !MrStage.__probeLrcReady) { MrStage.__probeLrcReady = true; __mrMark('lyrics:currentReady'); }
+  el.classList.toggle('show', show);
 }
 
 // 帧驱动：调用顺序照搬 MR 11-main-loop.js animate()（:617-620 相机、:676-677 舞台歌词、:692 渲染）
 function mrFrame(now) {
   MrStage.raf = requestAnimationFrame(mrFrame);
+  if (!MrStage.__probeF1) {
+    MrStage.__probeF1 = true;
+    __mrMark('frame1:start');
+    MrStage.__probeRenderWrap = true;
+  }
   var dt = Math.min((now - MrStage.prevTime) / 1000, 0.05);
   MrStage.prevTime = now;
   uniforms.uTime.value += dt;
@@ -643,12 +712,15 @@ function mrFrame(now) {
   }
   var stepDt = MrStage.gates ? consumeFrameGate(MrStage.gates.stageLyrics, now, dt, playing ? 0 : 24 /* MR 播放时 vsync 全速（审计#5）；0=门控放行 */, false, 'stage-lyrics') : dt;
   if (stepDt > 0) updateStageLyrics3D(stepDt);
+  mrPausedLyricAdopt(); // ② 暂停进舞台也采纳行层（MR 原 playing 限定导致的无限 loading，见函数头）
   mrStageLoadingTick(); // ① 首进行层就绪前显示"正在点亮舞台…"
   if (MrStage.gates) {
     var lyrDt = consumeFrameGate(MrStage.gates.lyrics, now, dt, playing ? 0 : 24, false, 'lyrics-particles');
     if (lyrDt > 0 && typeof tickLyricsParticles === 'function') tickLyricsParticles(); // MR 11-main-loop.js:608 同款驱动
   }
+  if (MrStage.__probeRenderWrap) { MrStage.__probeRenderWrap = false; __mrMark('frame1:renderStart'); }
   renderer.render(scene, camera);
+  if (!MrStage.__probeRendered) { MrStage.__probeRendered = true; __mrMark('frame1:renderDone'); }
 }
 
 function mrResize() {
@@ -689,6 +761,7 @@ function mrLrcPayloadKey(lrc, wordSegs, translated) {
 }
 function mrSetLrc(lrc, wordSegs, translated) {
   if (!MrStage.booted) { // 挂载前调用（歌词先于舞台就绪）→ 缓存，boot/mount 时回放
+    if (!MrStage.pendingLrc) __mrMark('setLrc:pending');
     MrStage.pendingLrc = [lrc, wordSegs, translated];
     return 0;
   }
@@ -773,11 +846,18 @@ function mrSetLrc(lrc, wordSegs, translated) {
   var renderSignature = typeof stageLyricRenderSignatureForCurrentState === 'function' ? stageLyricRenderSignatureForCurrentState() : '';
   if (typeof invalidateStageLyricPayloadForNewLyrics === 'function') invalidateStageLyricPayloadForNewLyrics('renderLyrics');
   if (typeof stageLyrics !== 'undefined' && stageLyrics && renderSignature) stageLyrics.renderSignature = renderSignature;
-  if (typeof requestStageLyricWarmup === 'function') requestStageLyricWarmup('lyrics-ready', 900);
-  if (typeof scheduleStageLyricPrewarm === 'function') scheduleStageLyricPrewarm('lyrics-ready', 32);
-  if (typeof scheduleStageLyricSingleLineBootstrapPrewarm === 'function') scheduleStageLyricSingleLineBootstrapPrewarm('lyrics-ready', 44);
+  // ③ 首行提速（2026-09-21）：预热 reason 必须用 MR 原词表 'renderLyrics'——
+  // stageLyricLightPrewarmReason（mr/02-visual/14:95-97）只认 renderLyrics/renderLyrics-title 等
+  // 轻量原因；旧值 'lyrics-ready' 是适配层自造词、不在表内 → 预热被当成全轨构建（实测 48 行
+  // 824 相位 8.4s），而 stageLyricWarmupPending（14:320-328）在构建期恒 true、
+  // tickLyricsParticles（14:3140）等它 → 首行被整条全轨构建卡住（实测点击→首行 8.7s）。
+  // 'renderLyrics' 走轻量构建（当前行附近几行，亚秒级出首行），全轨仍由下面 'lyrics-ready-preload' 后台续建。
+  if (typeof requestStageLyricWarmup === 'function') requestStageLyricWarmup('renderLyrics', 900);
+  if (typeof scheduleStageLyricPrewarm === 'function') scheduleStageLyricPrewarm('renderLyrics', 32);
+  if (typeof scheduleStageLyricSingleLineBootstrapPrewarm === 'function') scheduleStageLyricSingleLineBootstrapPrewarm('renderLyrics', 44);
   if (typeof scheduleStageLyricFullTrackWarmup === 'function') scheduleStageLyricFullTrackWarmup('lyrics-ready-preload', 24);
   MrStage.lastLrcKey = payloadKey;
+  __mrMark('setLrc:applied');
   return lines.length;
 }
 
@@ -810,6 +890,7 @@ function bootedGuard() { return MrStage.booted; }
 // 新行为：mrPreboot 在页面空闲时于隐藏容器完成 boot（WebGL renderer/全局状态机就位），
 // 用户点进舞台只剩 mesh 搬移 + 行层构建。mrMount await mrBoot()，先到先复用。
 function mrBoot() {
+  __mrMark('boot:start');
   if (MrStage.booted) return Promise.resolve();
   if (MrStage.booting) return MrStage.booting;
   // 溢光默认升级迁移（2026-09-20 用户拍板 0.28→0.8）：fx 自动存档会覆盖 fxDefaults，
@@ -843,6 +924,7 @@ function mrBoot() {
     s.src = new URL('mr/mr-bundle.js', location.href).href;
     MrStage.bootErrors.length = 0;
     s.onload = function () {
+      __mrMark('boot:bundleExecDone');
       if (MrStage.bootErrors.length) { reject(new Error('MR_BUNDLE_EXEC: ' + MrStage.bootErrors.slice(0, 3).join(' | '))); return; }
       MrStage.booted = true;
       // B-b：控制玻璃初始化（MR 原调用点在未 vendor 的 10-shell/05-startup-bindings.js:7；
@@ -864,9 +946,11 @@ function mrBoot() {
       try { if (typeof applyDiyMode === 'function') applyDiyMode(true, { save: false }); } catch (e) { console.warn('[MR 控制台] applyDiyMode:', e && e.message); }
       try { mrBindFxPeek(); } catch (e) { console.warn('[MR 控制台] peek 绑定失败:', e && e.message); }
       if (MrStage.pendingLrc) { var pl = MrStage.pendingLrc; MrStage.pendingLrc = null; mrSetLrc(pl[0], pl[1], pl[2]); }
+      __mrMark('boot:bindsDone');
       resolve();
     };
-    s.onerror = function () { reject(new Error('MR_BUNDLE_LOAD_FAILED')); };
+    s.onerror = function () { __mrMark('boot:scriptError'); reject(new Error('MR_BUNDLE_LOAD_FAILED')); };
+    __mrMark('boot:scriptAppend');
     document.head.appendChild(s);
   }).catch(function (e) {
     // 脚本没加载成功（file:// 下罕见）→ 允许 mount 时重试一次；
@@ -881,12 +965,16 @@ function mrBoot() {
 // ① 空闲预启动：页面加载后延迟起 bundle（避开首屏渲染/登录检查），失败静默——
 // 用户点进舞台时 mrMount→mrBoot 会再走一次真启动路径。
 function mrPreboot() {
+  __mrMark('preboot:scheduled');
   if (MrStage.booted || MrStage.booting || MrStage.failed) return;
   try {
     if (typeof requestIdleCallback === 'function') {
-      requestIdleCallback(function () { mrBoot().catch(function () { /* mount 时重试 */ }); }, { timeout: 8000 });
+      // 兜底 timeout 8000→4000（2026-09-21）：正常空闲时 rIC 数百 ms 内即触发（实测 289~750ms）；
+      // 收紧只影响"启动繁忙期 rIC 迟迟不触发"的机器——4s 前强制 boot，用户 4s 后点进 3D
+      // 不再退化为点击内同步 boot（bundle 求值数百 ms）；与无 rIC 机器的 setTimeout 4000 兜底对齐。
+      requestIdleCallback(function () { __mrMark('preboot:fire'); mrBoot().catch(function () { /* mount 时重试 */ }); }, { timeout: 4000 });
     } else {
-      setTimeout(function () { mrBoot().catch(function () { }); }, 4000);
+      setTimeout(function () { __mrMark('preboot:fire-fallback'); mrBoot().catch(function () { }); }, 4000);
     }
   } catch (e) { /* 预启动尽力而为 */ }
 }
@@ -916,8 +1004,10 @@ function mrBindFxPeek() {
 }
 
 async function mrMount(host) {
+  __mrMark('mount:start');
   MrStage.host = host;
   await mrBoot();
+  __mrMark('mount:bootReady');
   if (MrStage.failed) throw new Error('MR_BOOT_FAILED');
   // 容器从预启动隐藏位搬进舞台 host（幂等：已在 host 则跳过）
   if (MrStage.container && MrStage.container.parentNode !== host) {
@@ -940,6 +1030,7 @@ async function mrMount(host) {
   fx.lyricCameraLock = false;
   // 歌词组根节点：MR 由封面粒子模块创建，这里由适配层直接创建（vendored 03-lyrics-star-river.js 同款函数）
   if (typeof createLyricsParticles === 'function' && stageLyrics && !stageLyrics.group) createLyricsParticles();
+  __mrMark('mount:lyrParticles');
   // MR 视觉控制台绑定（DIY）：[id, fxKey] 滑条映射 + 分段按钮 + 歌词色轮，均为此前 vendor 的原函数
   if (typeof bindFxPanel === 'function' && !MrStage.fxBound) {
     try {
@@ -952,11 +1043,14 @@ async function mrMount(host) {
     }
   }
   mrEnsureAudioGraph(); // 双分析器（fft2048, smoothing 0.58/0.10）→ bass/beat 驱动星河与溢光
+  __mrMark('mount:audioGraph');
   mrBindBeatHooks(); // B-1：离线节拍分析链钩子（bundle 此刻已就位，beatMapToken 等可安全引用）
   mrResize();
   mrShelfActivate(); // 3D 歌单架：喂数据 + 激活（幂等；MR 里由 10-shell 启动链负责，此处适配层接管）
+  __mrMark('mount:shelf');
   mrShelfBindPointer(); // 补 MR 未 vendor 的 hover 揭示接线（点击/滚轮/键盘由 vendored 05/06 自带）
   if (!MrStage.raf) { MrStage.prevTime = performance.now(); MrStage.raf = requestAnimationFrame(mrFrame); }
+  __mrMark('mount:syncDone');
   MrStage.mounted = true;
 }
 
@@ -1451,6 +1545,7 @@ window.LyricStage3D = {
   refreshPalette: mrRefreshPalette,
   setAudio: function (el) { MrStage.audioEl = el; window.audio = el; try { mrBindBeatHooks(); } catch (e) { /* B-1 钩子绑定失败不影响舞台 */ } },
   reveal: function () { // MR 05-playback/13:1152 同款：进入舞台时粒子渐入 + 封面装载
+    __mrMark('mount:reveal');
     if (typeof tweenParticleAlpha === 'function') tweenParticleAlpha(uniforms.uAlpha.value || 0, 1.0, 220);
     var img = document.getElementById('pCoverImg');
     if (img && img.src && typeof loadCoverFromUrl === 'function') loadCoverFromUrl(img.src, { deferHeavy: true });

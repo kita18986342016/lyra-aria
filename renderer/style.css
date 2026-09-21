@@ -507,6 +507,9 @@ html[data-theme="dark"] .song-tag.quality.lossless { color: #f2dc9a; background:
   box-shadow: 0 1px 4px rgba(94, 22, 34, .35), 0 0 7px rgba(255, 240, 168, .55);
 }
 html[data-theme="dark"] .song-tag.quality.master { color: #f8e4b0; box-shadow: 0 0 8px rgba(240, 200, 110, .35); }
+/* 确认中中性态（音质诚实 2026-09-20：resolve 确认前不显示所选档，灰底"…"） */
+.song-tag.quality.pending { color: #8a93a6; background: rgba(128, 136, 152, .12); border-color: rgba(128, 136, 152, .30); }
+html[data-theme="dark"] .song-tag.quality.pending { color: #9aa3b5; background: rgba(160, 168, 184, .14); border-color: rgba(160, 168, 184, .32); }
 /* 音源标签 = 对应平台主题色（网易云红 / 酷狗蓝 / QQ 绿） */
 .song-tag.src[data-src="netease"] { color: #d43c33; background: rgba(212, 60, 51, .10); border-color: rgba(212, 60, 51, .34); }
 html[data-theme="dark"] .song-tag.src[data-src="netease"] { color: #ff6b60; background: rgba(212, 60, 51, .16); border-color: rgba(255, 107, 96, .42); }
@@ -2177,6 +2180,9 @@ html[data-theme="dark"] #pQuality[data-q="lossless"] { color: #f2dc9a; backgroun
   background: linear-gradient(135deg, #952537, #681826) padding-box;
   box-shadow: 0 0 7px rgba(255, 240, 168, .55);
 }
+/* 确认中中性态（音质诚实 2026-09-20：resolve 确认前不显示所选档，灰底"…"） */
+#pQuality[data-q="pending"] { color: #8a93a6; background: rgba(128, 136, 152, .12); }
+html[data-theme="dark"] #pQuality[data-q="pending"] { color: #9aa3b5; background: rgba(160, 168, 184, .14); }
 
 /* ---------- 设置：强调色色点 / 背景强度 ---------- */
 /* 背景预设（#17/#18 收束版）：设置行收束成小按钮，点击弹出放大选择面板（与皮肤同款） */
