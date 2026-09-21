@@ -3692,20 +3692,23 @@ function main() {
     ipcMain.handle('leiz:resolve', async (e, source, ref, level) => {
       if (!isTrusted(e) || !['netease', 'kugou'].includes(source) || typeof ref !== 'string' || !ref) return { ok: false, reason: '参数错误' };
       const lv = leizSourceLevel(source, level);
-      let p;
-      if (source === 'netease') {
-        p = '/netease?id=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
-      } else {
-        // 酷狗此前漏传 level → 永远 128k；不传 url 时才带 hash（url 解析由上游决定音质）
-        p = /^https?:\/\//.test(ref) ? '/kugou?url=' + encodeURIComponent(ref) : '/kugou?hash=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
-      }
       return leizResolveCore(source, ref, lv);
     });
     // leiz 解析核心（leiz:resolve 与 resolve:song 统一端点共用）：含直链魔数探测
     async function leizResolveCore(source, ref, lv) {
-      const p = source === 'netease'
-        ? '/netease?id=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv)
-        : (/^https?:\/\//.test(ref) ? '/kugou?url=' + encodeURIComponent(ref) : '/kugou?hash=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv));
+      let p;
+      if (source === 'netease') {
+        p = '/netease?id=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
+      } else if (/^https?:\/\//.test(ref)) {
+        // 酷狗分享链接：漏传 level 上游按默认 128 返回 MP3（实测），故必须显式带 level
+        p = '/kugou?url=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
+      } else if (/^\d+$/.test(ref)) {
+        // 纯数字 ref 是专辑音频 id，拼进 hash= 会被上游 400 拒（实测），必须走 id=
+        p = '/kugou?id=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
+      } else {
+        // 非链接且非数字时上游只认 32 位资源 hash，作兜底
+        p = '/kugou?hash=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
+      }
       const r = await leizGet(p);
       if (!r.ok) return { ok: false, reason: humanizeFailReason(r.message || ('HTTP ' + r.status)) };
       const durl = r.data && (r.data.url || r.data.src);
