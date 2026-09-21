@@ -914,6 +914,52 @@ function main() {
       && Number(status.dwmSurfaceWindowId) > 0);
   }
 
+  // ===== W-5：WE 壁纸会话的任务栏守卫 =====
+  // 背景：WE 源窗（A = wallpaper64.exe 的 WPEOverlappedWallpaper）与 DWM 宿主（B = powershell.exe 的
+  // MineradioWeDwmSurfaceHost）都是**无 owner 的正常顶层窗口**，按 Windows 判据必然各占一个任务栏按钮；
+  // 宿主 C# 里唯一的摘除手段（ITaskbarList::DeleteTab）是一次性的，会被它 60ms 跟随定时器里的
+  // SetWindowPos(..., SWP_SHOWWINDOW) 重新加回。这里复用歌词窗那套已验证的 koffi ex-style 补丁：
+  // 只加 WS_EX_TOOLWINDOW、剥 WS_EX_APPWINDOW；不改 owner、不改 ShowInTaskbar、不动窗口样式类别
+  // （实测 P4：B 剥 APPW 后 getSources 仍命中 → WGC 捕获零影响）。
+  // 两个句柄都取自运行时状态（sourceId / dwmSurfaceWindowId），不改 desktop/ 下任何 vendor 文件。
+  let wallpaperTaskbarGuardTimer = null;
+  function wallpaperTaskbarHwnds() {
+    try {
+      const status = wallpaperEngineRuntime.getStatus();
+      if (!status || status.active !== true) return [];
+      const out = [];
+      const m = String(status.sourceId || '').match(/^window:(\d+):/);
+      const sourceHwnd = m ? Number(m[1]) : 0;
+      if (sourceHwnd > 0) out.push(sourceHwnd);
+      const surfaceHwnd = Math.max(0, Number(status.dwmSurfaceWindowId) || 0);
+      if (surfaceHwnd > 0) out.push(surfaceHwnd);
+      return out;
+    } catch (_) { return []; }
+  }
+  function reassertWallpaperTaskbarHidden() {
+    const hwnds = wallpaperTaskbarHwnds();
+    if (!hwnds.length) { stopWallpaperTaskbarGuard(); return false; } // 会话已结束 → 顺手收掉定时器，不留悬挂
+    // W-6 0a 安全校验：动手前先读窗口标题，必须以 Mineradio 开头
+    // （A = Mineradio Wallpaper <hash>、B = Mineradio WE DWM Surface）。
+    // 标题读不到或不匹配 → 跳过且不报错，绝不越权改无关窗口的样式。
+    // 校验放在守卫里，不进 patchTaskbarHiddenFromHwnd（歌词窗 hwnd 是自己的窗口，不走这条）。
+    for (const hwnd of hwnds) {
+      let title = '';
+      try { title = taskbarHider.getTitle ? taskbarHider.getTitle(hwnd) : ''; } catch (_) { title = ''; }
+      if (!/^Mineradio/.test(title)) continue;
+      patchTaskbarHiddenFromHwnd(hwnd);
+    }
+    return true;
+  }
+  function startWallpaperTaskbarGuard() {
+    reassertWallpaperTaskbarHidden();                                  // ① 会话 ready：立即打一次
+    if (wallpaperTaskbarGuardTimer) return;
+    wallpaperTaskbarGuardTimer = setInterval(reassertWallpaperTaskbarHidden, 1000); // ② 周期 1s 重申
+  }
+  function stopWallpaperTaskbarGuard() {
+    if (wallpaperTaskbarGuardTimer) { clearInterval(wallpaperTaskbarGuardTimer); wallpaperTaskbarGuardTimer = null; }
+  }
+
   function clearWallpaperEngineCaptureGrant(sessionId = '') {
     const expectedSessionId = String(sessionId || '');
     if (expectedSessionId && !wallpaperEngineCaptureGrant) return false;
@@ -1793,6 +1839,9 @@ function main() {
     try {
       if (!isTrustedWallpaperEngineIpc(event)) return { ok: false, available: false, error: 'WALLPAPER_ENGINE_UNTRUSTED_CALLER' };
       const probe = await wallpaperEngineRuntime.probe(payload && payload.force === true);
+      // W-5：渲染层轮询状态 = "会话是否就绪"的天然判定点（含启动自动恢复）；就绪则确保守卫在跑
+      if (wallpaperEngineRuntime.getStatus().active === true) startWallpaperTaskbarGuard();
+      else stopWallpaperTaskbarGuard();
       return { ...probe, ...wallpaperEngineRuntime.getStatus(), pending: wallpaperEngineRuntime.pending != null };
     } catch (error) {
       return { ok: false, available: false, error: error.message || 'WALLPAPER_ENGINE_RUNTIME_PROBE_FAILED' };
@@ -1965,6 +2014,7 @@ function main() {
         || !current || current.active !== true || current.sessionId !== sessionId) {
         return { ok: false, error: 'WALLPAPER_ENGINE_START_SUPERSEDED' };
       }
+      if (prepared && prepared.ok === true) reassertWallpaperTaskbarHidden(); // ③ 玻璃采样就绪后再重申
       return {
         ok: !!(prepared && prepared.ok === true),
         capturePrepared: !!(prepared && prepared.ok === true),
@@ -2068,6 +2118,7 @@ function main() {
       }
       const result = await wallpaperEngineRuntime.stop(stopAll ? '' : sessionId);
       const current = wallpaperEngineRuntime.getStatus();
+      if (!current.active) stopWallpaperTaskbarGuard(); // W-5：会话结束 → 收守卫（清 interval）
       if (!stopAll && (!current.active || (wallpaperEngineCaptureGrant && wallpaperEngineCaptureGrant.sessionId === sessionId))) {
         clearWallpaperEngineCaptureGrant(sessionId);
       }
@@ -2328,17 +2379,29 @@ function main() {
     const getEx = user32T.func('GetWindowLongPtrW', 'intptr_t', ['intptr_t', 'int']);
     const setEx = user32T.func('SetWindowLongPtrW', 'intptr_t', ['intptr_t', 'int', 'intptr_t']);
     const getAsyncKey = user32T.func('GetAsyncKeyState', 'int16', ['int']);
-    taskbarHider = { getEx, setEx, getAsyncKey };
+    let getTitle = null;
+    try { getTitle = user32T.func('GetWindowTextA', 'int', ['intptr_t', 'char *', 'int']); } catch { getTitle = null; }
+    taskbarHider = { getEx, setEx, getAsyncKey, getTitle };
   } catch { taskbarHider = null; }
+  // W-5：任务栏隐藏补丁（从歌词窗那段抽出的通用实现；歌词窗路径行为与原实现逐字等价）。
+  // 只加 WS_EX_TOOLWINDOW、剥 WS_EX_APPWINDOW —— 不改 owner、不动 ShowInTaskbar。
+  function patchTaskbarHiddenFromHwnd(hwnd) {
+    if (!taskbarHider || hwnd === null || hwnd === undefined) return false;
+    try {
+      const h = typeof hwnd === 'bigint' ? hwnd : BigInt(hwnd);
+      const GWL_EXSTYLE = -20, TOOL = 0x80n, APP = 0x40000n;
+      const ex = BigInt(taskbarHider.getEx(h, GWL_EXSTYLE));
+      const want = BigInt.asIntN(64, (ex | TOOL) & ~APP);
+      if (want !== ex) taskbarHider.setEx(h, GWL_EXSTYLE, want);
+      return true;
+    } catch { return false; }
+  }
   function hideLyricFromTaskbar() {
     if (!taskbarHider || !lyricWin || lyricWin.isDestroyed()) return;
     try {
       const buf = lyricWin.getNativeWindowHandle();
       const hwnd = buf.length >= 8 ? buf.readBigUInt64LE(0) : BigInt(buf.readInt32LE(0));
-      const GWL_EXSTYLE = -20, TOOL = 0x80n, APP = 0x40000n;
-      const ex = BigInt(taskbarHider.getEx(hwnd, GWL_EXSTYLE));
-      const want = BigInt.asIntN(64, (ex | TOOL) & ~APP);
-      if (want !== ex) taskbarHider.setEx(hwnd, GWL_EXSTYLE, want);
+      patchTaskbarHiddenFromHwnd(hwnd);
     } catch { /* 忽略 */ }
   }
 
