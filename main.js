@@ -3694,8 +3694,12 @@ function main() {
       const lv = leizSourceLevel(source, level);
       return leizResolveCore(source, ref, lv);
     });
-    // leiz 解析核心（leiz:resolve 与 resolve:song 统一端点共用）：含直链魔数探测
-    async function leizResolveCore(source, ref, lv) {
+    // leiz 解析核心（leiz:resolve 与 resolve:song 统一端点共用）：含直链魔数探测。
+    // opts.probe===true = 「探测模式」（渲染层列表音质探测专用，结果读完即丢）：
+    // 跳过直链魔数校验、且调用方不再登记本地流——这两步对"只为读一次码率"是纯浪费。
+    // 播放链 / 下载链一律不传 opts → verifyDirectUrl 与 makeStreamUrl 的行为与改动前完全一致。
+    async function leizResolveCore(source, ref, lv, opts) {
+      const isProbe = !!(opts && opts.probe === true);
       let p;
       if (source === 'netease') {
         p = '/netease?id=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
@@ -3712,7 +3716,8 @@ function main() {
       const r = await leizGet(p);
       if (!r.ok) return { ok: false, reason: humanizeFailReason(r.message || ('HTTP ' + r.status)) };
       const durl = r.data && (r.data.url || r.data.src);
-      if (durl && !(await verifyDirectUrl(durl))) return { ok: false, reason: '音源地址异常，请尝试换源或稍后再试' };
+      // 探测模式跳过：这次解析的对象不会进播放器，白花一次 8KB 抓取（每首探测省 1 次网络往返）
+      if (!isProbe && durl && !(await verifyDirectUrl(durl))) return { ok: false, reason: '音源地址异常，请尝试换源或稍后再试' };
       return { ok: true, data: r.data };
     }
     // 存量 qq/波点歌曲严格换源（酷狗→网易云，歌名+歌手全等；dlResolveUrl 与 resolve:song 共用）
@@ -3732,7 +3737,8 @@ function main() {
     // v1.4.2 解析收拢：播放直链统一入口——前端不再区分音源分支。
     // qq/bodian 存量歌 → 主进程严格换源；bilibili → 自建解析；netease/kugou → leiz + 魔数探测。
     // 存量歌换源命中时返回 data.switchedSource/switchedRef 供前端改写歌曲对象。
-    ipcMain.handle('resolve:song', async (e, song, quality) => {
+    // opts.probe===true：渲染层列表音质探测专用（跳过魔数校验、不登记本地流；其余分支不受影响）
+    ipcMain.handle('resolve:song', async (e, song, quality, opts) => {
       if (!isTrusted(e) || !song || typeof song !== 'object') return { ok: false, reason: '参数错误' };
       const source = String(song.source || '');
       try {
@@ -3758,8 +3764,9 @@ function main() {
           // 2026-09-20 修复：quality 是渲染层归一档名（master/lossless…），必须先转源特有值
           // （酷狗 master→hires、网易 master→jymaster）再拼上游 URL——原样透传会被上游静默回退降档
           const lv = leizSourceLevel(source, String(quality || song.level || 'lossless'));
-          const r = await leizResolveCore(source, String(song.ref || ''), lv);
-          if (r.ok && r.data) {
+          const r = await leizResolveCore(source, String(song.ref || ''), lv, opts);
+          // 探测模式的返回值马上被丢弃 → 不能登记本地流（12 首一轮会白扔 12 个流 token）
+          if (r.ok && r.data && !(opts && opts.probe === true)) {
             const u = r.data.url || r.data.src;
             if (u) r.data.streamUrl = makeStreamUrl({ url: u, reResolve: { kind: 'leiz', source, ref: String(song.ref || ''), level: lv } });
           }

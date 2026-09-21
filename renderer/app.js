@@ -436,7 +436,8 @@
       for (const s of targets) {
         if (s.id === state.playingId) continue;
         let r = null;
-        try { r = await window.api.resolveSong({ source: s.source, ref: s.ref, title: s.title, artist: s.artist }, level); } catch { r = null; }
+        // 探测模式：主进程跳过魔数校验与本地流登记（只为读一次码率）
+        try { r = await window.api.resolveSong({ source: s.source, ref: s.ref, title: s.title, artist: s.artist }, level, { probe: true }); } catch { r = null; }
         const v = (r && r.ok && r.data) ? deriveRealLevel(r.data, null) : null;
         if (v) {
           s.probedLevel = v;
