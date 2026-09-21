@@ -17,7 +17,10 @@
     get PROBE_CACHE_KEY() { return PROBE_CACHE_KEY; },
     deriveRealLevel, scheduleQualityProbe, runQualityProbe, probeCacheGet, probeCacheSet, updateRowQuality, renderList,
     // 探测调参（回归脚本据此断言，避免测试与实现各写一套数字）
-    get probeConst() { return { cacheKey: PROBE_CACHE_KEY, ttlMs: PROBE_TTL_MS, maxRows: PROBE_MAX_ROWS, debounceMs: PROBE_DEBOUNCE_MS, gapMs: PROBE_GAP_MS, failLimit: PROBE_FAIL_LIMIT }; },
+    get probeConst() { return { cacheKey: PROBE_CACHE_KEY, ttlMs: PROBE_TTL_MS, maxRows: PROBE_MAX_ROWS, debounceMs: PROBE_DEBOUNCE_MS, gapMs: PROBE_GAP_MS, failLimit: PROBE_FAIL_LIMIT, concurrency: PROBE_CONCURRENCY, throttleConcurrency: PROBE_THROTTLE_CONCURRENCY, throttleGapMs: PROBE_THROTTLE_GAP_MS }; },
+    applyInterleave, mergeSearchResults, // W-3 丙：交错验收直调
+    get probeResolve() { return probeResolve; },
+    set probeResolve(fn) { if (typeof fn === 'function') probeResolve = fn; }, // 429 注入桩 / 计时接缝
     get coverCache() { return coverCache; },
     startSong, playList, // 自动化验证直调入口
     updatePlayerMeta, // 音质标签诚实化（2026-09-20）验收直调：构造 pending/playedLevel 态断言底栏中性/实际档显示
@@ -364,9 +367,18 @@
   const PROBE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
   const PROBE_MAX_ROWS = 12;      // 每轮最多探当前列表前 12 首
   const PROBE_DEBOUNCE_MS = 300;  // 列表渲染后延迟
-  const PROBE_GAP_MS = 150;       // 串行间隔（限速，避免给上游打猛）
-  const PROBE_FAIL_LIMIT = 3;     // 连续失败 3 次即停整个队列
+  // W-3 甲：并发池参数。GAP 控的是「相邻请求发起」的最小间隔（令牌式，不是完成间隔）——
+  // 慢请求只拖自己那一路，不会把整条流水拖成串行。下限 50ms，不许更低；
+  // 唯一允许的调参口＝实测超阈值时 C→8 且 G→50（改完把实测值报回）。
+  const PROBE_CONCURRENCY = 8;            // 实测调档（W-3 §一 允许的唯一调参口）：上限 6 时 12 首 2762ms 超阈值 → C=8/G=50
+  const PROBE_GAP_MS = 50;                // 实测调档：下限 50ms（不许更低）
+  const PROBE_THROTTLE_CONCURRENCY = 1;   // 撞 429 后本轮降档：并发 1（便于断言/日志）
+  const PROBE_THROTTLE_GAP_MS = 800;      // 撞 429 后本轮降档：发起间隔 800ms
+  const PROBE_FAIL_LIMIT = 3;     // 连续失败 3 次即停整个队列（429 不计入）
   const probeSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // 探测请求出口（接缝）：window.api 由 contextBridge 冻结，页面无法替换它，
+  // 故留一个显式可覆盖的出口，供 429 注入桩 / 逐请求计时用（生产路径默认等价于 window.api.resolveSong，行为不变）。
+  let probeResolve = (song, level) => window.api.resolveSong(song, level, { probe: true });
   let probeCache = (() => {
     try { const o = JSON.parse(localStorage.getItem(PROBE_CACHE_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; } catch { return {}; }
   })();
@@ -383,7 +395,8 @@
     try { localStorage.setItem(PROBE_CACHE_KEY, JSON.stringify(probeCache)); } catch { /* 忽略 */ }
   }
   // 探测运行态（__mp 调试钩子可读，供 CDP 断言）
-  const probeStats = { rounds: 0, queued: 0, done: 0, failed: 0, cacheHit: 0, stopped: '', level: '' };
+  const probeStats = { rounds: 0, queued: 0, done: 0, failed: 0, cacheHit: 0, stopped: '', level: '',
+    roundCostMs: 0, bySrc: { netease: 0, kugou: 0 }, throttled: 0 };  // W-3 甲：新增字段（CDP 断言用，不得删）
   let probeTimer = null;
   let probeRunning = false;
   let probePending = false; // 本轮跑着时又来了新列表 → 跑完补一轮（否则换列表会被静默跳过）
@@ -412,6 +425,9 @@
     probeStats.rounds += 1;
     probeStats.level = level;
     probeStats.stopped = '';
+    probeStats.roundCostMs = 0;
+    probeStats.throttled = 0;
+    probeStats.bySrc = { netease: 0, kugou: 0 };
     let failStreak = 0;
     try {
       // ① 缓存命中直接回填（不占队列名额、不打上游）
@@ -432,26 +448,69 @@
         targets.push(s);
       }
       probeStats.queued = targets.length;
-      // ③ 串行 + 限速
-      for (const s of targets) {
-        if (s.id === state.playingId) continue;
-        let r = null;
-        // 探测模式：主进程跳过魔数校验与本地流登记（只为读一次码率）
-        try { r = await window.api.resolveSong({ source: s.source, ref: s.ref, title: s.title, artist: s.artist }, level, { probe: true }); } catch { r = null; }
-        const v = (r && r.ok && r.data) ? deriveRealLevel(r.data, null) : null;
-        if (v) {
-          s.probedLevel = v;
-          probeCacheSet(s, level, v);
-          probeStats.done += 1;
-          failStreak = 0;
-          updateRowQuality(s);
-        } else {
-          probeStats.failed += 1;
-          failStreak += 1;
-          if (failStreak >= PROBE_FAIL_LIMIT) { probeStats.stopped = 'consecutive-fail-' + PROBE_FAIL_LIMIT; break; }
+      // ③ 并发池 + 令牌式限速（W-3 甲）。拉取式：起 C 个 worker，各自从 targets 取下一首，队列空即退。
+      // 令牌保证「发起」间隔 ≥ curGap：每个任务先领时隙再 await，与上一请求的快慢无关。
+      const roundT0 = Date.now();
+      let curConcurrency = PROBE_CONCURRENCY;
+      let curGap = PROBE_GAP_MS;
+      let nextSlotAt = 0;      // 下一个可发起时隙（相对 roundT0，ms）
+      let cursor = 0;
+      let stop = false;        // 连续失败达阈值 → 全体停
+      let degraded = false;    // 撞 429 → 本轮降档为单路慢速（剩余目标不取消）
+      const pullNext = () => {
+        while (!stop && cursor < targets.length) {
+          const s = targets[cursor++];
+          if (s.id === state.playingId) continue; // 正在播放的由播放链自己确认，不与播放解析抢上游
+          return s;
         }
-        await probeSleep(PROBE_GAP_MS);
-      }
+        return null;
+      };
+      const awaitSlot = async () => {
+        const mySlot = nextSlotAt;
+        nextSlotAt += curGap;                     // 先发票：保证相邻发起间隔 ≥ curGap
+        const wait = mySlot - (Date.now() - roundT0);
+        if (wait > 0) await probeSleep(wait);
+      };
+      const probeWorker = async (me) => {
+        while (!stop) {
+          if (degraded && !me.survivor) return;    // 429 后其余 worker 退场 → 退化为单路串行
+          const s = pullNext();
+          if (!s) return;
+          await awaitSlot();
+          if (stop) return;
+          probeStats.bySrc[s.source] = (probeStats.bySrc[s.source] || 0) + 1;
+          let r = null;
+          // 探测模式：主进程跳过魔数校验与本地流登记（只为读一次码率）
+          try { r = await probeResolve({ source: s.source, ref: s.ref, title: s.title, artist: s.artist }, level); } catch { r = null; }
+          // 429 判定：优先主进程透出的 status；缺失时退回 reason 正则。
+          // 429 不计入 failStreak（那是为"这首歌解析不了"设计的）、不写缓存、不算 done/failed。
+          const is429 = (r && r.status === 429) || /429|too many requests/i.test((r && r.reason) || '');
+          if (is429) {
+            me.survivor = true;
+            degraded = true;
+            curConcurrency = PROBE_THROTTLE_CONCURRENCY;
+            curGap = PROBE_THROTTLE_GAP_MS;
+            probeStats.throttled += 1;
+            console.warn('[probe] 429 throttled');
+            continue;                              // 本轮剩余目标继续跑完（交给这一路慢速）
+          }
+          const v = (r && r.ok && r.data) ? deriveRealLevel(r.data, null) : null;
+          if (v) {
+            s.probedLevel = v;
+            probeCacheSet(s, level, v);
+            probeStats.done += 1;
+            failStreak = 0;
+            updateRowQuality(s);
+          } else {
+            probeStats.failed += 1;
+            failStreak += 1;
+            if (failStreak >= PROBE_FAIL_LIMIT) { probeStats.stopped = 'consecutive-fail-' + PROBE_FAIL_LIMIT; stop = true; }
+          }
+        }
+      };
+      const workerCount = Math.max(1, Math.min(curConcurrency, targets.length));
+      await Promise.all(Array.from({ length: workerCount }, () => probeWorker({})));
+      probeStats.roundCostMs = Date.now() - roundT0;
     } catch { /* 探测失败静默：不影响播放与列表 */ }
     probeRunning = false;
     if (probePending) { probePending = false; scheduleQualityProbe(); }
@@ -2607,6 +2666,35 @@
     };
   }
   // 把一源结果并入 searchResults（按 id 去重），返回新歌数
+  // W-3 丙：搜索结果按「启用源轮转」交错（n1,k1,n2,k2,…）。
+  // 必须原地排序：state.list 与 state.searchResults 是同一个数组（onlineSearch 里 state.list = state.searchResults），
+  // 一旦重新赋值就会让列表脱钩、停在旧序——静默错误，回归很可能抓不到。
+  // 轮转序列＝enabledSources()，不特判源名（以后加音源自动纳入）；组内保持上游返回顺序。
+  function applyInterleave() {
+    const arr = state.searchResults;
+    if (!arr || arr.length < 2) return;
+    const order = enabledSources();
+    const srcRank = new Map();
+    order.forEach((s, i) => srcRank.set(s, i));
+    const groups = new Map();
+    arr.forEach((s, i) => {
+      const key = String((s && s.source) || '');
+      if (!srcRank.has(key)) srcRank.set(key, order.length + 1); // 未注册源排最后（防御，正常不会出现）
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ s, i });
+    });
+    const keys = Array.from(groups.keys()).sort((a, b) => srcRank.get(a) - srcRank.get(b));
+    const keyed = [];
+    for (const k of keys) {
+      const g = groups.get(k);
+      for (let ri = 0; ri < g.length; ri++) keyed.push({ ri, si: srcRank.get(k), oi: g[ri].i, s: g[ri].s });
+    }
+    // 交错键：(组内位序 ri, 源序 si) 升序
+    keyed.sort((a, b) => (a.ri - b.ri) || (a.si - b.si) || (a.oi - b.oi));
+    const rank = new Map();
+    keyed.forEach((x, i) => rank.set(x.s, i));
+    arr.sort((a, b) => (rank.get(a) === undefined ? 1e9 : rank.get(a)) - (rank.get(b) === undefined ? 1e9 : rank.get(b)));
+  }
   function mergeSearchResults(songs) {
     const known = new Set(state.searchResults.map((s) => s.id));
     let added = 0;
@@ -2616,6 +2704,8 @@
       state.searchResults.push(s);
       added++;
     }
+    // 每次 merge 后立即交错（不等 allDone）——否则"先到先显示"阶段是整块、全到齐时整表跳变
+    applyInterleave();
     return added;
   }
   // 搜索单源：成功→并入列表并"先到先显示"；失败→记 srcError

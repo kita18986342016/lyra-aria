@@ -3714,7 +3714,9 @@ function main() {
         p = '/kugou?hash=' + encodeURIComponent(ref) + '&level=' + encodeURIComponent(lv);
       }
       const r = await leizGet(p);
-      if (!r.ok) return { ok: false, reason: humanizeFailReason(r.message || ('HTTP ' + r.status)) };
+      // status 原样透出（W-3 429 判定用）：resolve:song / leiz:resolve 都是原样返回 r → 自动带出；
+      // 既有消费方忽略未知字段 → 行为零变化。
+      if (!r.ok) return { ok: false, status: r.status, reason: humanizeFailReason(r.message || ('HTTP ' + r.status)) };
       const durl = r.data && (r.data.url || r.data.src);
       // 探测模式跳过：这次解析的对象不会进播放器，白花一次 8KB 抓取（每首探测省 1 次网络往返）
       if (!isProbe && durl && !(await verifyDirectUrl(durl))) return { ok: false, reason: '音源地址异常，请尝试换源或稍后再试' };

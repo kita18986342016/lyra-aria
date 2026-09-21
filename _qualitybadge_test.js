@@ -140,8 +140,10 @@ async function main() {
   // ---------- 4~5) 调参 + 缓存 ----------
   const v4 = await ev(`JSON.stringify(__mp.probeConst)`);
   const j4 = JSON.parse(v4 || '{}');
-  check('4 探测调参：键/TTL 30天/上限12/延迟300/间隔150/失败3',
-    j4.cacheKey === 'mp_probed_q_v1' && j4.ttlMs === 30 * 24 * 3600 * 1000 && j4.maxRows === 12 && j4.debounceMs === 300 && j4.gapMs === 150 && j4.failLimit === 3, v4);
+  check('4 探测调参：键/TTL 30天/上限12/延迟300/间隔50/并发8/失败3/降档1@800',
+    j4.cacheKey === 'mp_probed_q_v1' && j4.ttlMs === 30 * 24 * 3600 * 1000 && j4.maxRows === 12 && j4.debounceMs === 300
+    && j4.gapMs === 50 && j4.concurrency === 8 && j4.failLimit === 3
+    && j4.throttleConcurrency === 1 && j4.throttleGapMs === 800, v4);
 
   const v5 = await ev(`(function(){
     const s = { source:'netease', ref:'__w1_cache__' };
@@ -165,22 +167,35 @@ async function main() {
     const st = __mp.state, s = __mp.probeStats;
     const mk = () => [0, 1].map((i) => ({ id:'online:netease:__w1_q'+i+'__', online:true, source:'netease', ref:'__w1_q'+i+'__', title:'W1Q'+i, artist:'x', level:'master' }));
     st.view = 'online'; st.onlineSrcFilter = 'all'; st.plFilter = ''; st.gridMode = 0;
-    for (let i = 0; i < 200 && __mp.probing; i++) await new Promise((r) => setTimeout(r, 500));
+    st.list = mk();
+    // 等"静默"：不只会话在跑，还可能有一轮被排到 300ms 后（probePending）——必须等到 rounds 在
+    // 一个完整观察窗内不再变化，否则会误读别轮（应用自己的列表轮次）的 queued。
+    await new Promise((r) => setTimeout(r, 1200));
+    let prevRounds = -1;
+    for (let i = 0; i < 120; i++) {
+      await new Promise((r) => setTimeout(r, 700));
+      if (!__mp.probing && s.rounds === prevRounds) break;
+      prevRounds = s.rounds;
+    }
     st.list = mk();
     s.rounds = 0; s.queued = 0; s.done = 0; s.failed = 0; s.cacheHit = 0; s.stopped = '';
-    const t0 = performance.now();
+    // (a) 显式跑一轮读 queued：确定性（此时已静默，不会被别轮覆盖）
+    await __mp.runQualityProbe();
+    const q = s.queued;
+    // (b) debounce：重置 rounds 后调度，200ms 内不起轮、~300ms 后起 1 轮
+    s.rounds = 0;
     __mp.scheduleQualityProbe();
     const before = s.rounds;
     await new Promise((r) => setTimeout(r, 200));
     const mid = s.rounds;
     await new Promise((r) => setTimeout(r, 900));
-    return JSON.stringify({ before: before, mid: mid, after: s.rounds, queued: s.queued,
-      listLen: st.list.length, listOnline: st.list.filter((x) => x && x.online).length, ms: Math.round(performance.now() - t0) });
+    return JSON.stringify({ q: q, before: before, mid: mid, after: s.rounds,
+      listLen: st.list.length, listOnline: st.list.filter((x) => x && x.online).length });
   })()`);
   const j6 = JSON.parse(v6 || '{}');
   const idle = await waitIdle(90000);
-  check('6 延迟调度：200ms 内不起轮、300ms 后自动起 1 轮且能回归空闲',
-    j6.before === 0 && j6.mid === 0 && j6.after === 1 && j6.queued === 2 && idle === true, v6 + ' idle=' + idle);
+  check('6 延迟调度：200ms 内不起轮、300ms 后自动起 1 轮且队列可回归空闲',
+    j6.q === 2 && j6.before === 0 && j6.mid === 0 && j6.after === 1 && idle === true, v6 + ' idle=' + idle);
 
   // ---------- 7~10) 队列机制（20 首伪造 ref：上游必失败） ----------
   await waitIdle(90000);
@@ -190,12 +205,31 @@ async function main() {
     await __mp.runQualityProbe();
     const ms = Math.round(performance.now() - t0);
     const s = __mp.probeStats;
-    return JSON.stringify({ queued: s.queued, failed: s.failed, done: s.done, stopped: s.stopped, ms: ms, listed: __mp.state.list.length });
+    return JSON.stringify({ queued: s.queued, failed: s.failed, done: s.done, stopped: s.stopped, ms: ms, listed: __mp.state.list.length,
+      roundCostMs: s.roundCostMs, bySrcKeys: Object.keys(s.bySrc || {}).sort().join(','), bySrc: s.bySrc, throttled: s.throttled });
   })()`);
   const j7 = JSON.parse(v7 || '{}');
-  check('7 队列上限 ≤12 首', j7.listed === 20 && j7.queued === 12, v7);
-  check('8 连续失败 3 次即停整队', j7.failed === 3 && j7.done === 0 && j7.stopped === 'consecutive-fail-3', 'failed=' + j7.failed + ' done=' + j7.done + ' stopped=' + j7.stopped);
-  check('9 限速：3 次尝试耗时 ≥2×150ms', j7.ms >= 280, 'elapsed=' + j7.ms + 'ms（3 次尝试只允许 2 个间隔）');
+  check('7 队列上限 ≤12 首 + 甲新字段就位（roundCostMs/bySrc/throttled）',
+    j7.listed === 20 && j7.queued === 12 && typeof j7.roundCostMs === 'number' && j7.roundCostMs >= 0
+    && j7.bySrcKeys === 'kugou,netease' && j7.throttled === 0, v7);
+  check('8 连续失败 3 次即停整队（并发池下 failed ≥ 3）', j7.failed >= 3 && j7.done === 0 && j7.stopped === 'consecutive-fail-3',
+    'failed=' + j7.failed + ' done=' + j7.done + ' stopped=' + j7.stopped + '（6 路在飞 → 收尾时可能略多于 3）');
+
+  // 9) 丙：搜索结果交错（原地排序 + 引用不脱钩）
+  const v9 = await ev(`(function(){
+    const st = __mp.state;
+    const mkS = (src, k) => ({ id: 'online:' + src + ':w3i' + k, online: true, source: src, ref: 'w3i' + k, title: src + k, artist: 'x', level: 'lossless' });
+    st.view = 'online';
+    st.searchResults = [];
+    st.list = st.searchResults;                     // 与 onlineSearch 同构：list 与 searchResults 同一引用
+    __mp.mergeSearchResults([1,2,3,4,5].map((k) => mkS('netease', k)));   // 先到：网易 5 首
+    __mp.mergeSearchResults([1,2,3,4].map((k) => mkS('kugou', k)));       // 后到：酷狗 4 首
+    const seq = st.searchResults.map((s) => s.source.charAt(0) + s.ref.replace('w3i', ''));
+    return JSON.stringify({ seq: seq, sameRef: st.searchResults === st.list, len: st.searchResults.length });
+  })()`);
+  const j9 = JSON.parse(v9 || '{}');
+  check('9 丙：搜索结果原地交错（n1,k1,n2,k2…）且 list 引用不脱钩',
+    j9.seq.join(',') === 'n1,k1,n2,k2,n3,k3,n4,k4,n5' && j9.sameRef === true && j9.len === 9, v9);
 
   await waitIdle(90000);
   await SEED(5);   // 用 5 首（低于上限 12）才能看出"缓存命中不占名额"：期望 queued=4
