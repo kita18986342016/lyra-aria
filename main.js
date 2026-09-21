@@ -3627,11 +3627,19 @@ function main() {
     const LEIZ_BASE = 'https://api.bileizhen.top/api';
     const LEIZ_KEY = 'lz_b4dd85599fe9c71b3e7ae241dae2cb2ac767b5954aa18b14';
     const https = require('https');
+    // W-6 S1：连接复用。裸 https.get 每请求新建 TCP+TLS，甲（C=8/G=50）把并发放开后 8 次握手互相竞争。
+    // keepAlive 复用连接；maxSockets 必须 ≥ 探测并发 C=8（12 给搜索/解析留余量）。
+    const leizAgent = new https.Agent({
+      keepAlive: true,
+      maxSockets: 12,
+      keepAliveMsecs: 30000,
+      timeout: 30000,
+    });
     function leizGet(pathWithQuery) {
       return new Promise((resolve) => {
         const sep = pathWithQuery.includes('?') ? '&' : '?';
         const url = LEIZ_BASE + pathWithQuery + sep + 'key=' + encodeURIComponent(LEIZ_KEY);
-        const req = https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0 MusicPlayer/1.2.9' } }, (res) => {
+        const req = https.get(url, { agent: leizAgent, headers: { 'User-Agent': 'Mozilla/5.0 MusicPlayer/1.2.9' } }, (res) => {
           const chunks = [];
           res.on('data', (c) => chunks.push(c));
           res.on('end', () => {
