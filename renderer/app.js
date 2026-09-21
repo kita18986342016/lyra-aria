@@ -10,6 +10,14 @@
     get lastLyricIdx() { return lastLyricIdx; },
     get rafId() { return rafId; },
     get qualityForSong() { return qualityForSong; },
+    // W-1 音质探测（列表徽标按实际音质）：验收直调用
+    get probeStats() { return probeStats; },
+    get probing() { return probeRunning; },
+    get probeCache() { return probeCache; },
+    get PROBE_CACHE_KEY() { return PROBE_CACHE_KEY; },
+    deriveRealLevel, scheduleQualityProbe, runQualityProbe, probeCacheGet, probeCacheSet, updateRowQuality, renderList,
+    // 探测调参（回归脚本据此断言，避免测试与实现各写一套数字）
+    get probeConst() { return { cacheKey: PROBE_CACHE_KEY, ttlMs: PROBE_TTL_MS, maxRows: PROBE_MAX_ROWS, debounceMs: PROBE_DEBOUNCE_MS, gapMs: PROBE_GAP_MS, failLimit: PROBE_FAIL_LIMIT }; },
     get coverCache() { return coverCache; },
     startSong, playList, // 自动化验证直调入口
     updatePlayerMeta, // 音质标签诚实化（2026-09-20）验收直调：构造 pending/playedLevel 态断言底栏中性/实际档显示
@@ -331,6 +339,121 @@
     if (br >= 900000) return 'lossless';
     if (br >= 320000) return 'high';
     return 'standard';
+  }
+  // ---------- 在线歌实际音质探测（2026-09-21 W-1：列表音质徽标按实际音质显示）----------
+  // 上游搜索接口不返回任何音质字段（/netease/search 只有 id/name/artists/album/picUrl；
+  // /kugou/search 多 duration/hash，仍无 size/bitrate/level），实际音质只能靠解析播放地址拿到。
+  // 解析响应 → 归一档位（bitrate 单位是 bps；bitrate=0 时用 size×8/duration 反推实测码率）；
+  // 归一顺序：①实测码率≥2Mbps 或臻品级 level 名（酷狗母带返回 level=high，与高品同名，只能靠码率区分）
+  // ②无损容器（flac/ape/wav/alac——酷狗 FLAC 名义 level=high，容器才是真相）或 level 名归一 ③兜底码率估算。
+  // 播放确认路径（startSong 内 _playResolved）与探测队列共用本函数，保证列表徽标与底栏标签口径一致。
+  function deriveRealLevel(data, ebrBox) {
+    const d = data || {};
+    const br = Number(d.bitrate) || 0;
+    const size = Number(d.size) || 0, dur = Number(d.duration) || 0;
+    const ebr = br > 0 ? br : (size > 0 && dur > 0 ? Math.round(size * 8 / dur) : 0);
+    if (ebrBox) ebrBox.ebr = ebr;
+    const fmt = String(d.format || d.type || '').toUpperCase();
+    if (ebr >= 2000000 || d.level === 'jymaster' || d.level === 'jyeffect' || d.level === 'hires') return 'master';
+    if (LOSSLESS_CONTAINERS.has(fmt) || normOnlineLevel(d.level) === 'lossless') return 'lossless';
+    return normOnlineLevel(d.level)
+      || (ebr >= 1000000 ? 'lossless' : ebr >= 300000 ? 'high' : ebr > 0 ? 'standard' : null);
+  }
+  // 探测结果持久缓存：键含 source:ref:请求档位（同一首歌不同请求档的实际返回不同，档位变了必须重探），30 天有效
+  const PROBE_CACHE_KEY = 'mp_probed_q_v1';
+  const PROBE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  const PROBE_MAX_ROWS = 12;      // 每轮最多探当前列表前 12 首
+  const PROBE_DEBOUNCE_MS = 300;  // 列表渲染后延迟
+  const PROBE_GAP_MS = 150;       // 串行间隔（限速，避免给上游打猛）
+  const PROBE_FAIL_LIMIT = 3;     // 连续失败 3 次即停整个队列
+  const probeSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let probeCache = (() => {
+    try { const o = JSON.parse(localStorage.getItem(PROBE_CACHE_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; } catch { return {}; }
+  })();
+  const probeKey = (song, level) => (song.source || '') + ':' + (song.ref || '') + ':' + level;
+  function probeCacheGet(song, level) {
+    const k = probeKey(song, level);
+    const e = probeCache[k];
+    if (!e || !e.v || !e.t) return null;
+    if (Date.now() - e.t > PROBE_TTL_MS) { delete probeCache[k]; return null; }
+    return e.v;
+  }
+  function probeCacheSet(song, level, v) {
+    probeCache[probeKey(song, level)] = { v, t: Date.now() };
+    try { localStorage.setItem(PROBE_CACHE_KEY, JSON.stringify(probeCache)); } catch { /* 忽略 */ }
+  }
+  // 探测运行态（__mp 调试钩子可读，供 CDP 断言）
+  const probeStats = { rounds: 0, queued: 0, done: 0, failed: 0, cacheHit: 0, stopped: '', level: '' };
+  let probeTimer = null;
+  let probeRunning = false;
+  let probePending = false; // 本轮跑着时又来了新列表 → 跑完补一轮（否则换列表会被静默跳过）
+  // 探测结果落定 → 只重绘受影响行的音质槽，绝不整表重排（会丢滚动位置）
+  function updateRowQuality(song) {
+    const q = song.playedLevel || song.probedLevel || null;
+    document.querySelectorAll('#songBody tr[data-id="' + CSS.escape(song.id) + '"]').forEach((tr) => {
+      const slot = tr.querySelector('.tag-slot.t3');
+      if (!slot) return;
+      slot.innerHTML = '';
+      if (q) slot.appendChild(el('span', 'song-tag quality ' + q, QUAL_LABELS[q] || q));
+    });
+  }
+  function scheduleQualityProbe() {
+    if (probeTimer) clearTimeout(probeTimer);
+    probeTimer = setTimeout(() => { probeTimer = null; runQualityProbe(); }, PROBE_DEBOUNCE_MS);
+  }
+  // 串行探测。只处理 netease/kugou：bilibili 解析要现场合成视频文件、qq/bodian 要走换源检索，
+  // 代价与副作用都远超"读一个码率"，一律不探（这两类照旧只在播放确认后由 playedLevel 出徽标）。
+  // 失败静默：不弹提示、不阻塞 UI、失败不写缓存。
+  async function runQualityProbe() {
+    if (probeRunning) { probePending = true; return; } // 单队列串行：不叠轮，但记下待补（探测单次最坏 20s 上游超时+8s 魔数探测）
+    probeRunning = true;
+    probePending = false;
+    const level = store.get('mp_online_quality', 'lossless');
+    probeStats.rounds += 1;
+    probeStats.level = level;
+    probeStats.stopped = '';
+    let failStreak = 0;
+    try {
+      // ① 缓存命中直接回填（不占队列名额、不打上游）
+      (state.list || []).forEach((s) => {
+        if (!s || !s.online || !s.ref || s.probedLevel) return;
+        const v = probeCacheGet(s, level);
+        if (v) { s.probedLevel = v; probeStats.cacheHit += 1; updateRowQuality(s); }
+      });
+      // ② 挑目标：当前列表前 12 首在线歌，跳过已确认结果、正在播放、非 leiz 源的
+      const targets = [];
+      for (const s of (state.list || [])) {
+        if (targets.length >= PROBE_MAX_ROWS) break;
+        if (!s || !s.online || !s.ref) continue;
+        if (s.source !== 'netease' && s.source !== 'kugou') continue;
+        if (s.playedLevel) { s.probedLevel = s.playedLevel; continue; } // 播放链已确认 → 直接沿用
+        if (s.probedLevel) continue;
+        if (s.id === state.playingId) continue; // 正在播放的由播放链自己确认，不与播放解析抢上游
+        targets.push(s);
+      }
+      probeStats.queued = targets.length;
+      // ③ 串行 + 限速
+      for (const s of targets) {
+        if (s.id === state.playingId) continue;
+        let r = null;
+        try { r = await window.api.resolveSong({ source: s.source, ref: s.ref, title: s.title, artist: s.artist }, level); } catch { r = null; }
+        const v = (r && r.ok && r.data) ? deriveRealLevel(r.data, null) : null;
+        if (v) {
+          s.probedLevel = v;
+          probeCacheSet(s, level, v);
+          probeStats.done += 1;
+          failStreak = 0;
+          updateRowQuality(s);
+        } else {
+          probeStats.failed += 1;
+          failStreak += 1;
+          if (failStreak >= PROBE_FAIL_LIMIT) { probeStats.stopped = 'consecutive-fail-' + PROBE_FAIL_LIMIT; break; }
+        }
+        await probeSleep(PROBE_GAP_MS);
+      }
+    } catch { /* 探测失败静默：不影响播放与列表 */ }
+    probeRunning = false;
+    if (probePending) { probePending = false; scheduleQualityProbe(); }
   }
 
   // 内置背景预设（#18）：name = 显示名，bg = CSS 渐变（与 style.css .bp-card[data-preset] 对应；CSP 禁内联 style）
@@ -3194,9 +3317,11 @@
       const srcTag = el('span', 'song-tag src', song.online ? (SRC_NAMES[song.source] || '在线') : '曲库');
       srcTag.dataset.src = song.online ? song.source : 'local';
       t2.appendChild(srcTag);
-      // t3：音质（在线按 level；本地按 bitrate/container 推导；无法判定则占位）
+      // t3：音质徽标（2026-09-21 W-1：在线歌只认"实际确认档"，不再显示所选档的乐观值）
+      // 在线歌：只读 playedLevel（播放链已确认）| probedLevel（列表探测队列已确认）；两者都无 → 留空不渲染
+      // 本地歌：仍走 qualityForSong（容器/码率推导），语义未变
       const t3 = el('span', 'tag-slot t3');
-      const qNorm = qualityForSong(song);
+      const qNorm = song.online ? (song.playedLevel || song.probedLevel || null) : qualityForSong(song);
       if (qNorm) t3.appendChild(el('span', 'song-tag quality ' + qNorm, QUAL_LABELS[qNorm] || qNorm));
       // 本地歌留空但占位（保证标签跨行 X 轴对齐）
       tagArea.append(t1, t2, t3);
@@ -3281,6 +3406,7 @@
       if (i + CHUNK < vis.length) await new Promise((r) => setTimeout(r, 16));
     }
     if (window.__refreshFilterPopup) window.__refreshFilterPopup();
+    scheduleQualityProbe();
   }
 
   // ---------- 封面墙（网格视图，酷狗式） ----------
@@ -3582,20 +3708,13 @@
           // 2026-09-21 取证修复（酷狗"臻品掉高品"显示根因之二）：①上游响应字段名是 type 不是 format，
           // 原 fmt 恒空 → FLAC 容器兜底从未生效；②酷狗响应 bitrate 恒 0 → 用 size/duration 推实测码率
           // （1.65M FLAC 被 level=high 名义压成"高品"标签的问题）；③FLAC 容器 ≥ 无损，先于 level 名判定
-          const br = Number(r.data.bitrate) || 0;
-          const size = Number(r.data.size) || 0, dur = Number(r.data.duration) || 0;
-          const ebr = br > 0 ? br : (size > 0 && dur > 0 ? Math.round(size * 8 / dur) : 0);
-          const fmt = String(r.data.format || r.data.type || '').toUpperCase();
+          // B站自建解析按音轨代码诚实标档（30251=Hi-Res无损 / 30280=高清192k），其余源按码率推；
+          // 推导抽成 deriveRealLevel()（见文件上方 W-1 段），与列表探测队列共用同一份实现，
+          // 保证「列表徽标」与「底栏标签」对同一首歌给出同一档位。
+          const ebrBox = { ebr: 0 };
+          const real = deriveRealLevel(r.data, ebrBox);
+          const ebr = ebrBox.ebr;
           song.qualityPending = false;
-          let real = null;
-          // B站自建解析按音轨代码诚实标档（30251=Hi-Res无损 / 30280=高清192k），其余源按码率推
-          // 归一顺序：①实测码率≥2Mbps 或臻品级 level 名=臻品母带（kugou 母带 level=high 与高品同名，只能靠码率）
-          // ②无损容器（flac/ape/wav/alac——酷狗 FLAC 名义 level=high，容器才是真相）或 level 名归一
-          // ③兜底码率估算
-          if (ebr >= 2000000 || r.data.level === 'jymaster' || r.data.level === 'jyeffect' || r.data.level === 'hires') real = 'master';
-          else if (LOSSLESS_CONTAINERS.has(fmt) || normOnlineLevel(r.data.level) === 'lossless') real = 'lossless';
-          else real = normOnlineLevel(r.data.level)
-            || (ebr >= 1000000 ? 'lossless' : ebr >= 300000 ? 'high' : ebr > 0 ? 'standard' : null);
           const prevActual = song.playedLevel;
           song.playedLevel = real;
           if (ebr) song.bitrate = ebr;
