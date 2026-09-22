@@ -945,7 +945,14 @@ function main() {
     // 校验放在守卫里，不进 patchTaskbarHiddenFromHwnd（歌词窗 hwnd 是自己的窗口，不走这条）。
     for (const hwnd of hwnds) {
       let title = '';
-      try { title = taskbarHider.getTitle ? taskbarHider.getTitle(hwnd) : ''; } catch (_) { title = ''; }
+      try {
+        if (taskbarHider.getTitle) {
+          // GetWindowTextA(hwnd, lpString, nMaxCount)：必须给输出缓冲与长度，否则 koffi 调用抛错
+          const buf = Buffer.alloc(256);
+          const n = taskbarHider.getTitle(hwnd, buf, 255);
+          title = n > 0 ? buf.toString('binary', 0, n) : '';
+        }
+      } catch (_) { title = ''; }
       if (!/^Mineradio/.test(title)) continue;
       patchTaskbarHiddenFromHwnd(hwnd);
     }
