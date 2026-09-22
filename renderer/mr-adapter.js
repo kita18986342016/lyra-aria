@@ -988,6 +988,10 @@ function mrBindFxPeek() {
   var fab = document.getElementById('fx-fab');
   if (fab) fab.addEventListener('click', function () { if (typeof toggleFxPanel === 'function') toggleFxPanel(); });
   document.addEventListener('mousemove', function (e) {
+    // W-10：驱动 vendor 里"活着但没人调"的两个自动隐藏/唤回函数（fx fab 与账号胶囊）。
+    // 必须放在下面那道 !diyPlayerMode 早退之前——它们内部自带各自的门。
+    if (typeof updateFxFabAutoHideFromPointer === 'function') updateFxFabAutoHideFromPointer(e.clientX, e.clientY);
+    if (typeof updateUserCapsuleAutoHideFromPointer === 'function') updateUserCapsuleAutoHideFromPointer(e.clientX, e.clientY);
     var fp = document.getElementById('fx-panel');
     if (!fp || typeof setPeek !== 'function' || typeof diyPlayerMode === 'undefined' || !diyPlayerMode) return;
     var ex = e.clientX, ey = e.clientY, W = innerWidth, H = innerHeight;
