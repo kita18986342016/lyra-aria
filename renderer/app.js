@@ -7690,6 +7690,30 @@
       toast('下载音质已更新');
     }));
 
+    // W-8 D：设置-音源与音质「导入歌单预读音质」开关（mp_opl_preheat，默认开）
+    // 行由 JS 创建 —— 设置区 HTML 出过故障（1.4.2 删过两行坏行），不往 index.html 里塞。
+    if (!$('#stOplPreheat')) {
+      const secQ = document.querySelector('.st-section[data-sec="search"]');
+      if (secQ) {
+        const rowQ = el('div', 'st-row st-row-sw');
+        rowQ.appendChild(el('span', 'st-label', '导入歌单预读音质'));
+        const labQ = el('label', 'st-switch');
+        const ckQ = document.createElement('input');
+        ckQ.type = 'checkbox';
+        ckQ.id = 'stOplPreheat';
+        ckQ.checked = preheatEnabled();                 // 三态：无键→开；'0'→关；'1'→开
+        labQ.append(ckQ, el('span', 'st-slider'));
+        rowQ.appendChild(labQ);
+        const tipQ = el('div', 'st-row st-sub');
+        tipQ.appendChild(el('span', 'st-tip', '首次打开或导入一张歌单时，后台把整张歌单的音质逐个核对一遍并记住结果（默认开启；关闭后仍会按视口滚动随看随核对）'));
+        secQ.append(rowQ, tipQ);
+        ckQ.addEventListener('change', () => {
+          store.set(PREHEAT_KEY, ckQ.checked ? '1' : '0');
+          toast(ckQ.checked ? '导入歌单预读音质已开启' : '导入歌单预读音质已关闭');
+        });
+      }
+    }
+
     // item ⑥：设置-常规「默认打开 本地/在线」控件（index.html 缺失则由 JS 兜底创建并绑定）
     if (!$('#stDefMode')) {
       const sec = document.querySelector('.st-section[data-sec="general"]');
