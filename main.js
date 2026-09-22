@@ -991,6 +991,19 @@ function main() {
   function stopWallpaperTaskbarGuard() {
     if (wallpaperTaskbarGuardTimer) { clearInterval(wallpaperTaskbarGuardTimer); wallpaperTaskbarGuardTimer = null; }
   }
+  // ===== W-9 热修：守卫监督器（主进程自主触发，不依赖任何渲染层 IPC）=====
+  // 原触发源（runtime-status IPC handler）在生产里是**死代码**：全渲染层对
+  // getWallpaperEngineRuntimeStatus 的调用是 0 次（只有测试脚本会调）；而冷启动的壁纸自动恢复走
+  // win.on('show') → resumeWallpaperEngineForVisibleHost()，同样不经过守卫的任何触发点
+  // ⇒ 守卫永不启动，任务栏仍是 3 个图标（装机版公告里那句"已修"当时是假的）。
+  // 这里让主进程每 2s 自查一次会话状态：活跃 → 确保守卫在跑（reassert 会按需补 patch），
+  // 不活跃 → 收守卫。**无条件常驻**，不依赖任何外部调用；应用退出时随进程结束（will-quit 顺手清一次）。
+  let wallpaperTaskbarSupervisorTimer = setInterval(() => {
+    try {
+      if (wallpaperEngineRuntime.getStatus().active === true) startWallpaperTaskbarGuard();
+      else stopWallpaperTaskbarGuard();
+    } catch (_) { /* 监督器绝不能因为一次读取失败而中断 */ }
+  }, 2000);
 
   function clearWallpaperEngineCaptureGrant(sessionId = '') {
     const expectedSessionId = String(sessionId || '');
@@ -6040,6 +6053,7 @@ function main() {
   let weQuitCleanupDone = false;
   app.on('will-quit', (e) => {
     globalShortcut.unregisterAll();
+    if (wallpaperTaskbarSupervisorTimer) { clearInterval(wallpaperTaskbarSupervisorTimer); wallpaperTaskbarSupervisorTimer = null; } // W-9：顺手收监督器
     if (tray) tray.destroy();
     // WE 收尾（Ported from Mineradio desktop/main.js:6030-6052 简化：无全桌面模式部分）：
     // 关停壁纸进程/DWM 助手后再真正退出，15s 上限防卡死退出
