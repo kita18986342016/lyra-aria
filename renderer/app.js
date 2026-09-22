@@ -20,6 +20,8 @@
     get probeConst() { return { cacheKey: PROBE_CACHE_KEY, ttlMs: PROBE_TTL_MS, maxRows: PROBE_MAX_ROWS, debounceMs: PROBE_DEBOUNCE_MS, gapMs: PROBE_GAP_MS, failLimit: PROBE_FAIL_LIMIT, concurrency: PROBE_CONCURRENCY, throttleConcurrency: PROBE_THROTTLE_CONCURRENCY, throttleGapMs: PROBE_THROTTLE_GAP_MS }; },
     applyInterleave, mergeSearchResults, // W-3 丙：交错验收直调
     collectProbeTargets, probeViewportRows, isSavedPlaylistCtx, // W-4 批一：漫游/分层验收直调
+    maybeStartPlaylistPrewarm, preheatEnabled,                   // W-4 批二：预热/开关验收直调
+    get probeQueue() { return probeQueueStats; },                // 出队计数与记录（high/low 断言）
     get probeResolve() { return probeResolve; },
     set probeResolve(fn) { if (typeof fn === 'function') probeResolve = fn; }, // 429 注入桩 / 计时接缝
     get coverCache() { return coverCache; },
@@ -484,16 +486,64 @@
   }
   // 目标收集：搜索结果视图沿用"前 12 首"（W-3 行为逐字不变）；其余视图按视口区间取。
   // 行序用实际渲染的 tr 序列（受筛选影响），再按 id 映射回歌曲对象，避免 list 下标与行号错位。
+  // 探测资格（漫游/搜索与预热共用一份，避免两套口径）：
+  // 本地歌（无 online）一概不入队；bilibili/qq 不探；已确认或正在播放的跳过。
+  function probeEligible(s) {
+    if (!s || !s.online || !s.ref) return false;
+    if (s.source !== 'netease' && s.source !== 'kugou') return false;
+    if (s.playedLevel) { s.probedLevel = s.playedLevel; return false; }
+    if (s.probedLevel) return false;
+    if (s.id === state.playingId) return false;
+    return true;
+  }
+
+  // ===== W-4 批二 B：已保存歌单「全量排队预热」=====
+  // 进歌单 → 把整张歌单的快照排进 low 队列，随探测轮次慢慢消费（500 首 ≈ 数十秒的长任务）。
+  // 不随视图切换取消（用户明确要"默认全量排队探"），但必须让位给 high（视口漫游 / 搜索前 12）：
+  // 只要出现 high 目标或已有待跑轮次，就立刻停止吃 low，让新轮次先跑。
+  // 中断即自愈：完成前不写任何标记（_prewarmedAt 只在队列排空后写），下次进歌单重新排；
+  // 已核对过的歌会命中缓存（不发请求），实际几秒跑完。
+  const PREHEAT_KEY = 'mp_opl_preheat';
+  function preheatEnabled() { return store.get(PREHEAT_KEY, '1') !== '0'; } // D 的开关，默认开（函数声明：__mp 字面量在文件头取值，const 会踩 TDZ）
+  let prewarmQueue = [];      // low 队列（模块级，跨轮次持续消费）
+  let prewarmPlist = null;    // 正在预热的歌单（队列排空后才写 _prewarmedAt）
+  const probeQueueStats = {
+    highTaken: 0, lowTaken: 0,        // 出队计数（断言"先 high 后 low"）
+    prewarmTotal: 0, prewarmLeft: 0, prewarmDone: 0, prewarmFailed: 0,
+    prewarmPlId: '', prewarmYields: 0, prewarmCompleted: 0,
+    picks: [],                        // 最近出队记录（high:xx / low:xx，保留 40 条）
+  };
+  function probePickLog(tag, id) {
+    probeQueueStats.picks.push(tag + ':' + String(id || '').slice(-8));
+    if (probeQueueStats.picks.length > 40) probeQueueStats.picks.shift();
+  }
+  // 单点钩子入口：setView 的 opl: 分支调用（覆盖导入链接 / 推荐页导入 / 账号一键导入 /
+  // 收藏后打开 / 重启后打开已保存歌单 —— 五条路径全部收敛到这一处）
+  function maybeStartPlaylistPrewarm(pl) {
+    try {
+      if (!preheatEnabled()) return false;      // 开关关闭 → 不预热（漫游与缓存分层照常）
+      if (!pl || pl._temp) return false;        // 每日推荐快照（_temp）不预热
+      if (!pl.songs || !pl.songs.length) return false;
+      if (pl._prewarmedAt) return false;        // 已预热过 → 只走视口漫游
+      if (prewarmPlist === pl) return false;    // 同一张已在队列
+      if (prewarmQueue.length) return false;    // 一次只跑一张（批量导入只预热最后一张的口径）
+      const snapshot = pl.songs.filter((s) => probeEligible(s));
+      if (snapshot.length < 2) return false;    // 只有一两首的不值得排队（漫游会覆盖）
+      prewarmPlist = pl;
+      prewarmQueue = snapshot;
+      probeQueueStats.prewarmPlId = pl.id;
+      probeQueueStats.prewarmTotal = snapshot.length;
+      probeQueueStats.prewarmLeft = snapshot.length;
+      probeQueueStats.prewarmDone = 0;
+      probeQueueStats.prewarmFailed = 0;
+      scheduleQualityProbe();
+      return true;
+    } catch { return false; }
+  }
+
   function collectProbeTargets() {
     const list = state.list || [];
-    const eligible = (s) => {
-      if (!s || !s.online || !s.ref) return false;                        // 本地歌一概不入队
-      if (s.source !== 'netease' && s.source !== 'kugou') return false;   // bilibili/qq 不探
-      if (s.playedLevel) { s.probedLevel = s.playedLevel; return false; } // 播放链已确认 → 沿用
-      if (s.probedLevel) return false;
-      if (s.id === state.playingId) return false;                         // 正在播放的不抢上游
-      return true;
-    };
+    const eligible = probeEligible;
     const out = [];
     if (state.view === 'online') {
       for (const s of list) { if (out.length >= PROBE_MAX_ROWS) break; if (eligible(s)) out.push(s); }
@@ -555,26 +605,42 @@
         const v = probeCacheGet(s, level, pinnedCtx);
         if (v) { s.probedLevel = v; probeStats.cacheHit += 1; updateRowQuality(s); }
       });
-      // ② 收集目标（W-4A）：搜索视图＝前 12 首（原逻辑）；其余视图＝视口内 + 下方一屏
-      const targets = collectProbeTargets();
-      probeStats.queued = targets.length;
-      // ③ 并发池 + 令牌式限速（W-3 甲）。拉取式：起 C 个 worker，各自从 targets 取下一首，队列空即退。
-      // 令牌保证「发起」间隔 ≥ curGap：每个任务先领时隙再 await，与上一请求的快慢无关。
+      // ② 收集目标（W-4A/批二）：high = 搜索前 12 / 视口漫游；low = 歌单全量预热
+      const highQ = collectProbeTargets();
+      probeStats.queued = highQ.length;
+      // ③ 并发池 + 令牌式限速（W-3 甲）+ 双优先级队列（W-4 批二 B）。
+      // 拉取顺序：high 全空才吃 low；一旦有新轮次在等（probePending：用户切列表/滚动）立刻停止吃 low，
+      // 让待跑轮次先处理新的 high —— 否则 500 首预热会把刚切过来的列表卡到几十秒没有徽标。
       const roundT0 = Date.now();
       let curConcurrency = PROBE_CONCURRENCY;
       let curGap = PROBE_GAP_MS;
       let nextSlotAt = 0;      // 下一个可发起时隙（相对 roundT0，ms）
-      let cursor = 0;
+      let hiIx = 0;
+      let lowHeld = false;     // low 已让位（本轮不再吃 low）
       let stop = false;        // 连续失败达阈值 → 全体停
       let degraded = false;    // 撞 429 → 本轮降档为单路慢速（剩余目标不取消）
-      // 漫游轮次令牌：视图或 state.list 一变就立刻收队（否则用户离开歌单后还在替它空跑、纯烧配额）
+      // 漫游轮次令牌：视图或 state.list 一变就立刻收队（否则用户离开歌单后还在替它空跑、纯烧配额）。
+      // 只约束 high（漫游目标）；low（预热）按设计不随视图切换取消。
       const stale = () => kind === 'roam' && (state.view !== tokenView || state.list !== tokenList);
       const pullNext = () => {
-        while (!stop && cursor < targets.length) {
-          if (stale()) { probeStats.stopped = 'view-changed'; stop = true; return null; }
-          const s = targets[cursor++];
-          if (s.id === state.playingId) continue; // 正在播放的由播放链自己确认，不与播放解析抢上游
-          return s;
+        while (!stop) {
+          if (hiIx < highQ.length) {
+            if (stale()) { probeStats.stopped = 'view-changed'; stop = true; return null; }
+            const s = highQ[hiIx++];
+            if (s.id === state.playingId) continue; // 正在播放的由播放链自己确认，不与播放解析抢上游
+            probeQueueStats.highTaken += 1; probePickLog('high', s.id);
+            return { s: s, hi: true };
+          }
+          if (lowHeld) return null;
+          if (probePending) { lowHeld = true; probeQueueStats.prewarmYields += 1; return null; } // 让位给待跑轮次
+          if (prewarmQueue.length) {
+            const s = prewarmQueue.shift();
+            probeQueueStats.prewarmLeft = prewarmQueue.length;
+            if (!s || s.id === state.playingId || s.probedLevel) continue;
+            probeQueueStats.lowTaken += 1; probePickLog('low', s.id);
+            return { s: s, hi: false };
+          }
+          return null;
         }
         return null;
       };
@@ -587,11 +653,13 @@
       const probeWorker = async (me) => {
         while (!stop) {
           if (degraded && !me.survivor) return;    // 429 后其余 worker 退场 → 退化为单路串行
-          const s = pullNext();
-          if (!s) return;
+          const job = pullNext();
+          if (!job) return;
+          const s = job.s;
           await awaitSlot();
           if (stop) return;
-          if (stale()) { probeStats.stopped = 'view-changed'; stop = true; return; } // 发起前再校验一次令牌
+          // 发起前再校验一次令牌（只对 high 生效；low 预热不随视图切换取消）
+          if (job.hi && stale()) { probeStats.stopped = 'view-changed'; stop = true; return; }
           probeStats.bySrc[s.source] = (probeStats.bySrc[s.source] || 0) + 1;
           let r = null;
           // 探测模式：主进程跳过魔数校验与本地流登记（只为读一次码率）
@@ -615,16 +683,31 @@
             probeStats.done += 1;
             failStreak = 0;
             updateRowQuality(s);
+            if (!job.hi) probeQueueStats.prewarmDone += 1;
           } else {
             probeStats.failed += 1;
             failStreak += 1;
+            if (!job.hi) probeQueueStats.prewarmFailed += 1;
             if (failStreak >= PROBE_FAIL_LIMIT) { probeStats.stopped = 'consecutive-fail-' + PROBE_FAIL_LIMIT; stop = true; }
           }
         }
       };
-      const workerCount = Math.max(1, Math.min(curConcurrency, targets.length));
+      const workerCount = Math.max(1, Math.min(curConcurrency, highQ.length + prewarmQueue.length));
       await Promise.all(Array.from({ length: workerCount }, () => probeWorker({})));
       probeStats.roundCostMs = Date.now() - roundT0;
+      // 预热完成判定：队列被本轮流空且未因失败/边界提前中止 → 这时才写 _prewarmedAt（"完成后才写"）
+      // 队列被消费空 = 这张歌单已全部核对过（pullNext 里被跳过的只有『已核对/正在播放』的，
+      // 不是『因提前中止而漏掉』的）→ 无论本轮是否因边界或失败提前 stop，只要队列空就写标记；
+      // 否则会出现『跑完了却没有标记、下次又白排一遍』的静默失效。
+      if (prewarmPlist && prewarmQueue.length === 0) {
+        try {
+          prewarmPlist._prewarmedAt = Date.now();
+          prewarmPlist = null;
+          probeQueueStats.prewarmLeft = 0;
+          probeQueueStats.prewarmCompleted += 1;
+          saveOpls();
+        } catch { /* 忽略 */ }
+      }
     } catch { /* 探测失败静默：不影响播放与列表 */ }
     probeRunning = false;
     if (probePending) { probePending = false; scheduleQualityProbe(); }
@@ -1558,6 +1641,7 @@
       try { const __p = state.onlinePlaylists.find((x) => 'opl:' + x.id === view); if (__p && !__p._temp) window.api.recordRecPl({ id: __p.id, name: __p.name, source: __p.source, cover: __p.cover || '' }).catch(() => {}); } catch (e) {}
       const pl = state.onlinePlaylists.find((x) => 'opl:' + x.id === view);
       if (!pl) return setView('library');
+      maybeStartPlaylistPrewarm(pl); // W-4 批二 B：单点钩子（导入/收藏/账号批量/重启打开全走这里）
       title = pl.name;
       list = pl.songs;
       // 白框已并入歌单名：封面+歌单名+副标题(来源 · 数量) 直接显示在标题栏
