@@ -923,6 +923,13 @@ function main() {
   // （实测 P4：B 剥 APPW 后 getSources 仍命中 → WGC 捕获零影响）。
   // 两个句柄都取自运行时状态（sourceId / dwmSurfaceWindowId），不改 desktop/ 下任何 vendor 文件。
   let wallpaperTaskbarGuardTimer = null;
+  // W-8 C（可观测性）：守卫静默失效过一次（0a 的 getTitle 缺参被 catch 吞掉 → 白名单恒空 → 每个 hwnd 都跳过），
+  // 事后只能等用户发现任务栏多图标。这里把"读标题失败 / 白名单未命中 / 实际动手"做成只读计数，
+  // 失败额外报一次日志。**只加观测，不改守卫行为**。
+  const wallpaperTaskbarGuardStats = {
+    rounds: 0, hwnds: 0, patched: 0, titleMissing: 0, whitelistMiss: 0,
+    lastTitle: '', warned: false,
+  };
   function wallpaperTaskbarHwnds() {
     try {
       const status = wallpaperEngineRuntime.getStatus();
@@ -943,6 +950,8 @@ function main() {
     // （A = Mineradio Wallpaper <hash>、B = Mineradio WE DWM Surface）。
     // 标题读不到或不匹配 → 跳过且不报错，绝不越权改无关窗口的样式。
     // 校验放在守卫里，不进 patchTaskbarHiddenFromHwnd（歌词窗 hwnd 是自己的窗口，不走这条）。
+    wallpaperTaskbarGuardStats.rounds += 1;
+    wallpaperTaskbarGuardStats.hwnds = hwnds.length;
     for (const hwnd of hwnds) {
       let title = '';
       try {
@@ -953,8 +962,24 @@ function main() {
           title = n > 0 ? buf.toString('binary', 0, n) : '';
         }
       } catch (_) { title = ''; }
-      if (!/^Mineradio/.test(title)) continue;
-      patchTaskbarHiddenFromHwnd(hwnd);
+      if (!title) {
+        wallpaperTaskbarGuardStats.titleMissing += 1;
+        if (!wallpaperTaskbarGuardStats.warned) {
+          wallpaperTaskbarGuardStats.warned = true;
+          console.warn('[w5-guard] 读窗口标题失败（getTitle 不可用或调用出错）→ 守卫会跳过所有 hwnd，任务栏图标不会被隐藏');
+        }
+        continue;
+      }
+      if (!/^Mineradio/.test(title)) {
+        wallpaperTaskbarGuardStats.whitelistMiss += 1;
+        if (!wallpaperTaskbarGuardStats.warned) {
+          wallpaperTaskbarGuardStats.warned = true;
+          console.warn('[w5-guard] 标题未命中白名单（需以 Mineradio 开头），跳过：' + String(title).slice(0, 60));
+        }
+        continue;
+      }
+      wallpaperTaskbarGuardStats.lastTitle = String(title).slice(0, 60);
+      if (patchTaskbarHiddenFromHwnd(hwnd)) wallpaperTaskbarGuardStats.patched += 1;
     }
     return true;
   }
@@ -1849,7 +1874,9 @@ function main() {
       // W-5：渲染层轮询状态 = "会话是否就绪"的天然判定点（含启动自动恢复）；就绪则确保守卫在跑
       if (wallpaperEngineRuntime.getStatus().active === true) startWallpaperTaskbarGuard();
       else stopWallpaperTaskbarGuard();
-      return { ...probe, ...wallpaperEngineRuntime.getStatus(), pending: wallpaperEngineRuntime.pending != null };
+      // W-8 C：附带守卫只读计数（诊断"守卫到底有没有动手"，比日志更直观）
+      return { ...probe, ...wallpaperEngineRuntime.getStatus(), pending: wallpaperEngineRuntime.pending != null,
+        wallpaperTaskbarGuard: { ...wallpaperTaskbarGuardStats } };
     } catch (error) {
       return { ok: false, available: false, error: error.message || 'WALLPAPER_ENGINE_RUNTIME_PROBE_FAILED' };
     }
