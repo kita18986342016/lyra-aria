@@ -291,6 +291,8 @@ var MrStage = {
   host: null, container: null, raf: 0, prevTime: 0, lastResizeW: 0, lastResizeH: 0,
   audioEl: null, graphReady: false, graphBoundSrcScheme: '',
   gates: null, bootErrors: [],
+  // W-12：壁纸门控状态（应用启动时没进 3D → 拦下的恢复调用暂存于此，进 3D 时补做）
+  wallpaperPending: null, wallpaperStagedApply: null,
 };
 // 合并脚本执行期错误捕获（parse/exec 错误走 window error 事件，不会进 booting promise）
 window.addEventListener('error', function (e) {
@@ -937,6 +939,32 @@ function mrBoot() {
       // 都依赖它非空返回。10-shell/04 自身 WE 路径均有 typeof 方法守卫（缺 setWallpaperMode 时
       // 安全返回错误对象、fx.wallpaperMode 归 false），不受此覆盖影响。
       window.getDesktopWindowApi = function () { return window.api || null; };
+      // ===== W-12：壁纸不再跟应用启动，改跟「进 3D」=====
+      // vendor 07-fx/03-wallpaper-engine-library.js 顶级执行 initializeWallpaperEngineLibrary()，其 120ms 后的
+      // setTimeout 会无条件 applyWallpaperEngineBackground(上次选择)（vendor:2414-2431）。2026-09-20「首进 3D 提速」
+      // 把 bundle 从"点进 3D 才注入"提前到"页面空闲即注入"后，壁纸的自动恢复也跟着提前到了应用启动
+      // —— 用户："我又没进 3D，这个东西跟着启动干嘛，不应该进 3D 才启动吗？"
+      // 修法（vendor 一字未改）：bundle 执行完（本回调）把全局函数换成带门控的包装 —— 没进 3D 只记 pending，
+      // 进 3D（mrMount）时补做。vendor 内四处调用（init:2422 / 失败回退:1594 / 用户选图:1703 / 可见性重放:2395）
+      // 都经全局名解析 → 全部被同一道门拦住。
+      try {
+        if (typeof applyWallpaperEngineBackground === 'function' && !applyWallpaperEngineBackground.__dshGate) {
+          var __wpPrev = applyWallpaperEngineBackground;
+          var __wpWrap = function (item, quiet) {
+            if (MrStage.mounted) return __wpPrev(item, quiet); // 已在 3D 舞台：照原行为
+            MrStage.wallpaperPending = { item: item, quiet: quiet }; // 没进 3D：暂存，等进 3D 补做
+            return undefined;
+          };
+          __wpWrap.__dshGate = true;
+          window.applyWallpaperEngineBackground = __wpWrap;
+          MrStage.wallpaperStagedApply = function () {
+            var p = MrStage.wallpaperPending;
+            if (!p) return false;
+            MrStage.wallpaperPending = null;
+            return __wpPrev(p.item, p.quiet);
+          };
+        }
+      } catch (e) { console.warn('[W-12 壁纸门控] 覆盖失败:', e && e.message); }
       // 工作台 + 全部 fx 控件绑定（二期 3d；此前 bindFxPanel 无人调用 → fx 滑杆全为死控件）。
       // bundle 内函数此时已就位；个别控件缺失不应中断其余绑定，故 try/catch 兜底。
       // 2026-09-20：boot/mount 解耦后绑定提前到此处；设 fxBound 防 mrMount 二次绑定。
@@ -1056,6 +1084,10 @@ async function mrMount(host) {
   if (!MrStage.raf) { MrStage.prevTime = performance.now(); MrStage.raf = requestAnimationFrame(mrFrame); }
   __mrMark('mount:syncDone');
   MrStage.mounted = true;
+  // W-12：进了 3D → 补做启动时被拦下的壁纸恢复（此前 vendor 在应用启动就做了，故这里等幂：pending 空则 no-op）
+  if (typeof MrStage.wallpaperStagedApply === 'function') {
+    try { MrStage.wallpaperStagedApply(); } catch (e) { console.warn('[W-12 壁纸门控] 进 3D 补做失败:', e && e.message); }
+  }
 }
 
 function mrUnmount() {
