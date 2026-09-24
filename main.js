@@ -690,13 +690,23 @@ if (!app.requestSingleInstanceLock()) {
 // 一次性迁移过去。幂等：目标已有数据或已迁移过则跳过；迁移后旧目录保留（安全，不删源）。
 function migrateLegacyData() {
   const dest = store.getDataDir();
-  if (!dest || dest === 'D:\\MusicPlayerData') return; // D 盘即目标：旧数据原位可用，无需迁移
   const OLD = 'D:\\MusicPlayerData';
+  // W-14 A：不只"等于 OLD"要跳过，"位于 OLD 之内"也必须跳过 —— 测试实例的 userData
+  // （…\userdata-test<slot>，见文件头 :63-65）就落在 OLD 里面。原判据只判相等，
+  // 于是测试实例启动时会遍历 OLD 并把兄弟目录（含其它 userdata-test*）当"旧数据"递归复制进
+  // 自己的 dataDir：实测单次 904 MB，历史最高 27 GB（约 53 GB 是副本）。
+  if (!dest) return;
+  const destAbs = path.resolve(dest);
+  const oldAbs = path.resolve(OLD);
+  if (destAbs === oldAbs || destAbs.startsWith(oldAbs + path.sep)) return; // D 盘即目标/落在 OLD 内：旧数据原位可用，无需迁移
   try {
     if (!fs.existsSync(OLD)) return;
     if (fs.existsSync(path.join(dest, 'config.json')) || fs.existsSync(path.join(dest, '.migrated'))) return;
     for (const entry of fs.readdirSync(OLD)) {
-      if (entry === 'userdata' || entry === '_thumb.log') continue; // Electron 运行时数据/调试日志不迁移
+      // W-14 B：前缀判断（不只精确 'userdata'）—— 测试实例的 userData 目录名形如 userdata-test<slot>，
+      // 原实现只排除精确的 'userdata'，导致它们被当成"旧数据"整份复制。前缀判断同时覆盖未来的
+      // userdata-* 变体，无需同步维护白名单。
+      if (entry.startsWith('userdata') || entry === '_thumb.log') continue; // Electron 运行时数据/调试日志/测试实例目录不迁移
       const src = path.join(OLD, entry);
       const dst = path.join(dest, entry);
       try {
@@ -720,7 +730,11 @@ function migrateLegacyData() {
 function main() {
   // 数据根：D 盘可用 → D:\MusicPlayerData（用户偏好，旧数据原位可用）；否则系统用户数据目录
   store.setDataDir(process.env.DSH_TEST_INSTANCE ? app.getPath('userData') : (DATA_ROOT || app.getPath('userData')));
-  migrateLegacyData(); // D 盘不可用且旧数据残留时兜底迁移
+  // W-14 C：测试实例（DSH_TEST_INSTANCE）的 dataDir 就在 OLD 之内，本就无"从旧目录迁移"的语义，直接跳过。
+  // 注意：这**只**跳过测试实例；正式实例在「D 盘不可用」时的降级迁移必须照旧执行（下方 else 分支不变）。
+  if (!process.env.DSH_TEST_INSTANCE) {
+    migrateLegacyData(); // D 盘不可用且旧数据残留时兜底迁移
+  }
   shutLog('app-start', 'version=' + app.getVersion() + ' packaged=' + app.isPackaged + ' electron=' + process.versions.electron + ' dataRoot=' + dataRoot()); // W-13 A
   // ===== 本地多账号：数据按 accounts/<id>/ 隔离；设置/外观(config)为设备级 =====
   const ACC_REG_FILE = () => path.join(dataRoot(), 'accounts-registry.json');
