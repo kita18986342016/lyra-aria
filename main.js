@@ -2194,6 +2194,13 @@ function main() {
   // ===== Wallpaper Engine 集成编排段结束 =====
 
   let win = null;
+  // ===== W-13 B：看门狗/自愈 状态（配套 main.js:6060 `window-all-closed` 空实现的结构事实）=====
+  // winHadBeenCreated：启动宽限期 —— 窗口创建完成前 win 恒为 null，不设它会把每次冷启动都判成"无窗僵尸"。
+  // selfHealingInProgress：与 W-12 自愈互斥，否则看门狗可能在 app.relaunch() 之前 exit(0)，把自愈废掉（两个救命装置互相掐死）。
+  // quitInFlight：before-quit 置位。app.isQuitting 只被部分退出入口设置（update:install 的 quitAndInstall 不设它），只看 app.isQuitting 会误判"更新安装中"。
+  let winHadBeenCreated = false;
+  let selfHealingInProgress = false;
+  let quitInFlight = false;
   let tray = null;
   let library = store.load('library.json', { songs: [], scannedAt: 0 });
   let config = store.load('config.json', { dirs: DEFAULT_DIRS, volume: 0.8, mode: 'order', lyricWin: LYRIC_DEFAULTS, bgBlur: 2.5, autoLaunch: false, closeBehavior: 'tray', downloadOverwrite: false, autoSrcUpgrade: true, defaultPlSeeded: false });
@@ -2283,6 +2290,7 @@ function main() {
     });
     win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
     // W-13 A：窗口创建完成点（B 的看门狗以此作为宽限期起点，故必须落盘可对齐）
+    winHadBeenCreated = true; // W-13 B：宽限期起点（此前 win 恒 null，不得计时）
     try { shutLog('window-created', 'hwnd=' + win.getNativeWindowHandle().readBigUInt64LE(0)); } catch { shutLog('window-created'); }
     win.on('close', (e) => {
       shutLog('win-close', 'isQuitting=' + !!app.isQuitting + ' closeBehavior=' + config.closeBehavior); // W-13 A
@@ -5482,6 +5490,8 @@ function main() {
     if (!win || win.isDestroyed()) {
       // 延后 400ms：让"双击那次第二实例"先拿到单实例握手的应答。探针实测（_w12_probe2）：
       // 在事件里同步 app.exit(0) 会让那次第二实例一直挂着不退出（握手方先走了）；延后后它 344ms 正常退出。
+      selfHealingInProgress = true; // W-13 B：自愈期间看门狗让路（否则可能在 relaunch 之前 exit(0)）
+      shutLog('self-heal', 'window gone -> app.relaunch()+app.exit(0) in 400ms'); // W-13 A.5：自愈触发也记一笔
       setTimeout(() => {
         try { app.relaunch(); } catch (e) { /* 忽略 */ }
         app.exit(0);
@@ -6087,9 +6097,42 @@ function main() {
   });
 
   let weQuitCleanupDone = false;
+
+  // ===== W-13 B：无窗僵尸看门狗 =====
+  // 为什么会存在僵尸：`window-all-closed`（上一行区块）刻意"不退出"（托盘常驻是设计），
+  // 于是一次没走完的退出会留下"进程活着、窗口已销毁"的残骸，它占着单实例锁 → 此后双击永久没反应。
+  // 判据纪律（W-13 §2.3 坑二）：必须用 isDestroyed()，**不能用可见性** —— 托盘态 closeBehavior:'tray'
+  // 是 win.hide()，win 存在且未销毁；若用 !win.isVisible() 会把"用户关到托盘"判成僵尸 → 灾难级回归。
+  // 四个排除项：窗口从未创建（启动宽限）、退出流程中、W-12 自愈中、收尾已完成。
+  let winGoneSince = 0;
+  let quitStuckSince = 0; // W-13 B2：退出中持续时长（>20s 视为卡死）
+  const zombieWatchdog = setInterval(() => {
+    try {
+      // 退出中卡死也要管：正常退出最长 15s（will-quit 兜底），超过 20s 仍未退出即判"quit 活锁/卡死"。
+      // 依据：W-13 探针实测 —— 同类形态下若 will-quit 被反复 preventDefault，进程会陷入"quit→拦→再 quit"活锁永不退出
+      // （exit=124）；同一形态把兜底换成 app.exit(0) 则 1s 内正常退出。故这里的硬退是唯一的终止手段。
+      if (quitInFlight && !selfHealingInProgress && winHadBeenCreated) {
+        if (!quitStuckSince) { quitStuckSince = Date.now(); return; }
+        if (Date.now() - quitStuckSince > 20000) {
+          shutLog('watchdog-fire', 'quit in flight for >20s -> app.exit(0) (quit 卡死兜底)');
+          app.exit(0);
+        }
+        return;
+      }
+      if (!winHadBeenCreated || app.isQuitting || selfHealingInProgress || weQuitCleanupDone) { winGoneSince = 0; return; }
+      if (win && !win.isDestroyed()) { winGoneSince = 0; return; }
+      if (!winGoneSince) { winGoneSince = Date.now(); shutLog('watchdog-arm', 'window destroyed while not quitting'); return; }
+      if (Date.now() - winGoneSince > 10000) {
+        shutLog('watchdog-fire', 'window destroyed for >10s -> app.exit(0)');
+        app.exit(0);
+      }
+    } catch { /* 看门狗自身绝不抛错 */ }
+  }, 2000);
+  try { if (zombieWatchdog && typeof zombieWatchdog.unref === 'function') zombieWatchdog.unref(); } catch { /* 忽略 */ }
+
   app.on('before-quit', () => {
-    // W-13 A：before-quit 是所有"走 quit 的入口"都会经过的点（app.exit 不走），
-    // 这里只落盘；B 会在同一处再置 quitInFlight 供看门狗跳过。
+    // W-13 A：before-quit 是所有"走 quit 的入口"都会经过的点（app.exit 不走）。
+    quitInFlight = true; // W-13 B：看门狗据此跳过"退出中"（app.isQuitting 只被部分入口设置）
     shutLog('before-quit', 'isQuitting=' + !!app.isQuitting);
   });
   app.on('will-quit', (e) => {
@@ -6102,10 +6145,11 @@ function main() {
     if (weQuitCleanupDone) return;
     e.preventDefault();
     const cleanupTimeout = setTimeout(() => {
-      shutLog('cleanup-timeout', 'WE runtime cleanup exceeded 15000ms'); // W-13 A：兜底是否触发（永不到达 = 卡在 dispose 里）
-      console.warn('[Shutdown] WE runtime cleanup exceeded 15000ms; continuing application exit.');
+      // W-13 C：走到这里说明 WE 收尾已失败（超 15s），再走一次 app.quit() 没有意义 —— 硬退，不依赖 quit 握手。
+      shutLog('cleanup-timeout', 'WE runtime cleanup exceeded 15000ms -> app.exit(0)'); // W-13 A：兜底是否触发（永不到达 = 卡在 dispose 里）
+      console.warn('[Shutdown] WE runtime cleanup exceeded 15000ms; hard exit.');
       weQuitCleanupDone = true;
-      app.quit();
+      app.exit(0);
     }, 15000);
     Promise.resolve()
       .then(() => { shutLog('dispose-start', 'fullDesktopModeRuntime'); return fullDesktopModeRuntime.dispose('app-quit'); })
