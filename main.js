@@ -2329,7 +2329,10 @@ function main() {
         win.hide(); // 关闭 → 后台托盘运行（任务栏按钮消失，托盘图标恢复窗口）
       }
     });
-    win.on('closed', () => { shutLog('win-closed', 'isDestroyed=' + (!win || win.isDestroyed())); }); // W-13 A：销毁点（僵尸态的关键前因）
+    win.on('closed', () => {
+      shutLog('win-closed', 'isDestroyed=' + (!win || win.isDestroyed())); // W-13 A：销毁点（僵尸态的关键前因）
+      zombieWatchdogCheck('主窗已销毁（win-closed，事件驱动）'); // W-15③
+    });
     // ---- 缩略图封面原生注入：任何状态下任务栏缩略图 = 歌曲封面（酷狗式）----
     // 关键：DWMWA_FORCE_ICONIC_REPRESENTATION = 7（此前误用 6=DWMWA_NONCLIENT_RTL_LAYOUT，
     // 强制图标化从未生效 → 前台 hover 一直是窗口内容 live preview——这正是"任何情况下都是封面"没实现的根因）
@@ -6135,6 +6138,22 @@ function main() {
   // 判据纪律（W-13 §2.3 坑二）：必须用 isDestroyed()，**不能用可见性** —— 托盘态 closeBehavior:'tray'
   // 是 win.hide()，win 存在且未销毁；若用 !win.isVisible() 会把"用户关到托盘"判成僵尸 → 灾难级回归。
   // 四个排除项：窗口从未创建（启动宽限）、退出流程中、W-12 自愈中、收尾已完成。
+  // W-15③：**事件驱动**的僵尸判定 —— 定时器在被销毁窗口之后不再被泵动（见文件头说明），
+  // 因此把判定挂在"主窗已销毁"这个事件上：事件即判即退，不依赖任何计时器。
+  // 四道排除项与定时器分支完全一致；命中即 app.exit(0)（先落盘）。
+  function zombieWatchdogCheck(reason) {
+    try {
+      if (!winHadBeenCreated) return false;            // 启动宽限期：窗口从未创建
+      if (app.isQuitting || quitInFlight) return false; // 退出流程中：交给 will-quit 链
+      if (selfHealingInProgress) return false;          // W-12 自愈中：让路，避免两个救命装置互相掐死
+      if (weQuitCleanupDone) return false;              // 收尾已完成
+      if (win && !win.isDestroyed()) return false;      // 判据必须是"已销毁"，不是"不可见"（托盘态 win.hide() 不算）
+      shutLog('watchdog-fire', reason + ' -> app.exit(0)');
+      app.exit(0);
+      return true;
+    } catch { return false; }
+  }
+  app.on('window-all-closed', () => { zombieWatchdogCheck('窗口全销毁（window-all-closed，事件驱动）'); });
   let winGoneSince = 0;
   let quitStuckSince = 0; // W-13 B2：退出中持续时长（>20s 视为卡死）
   const zombieWatchdog = setInterval(() => {
@@ -6159,7 +6178,10 @@ function main() {
       }
     } catch { /* 看门狗自身绝不抛错 */ }
   }, 2000);
-  try { if (zombieWatchdog && typeof zombieWatchdog.unref === 'function') zombieWatchdog.unref(); } catch { /* 忽略 */ }
+  // W-15③（实测修复）：**绝不能 unref** —— 演练（DSH_WATCHDOG_DRILL）实测：unref 之后回调只跑了第一拍
+  // （留下 watchdog-arm 一行）就再不复触发，僵尸永远不会被硬退。原写法照抄了探针里的 unref，属实现缺陷。
+  // 不 unref 的代价：该 2s 定时器会让事件循环常驻 —— 但本应用本就常驻托盘，无行为变化。
+  void zombieWatchdog;
 
   app.on('before-quit', () => {
     // W-13 A：before-quit 是所有"走 quit 的入口"都会经过的点（app.exit 不走）。
