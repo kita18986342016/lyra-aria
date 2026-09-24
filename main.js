@@ -87,6 +87,21 @@ fs.appendFileSync = (f, ...rest) => {
   return _origAppendFileSync(f, ...rest);
 };
 
+// ===== W-13 A：退出/生命周期取证日志（落盘）=====
+// 为什么必须落盘：打包成 GUI 后 stdout 无终端，退出相关告警此前只走 console.warn = 写进黑洞 ——
+// 这正是 2026-09-24「无窗僵尸进程」抓不到真凶的直接原因（见 报告/DSH/W-12施工报告 与 W-13 单）。
+// 文件名刻意不用 _thumb.log（上面那段猴子补丁会在非 DSH_THUMB_LOG 时静默丢弃含该名的写入）。
+// 大小上限 512KB，超限轮换一次到 _shutdown.1.log（避免 _thumb.log 当年的无限增长）。
+// 生产默认开启（不靠环境变量），否则永远抓不到。
+const SHUTDOWN_LOG_MAX = 512 * 1024;
+function shutLog(tag, extra) {
+  try {
+    const p = path.join(dataRoot(), '_shutdown.log');
+    try { if (fs.statSync(p).size > SHUTDOWN_LOG_MAX) fs.renameSync(p, path.join(dataRoot(), '_shutdown.1.log')); } catch { /* 首次写入或轮换失败：忽略 */ }
+    fs.appendFileSync(p, '[' + new Date().toISOString() + '] pid=' + process.pid + ' ' + tag + (extra === undefined ? '' : ' ' + extra) + '\n', 'utf8');
+  } catch { /* 日志失败绝不影响主流程 */ }
+}
+
 // ---- 任务栏缩略图：封面原生注入（Hermes 方案：HAS_ICONIC_BITMAP + WM_DWMSENDICONICTHUMBNAIL 0x0323 响应式）----
 // DwmSetIconicThumbnail 是响应式 API：只能在收到 0x0323 消息的处理器里调用（主动调恒 E_INVALIDARG——已实测）
 // 位图必须是 32bpp DIB（CreateDIBSection + SetDIBits 填充，全 Buffer 传参——koffi void** 输出不可靠）
@@ -665,6 +680,7 @@ function scaleDIB(src, tw, th) {
 }
 
 if (!app.requestSingleInstanceLock()) {
+  shutLog('quit-request', 'single-instance-lock-failed'); // W-13 A：本进程就是"双击没反应"里被拒的那次
   app.quit();
 } else {
   main();
@@ -705,6 +721,7 @@ function main() {
   // 数据根：D 盘可用 → D:\MusicPlayerData（用户偏好，旧数据原位可用）；否则系统用户数据目录
   store.setDataDir(process.env.DSH_TEST_INSTANCE ? app.getPath('userData') : (DATA_ROOT || app.getPath('userData')));
   migrateLegacyData(); // D 盘不可用且旧数据残留时兜底迁移
+  shutLog('app-start', 'version=' + app.getVersion() + ' packaged=' + app.isPackaged + ' electron=' + process.versions.electron + ' dataRoot=' + dataRoot()); // W-13 A
   // ===== 本地多账号：数据按 accounts/<id>/ 隔离；设置/外观(config)为设备级 =====
   const ACC_REG_FILE = () => path.join(dataRoot(), 'accounts-registry.json');
   const ACC_CUR_FILE = () => path.join(dataRoot(), 'current-account.json');
@@ -2265,13 +2282,20 @@ function main() {
       setTimeout(() => scheduleWallpaperEngineHostBoundsRestart(win, 'leave-html-full-screen'), 50);
     });
     win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+    // W-13 A：窗口创建完成点（B 的看门狗以此作为宽限期起点，故必须落盘可对齐）
+    try { shutLog('window-created', 'hwnd=' + win.getNativeWindowHandle().readBigUInt64LE(0)); } catch { shutLog('window-created'); }
     win.on('close', (e) => {
+      shutLog('win-close', 'isQuitting=' + !!app.isQuitting + ' closeBehavior=' + config.closeBehavior); // W-13 A
       if (!app.isQuitting) {
-        if (config.closeBehavior === 'exit') { app.isQuitting = true; app.quit(); return; }
+        if (config.closeBehavior === 'exit') {
+          shutLog('quit-request', 'closeBehavior=exit (window close)'); // W-13 A
+          app.isQuitting = true; app.quit(); return;
+        }
         e.preventDefault();
         win.hide(); // 关闭 → 后台托盘运行（任务栏按钮消失，托盘图标恢复窗口）
       }
     });
+    win.on('closed', () => { shutLog('win-closed', 'isDestroyed=' + (!win || win.isDestroyed())); }); // W-13 A：销毁点（僵尸态的关键前因）
     // ---- 缩略图封面原生注入：任何状态下任务栏缩略图 = 歌曲封面（酷狗式）----
     // 关键：DWMWA_FORCE_ICONIC_REPRESENTATION = 7（此前误用 6=DWMWA_NONCLIENT_RTL_LAYOUT，
     // 强制图标化从未生效 → 前台 hover 一直是窗口内容 live preview——这正是"任何情况下都是封面"没实现的根因）
@@ -5356,7 +5380,7 @@ function main() {
       { type: 'separator' },
       { label: '显示主窗口', click: () => showMainWindow() },
       { type: 'separator' },
-      { label: '退出', click: () => { app.isQuitting = true; flushState(); app.quit(); } }
+      { label: '退出', click: () => { shutLog('quit-request', 'tray-menu-exit'); app.isQuitting = true; flushState(); app.quit(); } } // W-13 A
     ]);
     tray.setContextMenu(menu);
     tray.on('click', () => showMainWindow());
@@ -5956,6 +5980,7 @@ function main() {
   });
   ipcMain.handle('update:install', (e) => {
     if (!isTrusted(e) || !autoUpdater || !app.isPackaged) return;
+    shutLog('quit-request', 'update-install quitAndInstall'); // W-13 A / D 的嫌疑入口
     // 静默安装（true,true）：/S --updated --force-run → 无向导、装回原目录、装完自动重启（方案C，源码已验证）
     try { autoUpdater.quitAndInstall(true, true); } catch { /* 忽略 */ }
   });
@@ -6062,7 +6087,13 @@ function main() {
   });
 
   let weQuitCleanupDone = false;
+  app.on('before-quit', () => {
+    // W-13 A：before-quit 是所有"走 quit 的入口"都会经过的点（app.exit 不走），
+    // 这里只落盘；B 会在同一处再置 quitInFlight 供看门狗跳过。
+    shutLog('before-quit', 'isQuitting=' + !!app.isQuitting);
+  });
   app.on('will-quit', (e) => {
+    shutLog('will-quit', 'isQuitting=' + !!app.isQuitting + ' cleanupDone=' + weQuitCleanupDone); // W-13 A
     globalShortcut.unregisterAll();
     if (wallpaperTaskbarSupervisorTimer) { clearInterval(wallpaperTaskbarSupervisorTimer); wallpaperTaskbarSupervisorTimer = null; } // W-9：顺手收监督器
     if (tray) tray.destroy();
@@ -6071,23 +6102,30 @@ function main() {
     if (weQuitCleanupDone) return;
     e.preventDefault();
     const cleanupTimeout = setTimeout(() => {
+      shutLog('cleanup-timeout', 'WE runtime cleanup exceeded 15000ms'); // W-13 A：兜底是否触发（永不到达 = 卡在 dispose 里）
       console.warn('[Shutdown] WE runtime cleanup exceeded 15000ms; continuing application exit.');
       weQuitCleanupDone = true;
       app.quit();
     }, 15000);
     Promise.resolve()
-      .then(() => fullDesktopModeRuntime.dispose('app-quit'))
-      .catch(() => {})
-      .then(() => wallpaperEngineRuntime.dispose())
+      .then(() => { shutLog('dispose-start', 'fullDesktopModeRuntime'); return fullDesktopModeRuntime.dispose('app-quit'); })
+      .then((r) => { shutLog('dispose-done', 'fullDesktopModeRuntime ' + JSON.stringify(r === undefined ? null : r)); }) // W-13 A：有起点无本行 = 永不 settle
+      .catch((err) => { shutLog('dispose-error', 'fullDesktopModeRuntime ' + (err && err.message || err)); })
+      .then(() => { shutLog('dispose-start', 'wallpaperEngineRuntime'); return wallpaperEngineRuntime.dispose(); })
       .then((result) => {
+        shutLog('dispose-done', 'wallpaperEngineRuntime ok=' + (result && result.ok) + ' reason=' + ((result && result.reason) || ''));
         if (result && result.ok === false) {
           console.warn('[Wallpaper Engine] dispose incomplete:', result.reason || 'WALLPAPER_ENGINE_WINDOW_CLOSE_FAILED');
         }
       })
-      .catch((error) => console.warn('[Wallpaper Engine] dispose failed:', error && error.message || error))
+      .catch((error) => {
+        shutLog('dispose-error', 'wallpaperEngineRuntime ' + (error && error.message || error));
+        console.warn('[Wallpaper Engine] dispose failed:', error && error.message || error);
+      })
       .finally(() => {
         clearTimeout(cleanupTimeout);
         weQuitCleanupDone = true;
+        shutLog('quit-continue', 'cleanup finished -> app.quit()'); // W-13 A
         app.quit();
       });
   });
