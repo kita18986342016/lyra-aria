@@ -2306,6 +2306,18 @@ function main() {
     // W-13 A：窗口创建完成点（B 的看门狗以此作为宽限期起点，故必须落盘可对齐）
     winHadBeenCreated = true; // W-13 B：宽限期起点（此前 win 恒 null，不得计时）
     try { shutLog('window-created', 'hwnd=' + win.getNativeWindowHandle().readBigUInt64LE(0)); } catch { shutLog('window-created'); }
+    // W-15 演练开关（**默认关闭**）：仅当显式设置 DSH_WATCHDOG_DRILL=1 时，窗口创建后主动销毁主窗
+    // （不走退出流程），人为制造"进程活着但窗口已不存在"的形态，交给看门狗自然接管。
+    // 用途：给"看门狗确实会动手"留下正向证据（W-13 验收 3/4 因沙箱起不了实例而未拿到）。
+    // 生产路径零行为变化：不设该环境变量时，这段完全不存在效果。
+    if (process.env.DSH_WATCHDOG_DRILL) {
+      setTimeout(() => {
+        try {
+          shutLog('drill', 'DSH_WATCHDOG_DRILL -> win.destroy()（人为制造无窗态，等看门狗接管）');
+          if (win && !win.isDestroyed()) win.destroy();
+        } catch { /* 演练失败不影响主流程 */ }
+      }, 1200);
+    }
     win.on('close', (e) => {
       shutLog('win-close', 'isQuitting=' + !!app.isQuitting + ' closeBehavior=' + config.closeBehavior); // W-13 A
       if (!app.isQuitting) {
