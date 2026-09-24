@@ -5452,7 +5452,18 @@ function main() {
   // 表现为"应用其实在后台托盘运行，双击图标窗口却不出现"。alwaysOnTop 短切换是
   // 通行绕法（把窗口钉到顶再放回，等效抢前台），moveTop 兜 z 序。
   function showMainWindow() {
-    if (!win || win.isDestroyed()) return;
+    // W-12 P0 自愈：窗口已不在（僵尸态 = 进程活着但窗口/渲染进程已消失）时，原本直接 return —— 单实例锁被本进程占着，
+    // 双击图标走的正是本函数，于是"永远打不开"（2026-09-24 实测：主进程 12 小时无窗口、双击新实例 exit=0 秒退）。
+    // 这里沿用仓内既有重启形态（dsh-restart-app: app.relaunch() + app.exit(0)）重启自身，让用户拿到正常实例。
+    if (!win || win.isDestroyed()) {
+      // 延后 400ms：让"双击那次第二实例"先拿到单实例握手的应答。探针实测（_w12_probe2）：
+      // 在事件里同步 app.exit(0) 会让那次第二实例一直挂着不退出（握手方先走了）；延后后它 344ms 正常退出。
+      setTimeout(() => {
+        try { app.relaunch(); } catch (e) { /* 忽略 */ }
+        app.exit(0);
+      }, 400);
+      return;
+    }
     if (win.isMinimized()) win.restore();
     win.show();
     try { win.setAlwaysOnTop(true); win.setAlwaysOnTop(false); } catch { /* 忽略 */ }
