@@ -6005,6 +6005,11 @@ function main() {
   ipcMain.handle('update:install', (e) => {
     if (!isTrusted(e) || !autoUpdater || !app.isPackaged) return;
     shutLog('quit-request', 'update-install quitAndInstall'); // W-13 A / D 的嫌疑入口
+    // W-15：与「托盘退出 :5391」「closeBehavior=exit :2299」保持同一个语义源 —— quitAndInstall 内部只调
+    // app.quit()，并不会自己设 app.isQuitting；若不设，它会走到 win.on('close') 的 `!app.isQuitting` 分支，
+    // closeBehavior==='tray' 时被 preventDefault()+hide() 拦下 ⇒ Electron 取消退出 ⇒ 安装器无限等待，
+    // 表现为"点了更新没反应/更新永远装不上"（W-13 D 项定位）。先置位，再触发安装。
+    app.isQuitting = true;
     // 静默安装（true,true）：/S --updated --force-run → 无向导、装回原目录、装完自动重启（方案C，源码已验证）
     try { autoUpdater.quitAndInstall(true, true); } catch { /* 忽略 */ }
   });
