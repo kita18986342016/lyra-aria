@@ -2323,7 +2323,7 @@ function main() {
       if (!app.isQuitting) {
         if (config.closeBehavior === 'exit') {
           shutLog('quit-request', 'closeBehavior=exit (window close)'); // W-13 A
-          app.isQuitting = true; app.quit(); return;
+          app.isQuitting = true; flushState(); app.quit(); return; // W-17 §4.1：与托盘退出 (:5420) 同语义
         }
         e.preventDefault();
         win.hide(); // 关闭 → 后台托盘运行（任务栏按钮消失，托盘图标恢复窗口）
