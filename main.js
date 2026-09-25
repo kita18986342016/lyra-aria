@@ -6222,8 +6222,12 @@ function main() {
       .finally(() => {
         clearTimeout(cleanupTimeout);
         weQuitCleanupDone = true;
-        shutLog('quit-continue', 'cleanup finished -> app.quit()'); // W-13 A
-        app.quit();
+        // W-16：走到这里 = WE 收尾已完成（两段 dispose 均 ok），再走一遍 quit 握手没有意义。
+        // 生产日志实测（4 次退出，pid 64456/66940/97728）：will-quit 首次 preventDefault 之后，
+        // 这里的 app.quit() 无法重启已中止的退出流程 —— 进程悬停，全靠 W-13 B2 的 20s 看门狗硬退。
+        // app.exit(0) 不依赖 quit 状态机（W-13 探针已证：同形态 quit 活锁 exit=124 / exit(0) 1s 退出）。
+        shutLog('quit-continue', 'cleanup finished -> app.exit(0)'); // W-13 A / W-16
+        app.exit(0);
       });
   });
 }
