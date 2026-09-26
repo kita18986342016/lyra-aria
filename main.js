@@ -1956,20 +1956,32 @@ function main() {
         await wallpaperEngineRuntime.stop(startedSessionId).catch(() => {});
         return { ok: false, error: 'WALLPAPER_ENGINE_START_SUPERSEDED', sessionId: startedSessionId };
       }
-      let embedded;
+      // ===== W-21：改走「画进窗口」（renderer-prepared 捕获流）=====
+      // 原 embedActiveWindow 把 WE 画面做成 DWM 表面**垫在主窗背后**；而本应用主窗不透明
+      // （backgroundColor '#f3f5f9'，非 transparent），垫层被完全挡死 ⇒ 舞台里看不到壁纸，
+      // 只有溢出窗口外的边缘露出（露边）。此处不再垫背后，改为三步：
+      //   ① parkActiveWindow：把 WE 源窗挪到虚拟桌面外（desktop:713 的 SetWindowPos(virtualRight-1,
+      //      virtualBottom-1)）—— 物理上看不见（红线④），但仍是"显示"状态；
+      //      H1 探针实测（2026-09-26）：屏内 / (-10000,-10000) / park 真实坐标 三组捕获均非黑帧，
+      //      且均值 RGB 与屏内一致（[201,31,31] vs [201,30,30]）⇒ 屏幕外不影响 WGC 捕获。
+      //   ② prepareWallpaperEngineRendererCapture：让渲染层 getUserMedia 抓该源窗，流存进 vendor
+      //      的 prepared Map（W-21 侦察：该函数此前是 dead code，全项目零调用；glass 版有调用点）。
+      //      grant 只需 sessionId/sourceId（:1052-1055），而 start() 返回前已填 sourceId
+      //      （desktop:4009 → 4025）⇒ 不再需要 embed 的产出。
+      //   ③ 返回 captureMode 'renderer-prepared' ⇒ vendor 的 startWallpaperEngineNativeBackground
+      //      自动走「takeWallpaperEnginePreparedCaptureStream → #wallpaper-engine-video → 播」
+      //      分支（vendor:1360-1403），画面画在窗口内、尺寸圆角全由 CSS 控 ⇒ 露边物理不可能。
+      // 代价（已知，报告已列）：不 embed 即不建立 parallax 指针中继（desktop:3721-3722），
+      // WE 原生鼠标视差随之失效 —— 本单不追求视差，不静默降级回 dwm-thumbnail。
+      let parked;
       try {
-        embedded = await wallpaperEngineRuntime.embedActiveWindow(startedSessionId, {
-          hostWindowId: nativeWindowHandleDecimal(mainWindow),
-          hostExecutable: process.execPath,
-          cornerRadius: hostCornerRadius,
-          desktopIconLayering: fullDesktopIconLayeringDesired('wallpaper-engine-embed'),
-        });
-      } catch (embeddingError) {
+        parked = await wallpaperEngineRuntime.parkActiveWindow(startedSessionId);
+      } catch (parkingError) {
         clearWallpaperEngineCaptureGrant(startedSessionId);
         await wallpaperEngineRuntime.stop(startedSessionId).catch(() => {});
         return {
           ok: false,
-          error: embeddingError && (embeddingError.code || embeddingError.message) || 'WALLPAPER_ENGINE_WINDOW_ISOLATION_FAILED',
+          error: parkingError && (parkingError.code || parkingError.message) || 'WALLPAPER_ENGINE_WINDOW_PARK_FAILED',
           capturePrepared: false,
           sessionId: startedSessionId,
         };
@@ -1978,19 +1990,17 @@ function main() {
         await wallpaperEngineRuntime.stop(startedSessionId).catch(() => {});
         return { ok: false, error: 'WALLPAPER_ENGINE_START_SUPERSEDED', sessionId: startedSessionId };
       }
-      // Adaptive pixel calibration can relaunch the WE pop-out and replace its
-      // HWND/sourceId. Build the one-shot grant only after embedding has settled
-      // so the renderer never captures the stale pre-calibration window.
-      const grant = createWallpaperEngineCaptureGrant({ ...result, ...embedded }, operation);
+      // 注意：park 之后 sourceId 不变（H1 探针实测组1/2/3 的 sourceId 恒为同一值）⇒ grant 可直接建。
+      const grant = createWallpaperEngineCaptureGrant(result, operation);
       if (!grant) {
         await wallpaperEngineRuntime.stop(startedSessionId).catch(() => {});
         return { ok: false, error: 'WALLPAPER_ENGINE_CAPTURE_UNAVAILABLE', sessionId: startedSessionId };
       }
-      const embeddedDesktop = fullDesktopModeRuntime.getStatus('wallpaper-engine-embed-finished');
-      if (mainWindow && !mainWindow.isDestroyed() && embeddedDesktop.enabled !== true) {
+      const parkedDesktop = fullDesktopModeRuntime.getStatus('wallpaper-engine-park-finished');
+      if (mainWindow && !mainWindow.isDestroyed() && parkedDesktop.enabled !== true) {
         try { mainWindow.moveTop(); } catch (_) { }
         try { mainWindow.focus(); } catch (_) { }
-      } else if (embeddedDesktop.enabled === true && embeddedDesktop.interactive === true) {
+      } else if (parkedDesktop.enabled === true && parkedDesktop.interactive === true) {
         fullDesktopModeRuntime.ensureIconLayerOrder().catch((error) => {
           console.warn('[FullDesktopMode] WE coexistence z-order refresh failed:', error && error.message || error);
         });
@@ -2000,11 +2010,27 @@ function main() {
         await wallpaperEngineRuntime.stop(grant.sessionId).catch(() => {});
         return { ok: false, error: 'WALLPAPER_ENGINE_START_SUPERSEDED', sessionId: grant.sessionId };
       }
-      // Native Scene mode is composed by DWM, not captured as a Chromium video.
-      // The renderer keeps this one-shot grant only for the readiness ACK; the
-      // runtime starts a click-through live surface underneath the transparent
-      // BrowserWindow and leaves the exact WE source aligned behind it.
-      return { ...result, ...embedded, capturePrepared: true, captureMode: 'dwm-thumbnail' };
+      // 备流必须在 grant 有效期内完成：grant 是渲染层 getUserMedia 被放行的唯一凭证
+      // （isTrustedWallpaperEngineDisplayCapturePermission :1083-1089）。
+      const capturePrepared = await prepareWallpaperEngineRendererCapture(grant.sessionId, targetFps);
+      if (operation !== wallpaperEngineCaptureOperation) {
+        clearWallpaperEngineCaptureGrant(grant.sessionId);
+        await wallpaperEngineRuntime.stop(grant.sessionId).catch(() => {});
+        return { ok: false, error: 'WALLPAPER_ENGINE_START_SUPERSEDED', sessionId: grant.sessionId };
+      }
+      if (!capturePrepared || capturePrepared.ok !== true) {
+        clearWallpaperEngineCaptureGrant(grant.sessionId);
+        await wallpaperEngineRuntime.stop(grant.sessionId).catch(() => {});
+        return {
+          ok: false,
+          error: String(capturePrepared && capturePrepared.error || 'WALLPAPER_CAPTURE_PREPARE_FAILED'),
+          capturePrepared: false,
+          sessionId: grant.sessionId,
+        };
+      }
+      // 无 DWM 宿主后任务栏只剩源窗这一个 hwnd ⇒ 重申一次守卫（W-5）
+      reassertWallpaperTaskbarHidden();
+      return { ...result, capturePrepared: true, captureMode: 'renderer-prepared', sessionId: startedSessionId };
     } catch (error) {
       if (startedSessionId) {
         clearWallpaperEngineCaptureGrant(startedSessionId);
