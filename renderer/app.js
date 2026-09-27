@@ -6665,6 +6665,13 @@
       }
     });
     // 3D 歌词舞台开关（localStorage mp_stage3d，默认关；开=懒加载 MR bundle 并全屏挂载，关=卸载）
+    // W-23：3D 舞台不跨会话保持 —— 启动时归零，消除「开关显示开、画面没开」的状态不一致。
+    // 根因：覆盖层恒以 hidden 起步（index.html:695）且启动时从不调用 syncStage3d，而 #stStage3d 是按
+    // localStorage 显示状态的 ⇒ 上次 3D 开着退出后，本次开关显示「开」而画面根本没开；用户第一次
+    // 点击实际是「关闭」（flag 1→0，画面毫无变化；实测 mrP 只有 ui:click、无 mount）⇒ 必须点两次
+    // 才进得去，且是否要两次取决于上次怎么退出（故表现为「有时候一次、有时候两次」）。
+    // 归零后开关与画面一致，首次点击即进入；会话内仍可正常开关与重载保持。
+    if (stage3dOn()) { try { localStorage.setItem('mp_stage3d', '0'); } catch { /* 忽略 */ } }
     $('#stStage3d').checked = stage3dOn();
     $('#stStage3d').addEventListener('change', (e) => {
       try { localStorage.setItem('mp_stage3d', e.target.checked ? '1' : '0'); } catch { /* 忽略 */ }
