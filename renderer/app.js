@@ -4840,11 +4840,31 @@
     return (localStorage.getItem('mp_stage3d') || '0') === '1';
   }
   let stage3dMounting = false;
+  // W-22：failed 态下的自动重试只做一次（避免 失败→重试→再失败 死循环）；
+  // 用户在 UI 上重新开启 3D（设置开关 / 详情页按钮）时复位，允许下一次再试。
+  let stage3dFailRetried = false;
   async function syncStage3d() {
     // 全窗口沉浸式（MR 同款形态）：want=开关开 && 覆盖层应显示；不再嵌歌词面板
     const overlay = $('#stage3dOverlay');
     const host = $('#stage3dHost');
     const want = stage3dOn() && !LyricStage3D.failed();
+    // ===== W-22：3D 首次点击不得静默（失效可见性硬门槛）=====
+    // 此前 failed 态下这里直接早退：覆盖层不显示、无 toast ⇒ 用户感知"点 3D 完全没反应"；
+    // 更糟的是开关此时已被翻到"开"，用户再点一次走的是"退出"分支（越点越糟）。
+    // 现场实测（__mrP 时间线）：首次点击确实走到 mount→boot 并失败，但失败后 overlay 被
+    // 第二次 syncStage3d 立即隐藏、提示一闪而过 ⇒ 主观上就是"没反应"。
+    if (!want && stage3dOn() && LyricStage3D.failed()) {
+      MrStage.failFeedbackShown = true; // 结构断言用：失败态下的首次点击确实产生了 UI 反馈
+      if (!stage3dFailRetried && MrStage.retryable === true) {
+        stage3dFailRetried = true;
+        toast('3D 舞台初始化失败，正在重试…');
+        LyricStage3D.resetFailed();
+        setTimeout(() => { try { syncStage3d(); } catch (_) { /* 容错，不影响主流程 */ } }, 60);
+        return;
+      }
+      toast('3D 舞台初始化失败，请重启应用后再试');
+      return;
+    }
     overlay.classList.toggle('hidden', !want);
     const on = want && LyricStage3D.active();
     if (!want) {
@@ -6648,7 +6668,7 @@
     $('#stStage3d').checked = stage3dOn();
     $('#stStage3d').addEventListener('change', (e) => {
       try { localStorage.setItem('mp_stage3d', e.target.checked ? '1' : '0'); } catch { /* 忽略 */ }
-      if (e.target.checked) LyricStage3D.resetFailed(); // 重新开启允许重试挂载
+      if (e.target.checked) { LyricStage3D.resetFailed(); stage3dFailRetried = false; } // 重新开启允许重试挂载（W-22：同时复位自动重试闸）
       syncStage3d();
     });
     // 详情页 3D 入口（MR 同款沉浸式触发点）：点击=进入/退出全屏舞台；Esc 退出
@@ -6659,7 +6679,7 @@
       const next = !stage3dOn();
       try { localStorage.setItem('mp_stage3d', next ? '1' : '0'); } catch { /* 忽略 */ }
       $('#stStage3d').checked = next;
-      if (next) LyricStage3D.resetFailed();
+      if (next) { LyricStage3D.resetFailed(); stage3dFailRetried = false; } // W-22：复位自动重试闸，使下次失败能再自动重试一次
       syncStage3d();
     });
     $('#btnCloseStage3D').addEventListener('click', () => {

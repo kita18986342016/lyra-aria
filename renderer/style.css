@@ -1078,6 +1078,20 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
 /* ========== 歌曲详情页（整页切换，酷狗式） ========== */
 /* 详情页整页显示：隐藏侧栏（v1.3.5 行为：详情页占满内容区宽度，无侧栏） */
 body.detail-open #nav { display: none; }
+/* ===== W-22 问题一：详情页拖动窗口 =====
+   #topbar 是全项目唯一的 -webkit-app-region: drag 拖动区（见本文件上方 #topbar 段），
+   而详情页会 `$('#topbar').classList.add('hidden')`（renderer/app.js 进详情页处）
+   ⇒ 详情页整页零拖动区（历史设计缺口，非 W-21 回归）。
+   这里给详情页本体补上 drag 区；因 -webkit-app-region 会**继承**到子元素，必须把页内
+   交互元素逐一置回 no-drag，否则按钮点不动、进度条拖不了、歌词滚不动。 */
+body.detail-open #pageDetail { -webkit-app-region: drag; }
+body.detail-open #pageDetail button,
+body.detail-open #pageDetail input,
+body.detail-open #pageDetail a,
+body.detail-open #pageDetail #pdCover,
+body.detail-open #pageDetail #pdLyrics,
+body.detail-open #pageDetail #pdProgress,
+body.detail-open #pageDetail .d-lyric { -webkit-app-region: no-drag; }
 #pCover { cursor: pointer; }
 #pageDetail { flex: 1; display: flex; flex-direction: column; min-height: 0; background: transparent; position: relative; }
 /* 返回按钮：悬浮在详情页左上角（不单独占行） */

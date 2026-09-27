@@ -293,6 +293,12 @@ var MrStage = {
   gates: null, bootErrors: [],
   // W-12：壁纸门控状态（应用启动时没进 3D → 拦下的恢复调用暂存于此，进 3D 时补做）
   wallpaperPending: null, wallpaperStagedApply: null,
+  // W-22：预启动失败的「可重试性」与「已给过反馈」标记。
+  //   LOAD_FAILED（脚本未执行）   ⇒ retryable=true，重跑安全；
+  //   EXEC（脚本执行中抛错）      ⇒ retryable=false，不重跑 bundle（顶层监听器会重复绑定），
+  //     且 booting 保留 rejected promise ⇒ 后续 mrBoot 恒失败（"永远进不去"的真实机制）。
+  //   UI 层据此提示「重启应用」，而不是让用户面对静默无效的点击。
+  retryable: false, failFeedbackShown: false,
 };
 // 合并脚本执行期错误捕获（parse/exec 错误走 window error 事件，不会进 booting promise）
 window.addEventListener('error', function (e) {
@@ -983,8 +989,16 @@ function mrBoot() {
   }).catch(function (e) {
     // 脚本没加载成功（file:// 下罕见）→ 允许 mount 时重试一次；
     // 脚本执行抛错（MR_BUNDLE_EXEC）→ 置 failed，不重跑 bundle（顶层监听器会重复绑定）
-    if (/MR_BUNDLE_LOAD_FAILED/.test(String(e && e.message || e))) { MrStage.booting = null; }
-    else { MrStage.failed = true; MrStage.lastError = String(e && e.message || e); }
+    if (/MR_BUNDLE_LOAD_FAILED/.test(String(e && e.message || e))) {
+      MrStage.booting = null;
+      MrStage.retryable = true; // W-22：脚本未执行 ⇒ 重跑安全，允许 UI 自动重试一次
+    } else {
+      MrStage.failed = true; MrStage.lastError = String(e && e.message || e);
+      // W-22：booting 刻意保留（rejected），不重跑 bundle 以免顶层监听器重复绑定。
+      // 但这条链路此前**完全静默**（只有 console 留痕）⇒ 用户首次点 3D"完全没反应"。
+      // 标 retryable=false，交由 app.js syncStage3d 给出明确提示（失效可见性硬门槛）。
+      MrStage.retryable = false;
+    }
     throw e;
   });
   return MrStage.booting;
